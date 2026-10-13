@@ -1,0 +1,85 @@
+name: build
+
+# Builds the installers for macOS, Windows and Linux, on Intel and ARM chips.
+#
+# - Start it by hand (Actions tab, or `gh workflow run build.yml`):
+#   the installers are kept as workflow artifacts. No release is made.
+# - Push a tag like `v0.1.0`: a DRAFT release is made with all installers attached.
+#   The tag should match the version in `src-tauri/tauri.conf.json`.
+#
+# The builds are NOT signed. macOS shows a Gatekeeper warning and Windows shows
+# a SmartScreen warning. To sign, add the secrets to the repository and pass them
+# in the `env` of the "Build the installers" step:
+# - macOS: APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+# - Windows: see https://tauri.app/distribute/sign/windows/
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    permissions:
+      # Needed to make the draft release.
+      contents: write
+    strategy:
+      # One broken target must not stop the others.
+      fail-fast: false
+      matrix:
+        include:
+          # macOS: one ARM runner builds both. Makes .app and .dmg.
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          # Windows: makes .msi and a setup .exe.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          # Linux: makes .deb, .rpm and .AppImage.
+          # Ubuntu 22.04 is used so the app also starts on older systems.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the Linux packages
+        if: runner.os == 'Linux'
+        # libdbus-1-dev is for the password store (keyring crate). The rest is for Tauri.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils libdbus-1-dev
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build the installers
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target ${{ matrix.target }}
+          # A tag makes a draft release. With no tag name, no release is made.
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          releaseName: SQL Pro ${{ github.ref_name }}
+          releaseDraft: true
+          # A run started by hand keeps the installers as workflow artifacts.
+          uploadWorkflowArtifacts: ${{ github.ref_type != 'tag' }}

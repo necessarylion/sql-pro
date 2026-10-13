@@ -31,7 +31,15 @@ async-trait = "0.1"
 futures-util = "0.3"
 thiserror = "2"
 parking_lot = "0.12"
-keyring = { version = "3", features = ["apple-native", "windows-native"] }
+# One password store per system. Each feature only does something on its own system.
+# Linux uses the Secret Service (GNOME Keyring, KWallet) over D-Bus.
+# Building on Linux needs the package `libdbus-1-dev`.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+    "crypto-rust",
+] }
 # Runs the system ssh program for tunnels.
 tokio = { version = "1", features = ["process", "net", "time", "io-util"] }
 

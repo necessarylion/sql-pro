@@ -30,6 +30,7 @@ pub const POSTGRES_PASSWORD_ENV: &str = "PGPASSWORD";
 
 /// Where we look for the dump tools, after the folders of PATH.
 /// An app started from the Finder has a very short PATH.
+/// Used on macOS and Linux only. Windows has no such folders.
 pub const TOOL_DIRS: [&str; 8] = [
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -43,6 +44,9 @@ pub const TOOL_DIRS: [&str; 8] = [
 
 /// Homebrew keeps each `PostgreSQL` version in a folder like `postgresql@16` in here.
 pub const HOMEBREW_OPT_DIR: &str = "/opt/homebrew/opt";
+
+/// The Windows flag `CREATE_NO_WINDOW`. A tool started with it opens no console window.
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// What we add to the path of a dump while it is being written.
 pub const PARTIAL_DUMP_SUFFIX: &str = ".part";

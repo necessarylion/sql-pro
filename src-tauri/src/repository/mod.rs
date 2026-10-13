@@ -25,6 +25,15 @@ use crate::constants::{CONNECT_TIMEOUT_SECONDS, LOCALHOST, MAX_QUERY_ROWS};
 use crate::error::AppResult;
 use crate::model::{ColumnInfo, ColumnSpec, ConnectionConfig, Driver, ResultSet, Row, TableRef};
 
+/// Stops the console window that Windows opens for every tool a window app starts.
+/// Other systems open no such window, so nothing happens there.
+fn hide_console(command: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    command.creation_flags(crate::constants::CREATE_NO_WINDOW);
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
 /// Everything the service needs from one open database connection.
 #[async_trait]
 pub trait Repository: Send + Sync {

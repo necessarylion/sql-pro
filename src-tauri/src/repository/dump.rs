@@ -9,9 +9,9 @@ use std::process::Stdio;
 
 use tokio::process::Command;
 
-use crate::constants::{
-    HOMEBREW_OPT_DIR, MYSQL_PASSWORD_ENV, PARTIAL_DUMP_SUFFIX, POSTGRES_PASSWORD_ENV, TOOL_DIRS,
-};
+#[cfg(unix)]
+use crate::constants::{HOMEBREW_OPT_DIR, TOOL_DIRS};
+use crate::constants::{MYSQL_PASSWORD_ENV, PARTIAL_DUMP_SUFFIX, POSTGRES_PASSWORD_ENV};
 use crate::error::{AppError, AppResult};
 use crate::model::{ConnectionConfig, Driver};
 
@@ -48,6 +48,7 @@ impl DumpRepository {
             Driver::Postgres => Self::postgres(config, output)?,
             Driver::Sqlite => Self::sqlite(config, output)?,
         };
+        super::hide_console(&mut command);
         command
             .stdin(Stdio::null())
             .stderr(Stdio::piped())
@@ -72,7 +73,7 @@ impl DumpRepository {
             return Err("Choose a database first".into());
         }
         let tool = Self::find(&["mysqldump", "mariadb-dump"]).ok_or(
-            "mysqldump was not found. Install it with: brew install mysql-client (or mariadb)",
+            "mysqldump was not found. Install the MySQL or MariaDB client tools (macOS: brew install mysql-client)",
         )?;
         let mut command = Command::new(&tool);
         command
@@ -108,7 +109,7 @@ impl DumpRepository {
 
     fn postgres(config: &ConnectionConfig, output: &Path) -> AppResult<Command> {
         let tool = Self::find(&["pg_dump"])
-            .ok_or("pg_dump was not found. Install it with: brew install libpq")?;
+            .ok_or("pg_dump was not found. Install the PostgreSQL client tools (macOS: brew install libpq)")?;
         let mut command = Command::new(tool);
         command
             .arg(format!("--host={}", config.host))
@@ -131,8 +132,9 @@ impl DumpRepository {
 
     /// `SQLite` has no dump tool of its own. The `sqlite3` shell prints the dump.
     fn sqlite(config: &ConnectionConfig, output: &Path) -> AppResult<Command> {
-        let tool = Self::find(&["sqlite3"])
-            .ok_or("sqlite3 was not found. Install it with: brew install sqlite")?;
+        let tool = Self::find(&["sqlite3"]).ok_or(
+            "sqlite3 was not found. Install the sqlite3 tool (macOS: brew install sqlite)",
+        )?;
         let mut command = Command::new(tool);
         command
             .arg("-readonly")
@@ -153,11 +155,9 @@ impl DumpRepository {
 
     /// Does the help text of the tool name this option?
     async fn knows(tool: &Path, option: &str) -> bool {
-        let help = Command::new(tool)
-            .arg("--help")
-            .stdin(Stdio::null())
-            .output()
-            .await;
+        let mut command = Command::new(tool);
+        super::hide_console(&mut command);
+        let help = command.arg("--help").stdin(Stdio::null()).output().await;
         match help {
             Ok(help) => String::from_utf8_lossy(&help.stdout).contains(option),
             Err(_) => false,
@@ -185,19 +185,24 @@ impl DumpRepository {
         if let Some(path) = std::env::var_os("PATH") {
             folders.extend(std::env::split_paths(&path));
         }
-        for folder in TOOL_DIRS {
-            folders.push(PathBuf::from(folder));
-        }
-        // ponytail: any Homebrew PostgreSQL version, in no fixed order. pg_dump
-        // refuses a server that is newer than itself; pick the newest if that hurts.
-        if let Ok(entries) = std::fs::read_dir(HOMEBREW_OPT_DIR) {
-            for entry in entries.flatten() {
-                if entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("postgresql@")
-                {
-                    folders.push(entry.path().join("bin"));
+        // These are macOS and Linux folders. On Windows "/usr/bin" would mean a folder
+        // on the current drive that any user can create, so Windows uses PATH only.
+        #[cfg(unix)]
+        {
+            for folder in TOOL_DIRS {
+                folders.push(PathBuf::from(folder));
+            }
+            // ponytail: any Homebrew PostgreSQL version, in no fixed order. pg_dump
+            // refuses a server that is newer than itself; pick the newest if that hurts.
+            if let Ok(entries) = std::fs::read_dir(HOMEBREW_OPT_DIR) {
+                for entry in entries.flatten() {
+                    if entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("postgresql@")
+                    {
+                        folders.push(entry.path().join("bin"));
+                    }
                 }
             }
         }

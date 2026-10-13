@@ -33,6 +33,7 @@ impl SshTunnel {
         let local_port = Self::free_port()?;
 
         let mut command = Command::new("ssh");
+        super::hide_console(&mut command);
         command
             .arg("-N")
             .arg("-L")
