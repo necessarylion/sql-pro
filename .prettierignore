@@ -1,0 +1,5 @@
+src-tauri
+dist
+node_modules
+bun.lock
+.claude

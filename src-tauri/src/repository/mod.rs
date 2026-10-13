@@ -1,0 +1,263 @@
+//! Database access. One repository per driver, all behind the same trait.
+
+mod dump;
+mod mysql;
+mod password;
+mod postgres;
+mod sqlite;
+mod tunnel;
+
+use std::fmt::Write as _;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use futures_util::StreamExt as _;
+use futures_util::stream::BoxStream;
+use sqlx::pool::PoolOptions;
+use sqlx::{Column as _, Database, Either, Row as _};
+
+pub use dump::DumpRepository;
+pub use password::PasswordRepository;
+pub use tunnel::SshTunnel;
+
+use crate::constants::{CONNECT_TIMEOUT_SECONDS, LOCALHOST, MAX_QUERY_ROWS};
+use crate::error::AppResult;
+use crate::model::{ColumnInfo, ColumnSpec, ConnectionConfig, Driver, ResultSet, Row, TableRef};
+
+/// Everything the service needs from one open database connection.
+#[async_trait]
+pub trait Repository: Send + Sync {
+    /// Wraps a table or column name so it is safe inside SQL.
+    fn quote(&self, identifier: &str) -> String;
+
+    /// The marker for bound value number `index` (starts at 1) of a column with `data_type`.
+    fn placeholder(&self, index: usize, data_type: &str) -> String;
+
+    /// Writes a text value as a SQL string. The value cannot break out of the quotes.
+    fn literal(&self, value: &str) -> String;
+
+    /// A quoted column in a form that LIKE accepts for every column type.
+    fn like_operand(&self, column: &str) -> String {
+        column.to_owned()
+    }
+
+    /// The tail of an INSERT that sets no column at all.
+    fn default_values(&self) -> &'static str;
+
+    /// Runs raw SQL. It may hold many statements. Gives one result set per statement.
+    async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>>;
+
+    /// Runs one statement with bound values. Gives the number of changed rows.
+    async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64>;
+
+    async fn databases(&self) -> AppResult<Vec<String>>;
+
+    async fn tables(&self) -> AppResult<Vec<TableRef>>;
+
+    async fn columns(&self, table: &TableRef) -> AppResult<Vec<ColumnInfo>>;
+
+    async fn close(&self);
+
+    /// The statements that change the type, null rule and default of a column.
+    /// A rename is not part of this. The service does it after.
+    async fn modify_column_sql(
+        &self,
+        table: &TableRef,
+        old: &ColumnInfo,
+        new: &ColumnSpec,
+    ) -> AppResult<Vec<String>>;
+
+    /// The statement that deletes all rows of a table. `table` is already quoted.
+    fn truncate_sql(&self, table: &str) -> String {
+        format!("TRUNCATE TABLE {table}")
+    }
+
+    /// The full, quoted name of a table.
+    fn table_name(&self, table: &TableRef) -> String {
+        match &table.schema {
+            Some(schema) => format!("{}.{}", self.quote(schema), self.quote(&table.name)),
+            None => self.quote(&table.name),
+        }
+    }
+}
+
+/// Opens the right repository for a connection config.
+pub struct RepositoryFactory;
+
+impl RepositoryFactory {
+    /// Also opens the SSH tunnel when the config asks for one.
+    /// The caller must keep the tunnel alive as long as the repository.
+    pub async fn create(
+        &self,
+        config: &ConnectionConfig,
+    ) -> AppResult<(Arc<dyn Repository>, Option<SshTunnel>)> {
+        let mut tunnel = None;
+        let mut tunneled;
+        let mut config = config;
+        if let (Some(ssh), true) = (&config.ssh, config.driver != Driver::Sqlite) {
+            let opened = SshTunnel::open(ssh, &config.host, config.port).await?;
+            tunneled = config.clone();
+            LOCALHOST.clone_into(&mut tunneled.host);
+            tunneled.port = opened.local_port();
+            tunnel = Some(opened);
+            config = &tunneled;
+        }
+        let repository: Arc<dyn Repository> = match config.driver {
+            Driver::Mysql => Arc::new(mysql::MysqlRepository::connect(config).await?),
+            Driver::Postgres => Arc::new(postgres::PostgresRepository::connect(config).await?),
+            Driver::Sqlite => Arc::new(sqlite::SqliteRepository::connect(config).await?),
+        };
+        Ok((repository, tunnel))
+    }
+}
+
+/// Pool settings shared by all drivers.
+///
+/// We keep exactly one connection per tab. This way session state
+/// (transactions, `SET`, temp tables) stays the same between queries.
+// ponytail: one connection per tab, so a slow query blocks that tab. Add a second
+// connection for browsing if that hurts.
+fn pool_options<DB: Database>() -> PoolOptions<DB> {
+    PoolOptions::new()
+        .max_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .acquire_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
+}
+
+/// What sqlx streams back: rows, and one statement result after each statement.
+type Items<'conn, DB> = BoxStream<
+    'conn,
+    Result<Either<<DB as Database>::QueryResult, <DB as Database>::Row>, sqlx::Error>,
+>;
+
+/// Reads a stream of rows and statement results into result sets.
+///
+/// `read` turns one cell into text. `affected` reads the changed row count.
+// ponytail: a SELECT with zero rows gives no column names, because sqlx only
+// exposes columns on a row. Use `describe` if empty results need headers.
+async fn collect<DB: Database>(
+    mut stream: Items<'_, DB>,
+    read: fn(&DB::Row, usize) -> Result<Option<String>, sqlx::Error>,
+    affected: fn(&DB::QueryResult) -> u64,
+) -> AppResult<Vec<ResultSet>> {
+    let mut sets = Vec::new();
+    let mut current = ResultSet::default();
+    while let Some(item) = stream.next().await {
+        match item? {
+            Either::Left(result) => {
+                current.affected = affected(&result);
+                sets.push(std::mem::take(&mut current));
+            }
+            Either::Right(row) => {
+                if current.columns.is_empty() {
+                    for column in row.columns() {
+                        current.columns.push(column.name().to_owned());
+                    }
+                }
+                // We still read past the limit so the connection stays clean, but we drop the rows.
+                if current.rows.len() >= MAX_QUERY_ROWS {
+                    current.truncated = true;
+                    continue;
+                }
+                let mut cells = Vec::with_capacity(row.len());
+                for index in 0..row.len() {
+                    cells.push(read(&row, index)?);
+                }
+                current.rows.push(cells);
+            }
+        }
+    }
+    if !current.columns.is_empty() {
+        sets.push(current);
+    }
+    Ok(sets)
+}
+
+/// The result of the last statement, or an empty one.
+fn single(mut sets: Vec<ResultSet>) -> ResultSet {
+    sets.pop().unwrap_or_default()
+}
+
+/// The text of one cell. NULL and missing cells become an empty string.
+fn cell(row: &Row, index: usize) -> String {
+    row.get(index).cloned().flatten().unwrap_or_default()
+}
+
+/// The first cell of every row.
+fn first_column(set: &ResultSet) -> Vec<String> {
+    let mut values = Vec::with_capacity(set.rows.len());
+    for row in &set.rows {
+        values.push(cell(row, 0));
+    }
+    values
+}
+
+/// Builds columns from rows shaped as: name, type, nullable (YES/NO), default, key (PRI), extra.
+fn standard_columns(set: &ResultSet) -> Vec<ColumnInfo> {
+    let mut columns = Vec::with_capacity(set.rows.len());
+    for row in &set.rows {
+        columns.push(ColumnInfo {
+            name: cell(row, 0),
+            data_type: cell(row, 1),
+            nullable: cell(row, 2) == "YES",
+            default: row.get(3).cloned().flatten(),
+            primary_key: cell(row, 4) == "PRI",
+            extra: cell(row, 5),
+        });
+    }
+    columns
+}
+
+/// Is this table type a view?
+fn kind(table_type: &str) -> String {
+    let kind = if table_type.to_ascii_lowercase().contains("view") {
+        "view"
+    } else {
+        "table"
+    };
+    kind.to_owned()
+}
+
+/// The statement that sets or drops the default of a column, when it changed.
+/// `MySQL` and `PostgreSQL` share this syntax.
+fn default_sql(table: &str, column: &str, old: &ColumnInfo, new: &ColumnSpec) -> Option<String> {
+    if new.default == old.default {
+        return None;
+    }
+    let action = match &new.default {
+        Some(expression) => format!("SET DEFAULT {expression}"),
+        None => "DROP DEFAULT".to_owned(),
+    };
+    Some(format!(
+        "ALTER TABLE {table} ALTER COLUMN {column} {action}"
+    ))
+}
+
+/// Quotes a name the standard SQL way: "name".
+fn double_quote(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+/// Quotes a text value the standard SQL way: 'value'.
+/// Only safe for `PostgreSQL` and `SQLite`.
+// ponytail: a PostgreSQL server with `standard_conforming_strings = off` reads a
+// backslash as an escape. That setting has been off by default since 9.1. Write
+// `E'...'` strings if such servers must work.
+fn literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Shows bytes as text when they are valid UTF-8, else as hex.
+fn bytes_to_text(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_owned();
+    }
+    let mut hex = String::with_capacity(2 + bytes.len() * 2);
+    hex.push_str("0x");
+    for byte in bytes {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
+}

@@ -1,0 +1,392 @@
+/* Global look. The colours and sizes come from the Pencil design file. */
+
+:root {
+  /* Dark is the main look of the app. */
+  color-scheme: dark;
+  --bg: #1e1f22;
+  --chrome: #131416;
+  --toolbar: #2b2c30;
+  --sidebar: #25262a;
+  --border: #3d3e44;
+  --border-soft: #2f3035;
+  --header: #2b2c30;
+  --row-alt: #232428;
+  --text: #e7e7ea;
+  --text-2: #a6a7ad;
+  --text-3: #787980;
+  --accent: #2f6beb;
+  --accent-text: #78aaff;
+  --seg-active: #3b3c42;
+  --modified: #4d3f12;
+  --added: #17392a;
+  --deleted: #4a2020;
+  --danger: #ff8078;
+  --success: #3fb950;
+  --success-text: #86e3a6;
+  --warn: #f2b45c;
+  --stmt-highlight: #1e2a45;
+  --syntax-type: #4fd1c5;
+  --on-accent: #ffffff;
+  --mysql: #b95c00;
+  --postgres: #336791;
+  --sqlite: #0f766e;
+  --font-ui: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, Menlo, Consolas, monospace;
+  font: 12px/1.3 var(--font-ui);
+}
+
+/* The light look. Set data-theme="light" on <html> to use it. */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --chrome: #e2e3e7;
+  --toolbar: #f5f5f6;
+  --sidebar: #f0f1f3;
+  --border: #d0d1d6;
+  --border-soft: #e6e7ea;
+  --header: #eff0f2;
+  --row-alt: #f7f8fa;
+  --text: #1d1d1f;
+  --text-2: #5f6066;
+  --text-3: #8c8d93;
+  --accent: #2563eb;
+  --accent-text: #2563eb;
+  --seg-active: #ffffff;
+  --modified: #fff1b8;
+  --added: #dcf5df;
+  --deleted: #fde2e2;
+  --danger: #c8261b;
+  --success: #1f9d55;
+  --success-text: #14663a;
+  --warn: #a75a00;
+  --stmt-highlight: #eef4ff;
+  --syntax-type: #0f766e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100vh;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* The chrome is not selectable. Cells and inputs turn selection on again. */
+body {
+  background: var(--bg);
+  color: var(--text);
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+svg {
+  flex: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+input,
+textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-3);
+}
+
+input {
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 5px;
+}
+
+/* Hosts, ports, users and paths. */
+input.mono,
+input[type='number'] {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* No up and down arrows in the port fields. */
+input[type='number'] {
+  appearance: textfield;
+}
+
+input[type='number']::-webkit-inner-spin-button {
+  display: none;
+}
+
+button {
+  display: inline-flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+button:disabled {
+  color: var(--text-3);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+button.primary:disabled {
+  opacity: 0.6;
+}
+
+/* The shortcut hint in a primary button. */
+button .hint {
+  opacity: 0.7;
+}
+
+/* A button that is only an icon. */
+button.icon {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+/* Toolbar, filter bar and the bottom bars. */
+.bar {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--toolbar);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.bar.bottom {
+  gap: 10px;
+  height: 28px;
+  border-top: 1px solid var(--border);
+  border-bottom: 0;
+}
+
+.bar button:not(.icon) {
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 5px;
+}
+
+.bar input {
+  height: 22px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.dim {
+  color: var(--text-2);
+}
+
+.error {
+  color: var(--danger);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Long text in a bar. It is cut with "…". */
+.message {
+  flex: 1;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+/* Buttons joined into one switch. */
+.segmented {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  background: var(--chrome);
+  border-radius: 7px;
+}
+
+.segmented button {
+  border: 0;
+  background: none;
+  color: var(--text-2);
+}
+
+.segmented button.active {
+  background: var(--seg-active);
+  box-shadow: 0 1px 2px #00000026;
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* A small round tag, like "Read only". */
+.pill {
+  display: inline-flex;
+  flex: none;
+  gap: 5px;
+  align-items: center;
+  height: 18px;
+  padding: 0 8px;
+  background: var(--header);
+  border-radius: 9px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.pill.unsaved {
+  background: var(--modified);
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--warn);
+  border-radius: 50%;
+}
+
+/* The filter box on top of a sidebar: an icon and an input. */
+.search {
+  display: flex;
+  flex: none;
+  gap: 5px;
+  align-items: center;
+  height: 22px;
+  margin: 8px 8px 6px;
+  padding: 0 7px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-3);
+}
+
+.search input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--text);
+  font-size: 11px;
+}
+
+/* A small title over a list, with a count. */
+.section {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px 3px;
+  color: var(--text-2);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.section .count {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+/* A list of names: favorites and tables. */
+.list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list li {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.list li svg {
+  color: var(--text-2);
+}
+
+.list li.selected {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.list li.selected svg {
+  color: inherit;
+}
+
+.list .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The last row of a sidebar. */
+.sidebar-footer {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 400;
+}
+
+/* A centred hint in an empty area. */
+.empty {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+}

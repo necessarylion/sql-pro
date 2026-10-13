@@ -1,0 +1,68 @@
+import type { ConnectionConfig, Driver, SessionView, SshConfig } from '../types'
+
+/** Rows loaded per page in the content view. */
+export const PAGE_SIZE = 500
+
+/** Longer cell text is cut in the grid. The full value is still used for editing. */
+export const CELL_PREVIEW_LENGTH = 200
+
+export const FAVORITES_STORAGE_KEY = 'sql-pro.favorites'
+
+export const DRIVER_LABELS: Record<Driver, string> = {
+  mysql: 'MySQL',
+  postgres: 'PostgreSQL',
+  sqlite: 'SQLite',
+}
+
+/** The short text in the small coloured badge of a driver. */
+export const DRIVER_BADGES: Record<Driver, string> = {
+  mysql: 'MY',
+  postgres: 'PG',
+  sqlite: 'SL',
+}
+
+export const DEFAULT_CONFIGS: Record<Driver, ConnectionConfig> = {
+  mysql: {
+    driver: 'mysql',
+    host: '127.0.0.1',
+    port: 3306,
+    user: 'root',
+    password: '',
+    database: '',
+    ssh: null,
+  },
+  postgres: {
+    driver: 'postgres',
+    host: '127.0.0.1',
+    port: 5432,
+    user: 'postgres',
+    password: '',
+    database: 'postgres',
+    ssh: null,
+  },
+  sqlite: { driver: 'sqlite', host: '', port: 0, user: '', password: '', database: '', ssh: null },
+}
+
+export const DEFAULT_SSH_CONFIG: SshConfig = {
+  host: '',
+  port: 22,
+  user: '',
+  password: '',
+  keyPath: '',
+}
+
+/** Added to a favorite id to get the keychain entry of its SSH password. */
+export const SSH_PASSWORD_SUFFIX = ':ssh'
+
+/** The order here is the order of the buttons in the toolbar. */
+export const VIEW_LABELS: Record<SessionView, string> = {
+  structure: 'Structure',
+  content: 'Content',
+  query: 'Query',
+}
+
+/** Binary values arrive as hex text. Editing them would corrupt them. */
+export const BINARY_TYPE_PATTERN = /blob|binary|bytea/i
+
+/** Columns of these types hold numbers. The grid aligns them to the right. */
+export const NUMERIC_TYPE_PATTERN = /int|decimal|numeric|float|double|real|serial|money/i

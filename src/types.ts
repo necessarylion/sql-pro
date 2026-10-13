@@ -1,0 +1,120 @@
+// Shared types. They match the Tauri backend commands.
+
+export type Driver = 'mysql' | 'postgres' | 'sqlite'
+
+/** For sqlite, `database` is the file path. The other fields are empty or 0. */
+export interface ConnectionConfig {
+  driver: Driver
+  host: string
+  port: number
+  user: string
+  password: string
+  database: string
+  /** Set to reach the database through an SSH server. Not used for sqlite. */
+  ssh: SshConfig | null
+}
+
+/** `password` is the login password or the key passphrase. Empty = keys and agent only. */
+export interface SshConfig {
+  host: string
+  port: number
+  user: string
+  password: string
+  keyPath: string
+}
+
+/** `schema` is set only for postgres. */
+export interface TableRef {
+  schema: string | null
+  name: string
+  kind: 'table' | 'view'
+}
+
+export interface ColumnInfo {
+  name: string
+  dataType: string
+  nullable: boolean
+  default: string | null
+  primaryKey: boolean
+  extra: string
+}
+
+/** The backend sends every value as text. */
+export type Row = (string | null)[]
+
+export interface ResultSet {
+  columns: string[]
+  rows: Row[]
+  affected: number
+  truncated: boolean
+}
+
+export interface TablePage {
+  columns: ColumnInfo[]
+  rows: Row[]
+  total: number
+}
+
+/** What the user types to add or change a column. `dataType` and `default` are raw SQL. */
+export interface ColumnSpec {
+  name: string
+  dataType: string
+  nullable: boolean
+  /** null = no default. */
+  default: string | null
+}
+
+export type FilterOperator =
+  | 'eq'
+  | 'neq'
+  | 'lt'
+  | 'gt'
+  | 'lte'
+  | 'gte'
+  | 'contains'
+  | 'notContains'
+  | 'startsWith'
+  | 'endsWith'
+  | 'in'
+  | 'isNull'
+  | 'isNotNull'
+
+/** One filter rule, as the backend wants it. */
+export interface FilterRule {
+  column: string
+  operator: FilterOperator
+  value: string
+}
+
+/** One row of the filter area. `column` can be RAW_FILTER_COLUMN: then `value` is raw SQL. */
+export interface FilterRow extends FilterRule {
+  enabled: boolean
+}
+
+/**
+ * `filter` is a raw SQL WHERE body. `orderBy` is a column name. Both can be ''.
+ * The backend joins `filter` and all `filters` with AND.
+ */
+export interface BrowseRequest {
+  table: TableRef
+  filter: string
+  filters: FilterRule[]
+  orderBy: string
+  descending: boolean
+  limit: number
+  offset: number
+}
+
+/** Column name -> value. */
+export type Values = Record<string, string | null>
+
+export type SessionView = 'structure' | 'content' | 'query'
+
+/** One column of the DataGrid component. */
+export interface GridColumn {
+  name: string
+  type?: string
+  nullable?: boolean
+  /** Cells of this column cannot be edited, even in an editable grid. */
+  readOnly?: boolean
+}
