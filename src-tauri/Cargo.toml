@@ -1,6 +1,6 @@
 [package]
 name = "sql-pro"
-version = "0.5.1"
+version = "0.5.2"
 description = "A compact SQL client for MySQL, PostgreSQL and SQLite"
 authors = ["Zin Kyaw Kyaw"]
 edition = "2024"
