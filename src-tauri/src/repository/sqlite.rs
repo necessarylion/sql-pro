@@ -5,8 +5,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRo
 use sqlx::{AssertSqlSafe, Row as _, Sqlite, TypeInfo as _, ValueRef as _};
 
 use super::{
-    Repository, Statement, bytes_to_text, cell, collect, double_quote, execute_all, kind, literal,
-    pool_options, relations, run_script, single, standard_columns,
+    Repository, Statement, bytes_to_text, cell, collect, double_quote, execute, execute_all, kind,
+    literal, pool_options, relations, run_script, single, standard_columns,
 };
 use crate::error::AppResult;
 use crate::model::{ColumnInfo, ColumnSpec, ConnectionConfig, Relation, ResultSet, TableRef};
@@ -105,11 +105,7 @@ impl Repository for SqliteRepository {
     }
 
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64> {
-        let mut query = sqlx::query(AssertSqlSafe(sql.to_owned()));
-        for param in params {
-            query = query.bind(param);
-        }
-        Ok(query.execute(&self.pool).await?.rows_affected())
+        execute(&self.pool, sql, params, SqliteQueryResult::rows_affected).await
     }
 
     async fn execute_all(&self, statements: Vec<Statement>) -> AppResult<Vec<u64>> {

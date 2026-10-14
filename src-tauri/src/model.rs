@@ -175,6 +175,9 @@ pub struct BrowseRequest {
     pub descending: bool,
     pub limit: usize,
     pub offset: u64,
+    /// The total the frontend already knows. When set, the count is skipped.
+    /// Only sent when the user moves to another page of the same rows.
+    pub total: Option<u64>,
 }
 
 /// One row of the filter form: a column, a way to compare, and a value.

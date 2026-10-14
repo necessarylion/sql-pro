@@ -110,6 +110,8 @@ export interface BrowseRequest {
   descending: boolean
   limit: number
   offset: number
+  /** The total we already know. The backend then skips the count. Only for a page turn. */
+  total?: number
 }
 
 /** Column name -> value. */

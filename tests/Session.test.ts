@@ -351,3 +351,23 @@ test('only ticked and complete filter rows are sent, raw rows go to filter', asy
   expect(api.requests[api.requests.length - 1].filters).toEqual([])
   expect(api.requests[api.requests.length - 1].filter).toBe('')
 })
+
+test('a page turn sends the known total, other loads do not', async function () {
+  const { api, session } = await openUsers()
+  expect(api.requests[0].total).toBeUndefined()
+  // Pretend the table is big, so there is a next page.
+  session.page!.total = 1000
+
+  await session.turnPage(1)
+  expect(api.requests[api.requests.length - 1].total).toBe(1000)
+  await session.turnPage(-1)
+  expect(api.requests[api.requests.length - 1].total).toBe(2)
+
+  await session.sort('name')
+  expect(api.requests[api.requests.length - 1].total).toBeUndefined()
+  await session.applyFilters()
+  expect(api.requests[api.requests.length - 1].total).toBeUndefined()
+  await session.reload()
+  expect(api.requests[api.requests.length - 1].total).toBeUndefined()
+  expect(api.requests.length).toBe(6)
+})

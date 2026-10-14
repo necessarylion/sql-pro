@@ -7,8 +7,8 @@ use sqlx::{AssertSqlSafe, MySql, Row as _};
 use std::collections::{BTreeSet, HashMap};
 
 use super::{
-    Repository, Statement, bytes_to_text, cell, collect, default_sql, execute_all, first_column,
-    kind, password_safe, pool_options, relations, run_script, single,
+    Repository, Statement, bytes_to_text, cell, collect, default_sql, execute, execute_all,
+    first_column, kind, password_safe, pool_options, relations, run_script, single,
 };
 use crate::constants::{
     ANY_HOST, MYSQL_DATABASE_PRIVILEGES, MYSQL_HOST_MAX, MYSQL_SYSTEM_USERS, MYSQL_USER_NAME_MAX,
@@ -387,11 +387,7 @@ impl Repository for MysqlRepository {
     }
 
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64> {
-        let mut query = sqlx::query(AssertSqlSafe(sql.to_owned()));
-        for param in params {
-            query = query.bind(param);
-        }
-        Ok(query.execute(&self.pool).await?.rows_affected())
+        execute(&self.pool, sql, params, MySqlQueryResult::rows_affected).await
     }
 
     // ponytail: a rollback does nothing on MyISAM tables, they have no transactions.

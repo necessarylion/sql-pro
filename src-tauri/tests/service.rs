@@ -97,7 +97,35 @@ fn request(table: &TableRef, rules: &[Rule], filter: &str) -> BrowseRequest {
         descending: false,
         limit: 100,
         offset: 0,
+        total: None,
     }
+}
+
+/// Moving to another page sends the known total, and the count is skipped.
+/// Expects rows 1 and 2.
+async fn paging(service: &ConnectionService, table: &TableRef) {
+    let mut next = request(table, &[], "");
+    next.limit = 1;
+    next.offset = 1;
+    next.total = Some(99);
+    let loaded = service.browse(ID, &next).await.expect("next page");
+    assert_eq!(loaded.total, 99, "the known total comes back");
+    assert_eq!(loaded.rows.len(), 1);
+    assert_eq!(loaded.rows[0][0], text("2"));
+
+    // No rows still gives a count of 0, not a number read from the rows.
+    let empty = service
+        .browse(ID, &request(table, &[], "id > 100"))
+        .await
+        .expect("empty");
+    assert_eq!((empty.rows.len(), empty.total), (0, 0));
+
+    // A `--` comment in the filter must not hide the count.
+    let commented = service
+        .browse(ID, &request(table, &[], "id = 2 -- note"))
+        .await
+        .expect("comment");
+    assert_eq!((commented.rows.len(), commented.total), (1, 1));
 }
 
 async fn page(service: &ConnectionService, table: &TableRef) -> sql_pro_lib::model::TablePage {
@@ -1288,6 +1316,7 @@ async fn exercise(config: ConnectionConfig) {
 
     let loaded = page(&service, &table).await;
     assert_eq!(loaded.total, 2);
+    paging(&service, &table).await;
     assert_eq!(loaded.columns.len(), 4);
     assert!(loaded.columns[0].primary_key);
     assert!(!loaded.columns[1].primary_key);

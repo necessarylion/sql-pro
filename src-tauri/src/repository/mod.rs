@@ -15,10 +15,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures_util::StreamExt as _;
 use futures_util::stream::BoxStream;
-use sqlx::pool::PoolOptions;
+use sqlx::pool::{PoolConnection, PoolOptions};
 use sqlx::{
-    AssertSqlSafe, Column as _, Database, Either, Encode, Executor, IntoArguments, Pool, Row as _,
-    Type,
+    AssertSqlSafe, Column as _, Connection as _, Database, Either, Encode, Executor, IntoArguments,
+    Pool, Row as _, Type,
 };
 
 pub use dump::DumpRepository;
@@ -225,14 +225,57 @@ impl RepositoryFactory {
 ///
 /// We keep exactly one connection per tab. This way session state
 /// (transactions, `SET`, temp tables) stays the same between queries.
+///
+/// Reads do not ping the connection first. That saves one round trip per query,
+/// which matters on a slow network. When the connection died while idle, one read
+/// fails and the next one opens a new connection. Writes ping first (see `live`),
+/// so a write never fails only because of an idle dead connection.
 // ponytail: one connection per tab, so a slow query blocks that tab. Add a second
 // connection for browsing if that hurts.
 fn pool_options<DB: Database>() -> PoolOptions<DB> {
     PoolOptions::new()
         .max_connections(1)
+        .test_before_acquire(false)
         .idle_timeout(None)
         .max_lifetime(None)
         .acquire_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
+}
+
+/// Takes the one connection of the pool for a write, and checks it first.
+///
+/// When the ping fails, the dead connection is let go and the pool opens a new one.
+/// The pool has only one connection, so the first one is gone before we ask again.
+async fn live<DB: Database>(pool: &Pool<DB>) -> AppResult<PoolConnection<DB>> {
+    let mut connection = pool.acquire().await?;
+    if connection.ping().await.is_ok() {
+        return Ok(connection);
+    }
+    // `detach` frees the place in the pool at once. `close_on_drop` would keep it
+    // while it tries to close the dead connection, and the next acquire would wait.
+    drop(connection.detach());
+    Ok(pool.acquire().await?)
+}
+
+/// Runs one statement with bound values on a checked connection.
+/// See `Repository::execute`.
+async fn execute<DB>(
+    pool: &Pool<DB>,
+    sql: &str,
+    params: Vec<Option<String>>,
+    affected: fn(&DB::QueryResult) -> u64,
+) -> AppResult<u64>
+where
+    DB: Database,
+    for<'conn> &'conn mut DB::Connection: Executor<'conn, Database = DB>,
+    DB::Arguments: IntoArguments<DB>,
+    for<'args> Option<String>: Encode<'args, DB> + Type<DB>,
+{
+    let mut connection = live(pool).await?;
+    let mut query = sqlx::query(AssertSqlSafe(sql.to_owned()));
+    for param in params {
+        query = query.bind(param);
+    }
+    Ok(affected(&query.execute(&mut *connection).await?))
 }
 
 /// Runs the statements in one transaction on the one connection of the pool.
@@ -251,7 +294,8 @@ where
     DB::Arguments: IntoArguments<DB>,
     for<'args> Option<String>: Encode<'args, DB> + Type<DB>,
 {
-    let mut transaction = pool.begin().await?;
+    let mut connection = live(pool).await?;
+    let mut transaction = connection.begin().await?;
     let mut counts = Vec::with_capacity(statements.len());
     for statement in statements {
         let mut query = sqlx::query(AssertSqlSafe(statement.sql));
@@ -283,7 +327,8 @@ where
     DB: Database,
     for<'conn> &'conn mut DB::Connection: Executor<'conn, Database = DB>,
 {
-    let mut transaction = pool.begin().await?;
+    let mut connection = live(pool).await?;
+    let mut transaction = connection.begin().await?;
     for statement in statements {
         let run = sqlx::raw_sql(AssertSqlSafe(statement.sql))
             .execute(&mut *transaction)

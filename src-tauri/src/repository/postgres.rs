@@ -5,8 +5,9 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgQueryResult, PgRow};
 use sqlx::{AssertSqlSafe, Postgres, Row as _};
 
 use super::{
-    Repository, Statement, cell, collect, default_sql, double_quote, execute_all, first_column,
-    kind, literal, password_safe, pool_options, relations, run_script, single, standard_columns,
+    Repository, Statement, cell, collect, default_sql, double_quote, execute, execute_all,
+    first_column, kind, literal, password_safe, pool_options, relations, run_script, single,
+    standard_columns,
 };
 use crate::constants::POSTGRES_ROLE_NAME_MAX;
 use crate::error::{AppError, AppResult};
@@ -265,11 +266,7 @@ impl Repository for PostgresRepository {
     }
 
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64> {
-        let mut query = sqlx::query(AssertSqlSafe(sql.to_owned()));
-        for param in params {
-            query = query.bind(param);
-        }
-        Ok(query.execute(&self.pool).await?.rows_affected())
+        execute(&self.pool, sql, params, PgQueryResult::rows_affected).await
     }
 
     async fn execute_all(&self, statements: Vec<Statement>) -> AppResult<Vec<u64>> {

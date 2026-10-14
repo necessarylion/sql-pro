@@ -46,6 +46,7 @@ impl SshTunnel {
             // A new host is trusted on first use. A host whose key changed is refused.
             .args(["-o", "StrictHostKeyChecking=accept-new"])
             .args(["-o", "ServerAliveInterval=30"])
+            .args(["-o", "Compression=yes"])
             .args(["-o", "ConnectTimeout=10"])
             .args(["-o", "LogLevel=ERROR"]);
         if !ssh.user.is_empty() {

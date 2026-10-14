@@ -154,7 +154,10 @@ impl ConnectionService {
     }
 
     /// Loads one page of a table, with its columns and the total row count.
-    // ponytail: COUNT(*) on every page load. It is slow on very large tables;
+    ///
+    /// When the request brings a known total (the user only moves to another page),
+    /// the count is skipped and that total comes back as it is.
+    // ponytail: COUNT(*) on every other load. It is slow on very large tables;
     // use the engine's row estimate when that hurts.
     pub async fn browse(&self, id: &str, request: &BrowseRequest) -> AppResult<TablePage> {
         let repository = self.repository(id)?;
@@ -186,19 +189,27 @@ impl ConnectionService {
         let offset = request.offset;
         let rows_sql =
             format!("SELECT * FROM {table}{condition}{ordering} LIMIT {limit} OFFSET {offset}");
-        let count_sql = format!("SELECT COUNT(*) FROM {table}{condition}");
+        if let Some(total) = request.total {
+            let rows = repository
+                .query(&rows_sql)
+                .await?
+                .pop()
+                .unwrap_or_default()
+                .rows;
+            return Ok(TablePage {
+                columns,
+                rows,
+                total,
+            });
+        }
 
-        let rows = repository
-            .query(&rows_sql)
-            .await?
-            .pop()
-            .unwrap_or_default()
-            .rows;
-        let count = repository
-            .query(&count_sql)
-            .await?
-            .pop()
-            .unwrap_or_default();
+        // Rows and count go in one round trip. Every statement gives its own result
+        // set, also a SELECT with no rows, so the count is always the last set.
+        // The newline ends a `--` comment the user may have typed in the filter.
+        let sql = format!("{rows_sql}\n; SELECT COUNT(*) FROM {table}{condition}");
+        let mut sets = repository.query(&sql).await?;
+        let count = sets.pop().unwrap_or_default();
+        let rows = sets.into_iter().next().unwrap_or_default().rows;
         let total = match count.rows.first().and_then(|row| row.first()) {
             Some(Some(text)) => text.parse().unwrap_or(0),
             _ => 0,

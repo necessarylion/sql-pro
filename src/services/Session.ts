@@ -319,8 +319,12 @@ export class Session {
     }
   }
 
-  /** Does not ask about unsaved changes. Callers from outside use `reload`. */
-  private async loadPage(): Promise<void> {
+  /**
+   * Does not ask about unsaved changes. Callers from outside use `reload`.
+   * `total` is the known row count. Pass it only for a page turn: then the backend
+   * skips the count. Every other load counts again, so the total stays fresh.
+   */
+  private async loadPage(total?: number): Promise<void> {
     const table = this.table
     if (!table) {
       return
@@ -333,6 +337,7 @@ export class Session {
       descending: this.descending,
       limit: PAGE_SIZE,
       offset: this.offset,
+      total,
     })
     // The user may have picked another table while this one was loading.
     if (this.table === table) {
@@ -413,7 +418,7 @@ export class Session {
       return
     }
     this.offset = next
-    await this.loadPage()
+    await this.loadPage(this.page.total)
   }
 
   /**
