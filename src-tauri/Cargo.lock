@@ -3907,7 +3907,7 @@ dependencies = [
 
 [[package]]
 name = "sql-pro"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "futures-util",
