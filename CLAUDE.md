@@ -48,7 +48,8 @@ After changing a capability in `src-tauri/capabilities/default.json` or the icon
 Layers: `commands.rs` → `service.rs` (`ConnectionService`) → `repository/` → `model.rs`.
 Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which reaches the frontend as a plain string.
 
-- **No ORM.** All SQL is written by hand with sqlx 0.8.
+- **No ORM.** All SQL is written by hand with sqlx 0.9. sqlx only takes dynamic SQL inside
+  `AssertSqlSafe`.
 - **`Repository` trait** (`repository/mod.rs`) has one implementation per database (`mysql.rs`, `postgres.rs`,
   `sqlite.rs`). Shared SQL building lives in `service.rs`; the trait only holds what differs per database
   (quoting, placeholders, catalog queries, `ALTER` syntax).
@@ -108,8 +109,9 @@ Tests are in `tests/` (bun test) and cover the service classes with fakes. There
 ## Code rules
 
 - Frontend: no arrow functions (ESLint enforces it) and avoid callbacks; use classes and methods.
-- Rust: edition 2024, `rust-version = "1.85"`. Because of that Cargo picks older Tauri crates, so the npm
-  packages are pinned to match (`@tauri-apps/api` `~2.11`, `@tauri-apps/plugin-dialog` `~2.7`). Keep them in step.
+- Rust: edition 2024, `rust-version = "1.99"`. The npm Tauri packages must have the same minor version as the
+  crates in `Cargo.lock`: `@tauri-apps/api` and `@tauri-apps/cli` `~2.12` (crate `tauri`),
+  `@tauri-apps/plugin-dialog` `~2.8` (crate `tauri-plugin-dialog`). When you update one side, update the other.
 - Passwords never appear on a command line, in logs or in error text.
 - Write comments, UI text, commit messages and docs in plain, simple English with short sentences.
 - New UI must work in dark and light theme and stay compact.

@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
+  DownloadIcon,
   LockIcon,
   MinusIcon,
   PlusIcon,
@@ -12,9 +13,10 @@ import {
 import { PAGE_SIZE } from '../constants'
 import { SHORTCUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
-import type { GridColumn, TablePage } from '../types'
+import type { GridColumn, Row, TablePage } from '../types'
 import BottomBar from './BottomBar.vue'
 import DataGrid from './DataGrid.vue'
+import ExportRowsMenu from './ExportRowsMenu.vue'
 import FilterBar from './FilterBar.vue'
 
 // The parent shows this view only when `session.page` is set.
@@ -22,12 +24,16 @@ const props = defineProps<{ session: Session }>()
 const shortcuts = injectRequired(SHORTCUTS)
 
 const selected = ref<number[]>([])
+// Where the export menu is open. null = closed.
+const menu = ref<{ x: number; y: number } | null>(null)
 
 const gridColumns = computed(toGridColumns)
 const rangeText = computed(describeRange)
 const pageText = computed(describePage)
 const keyColumns = computed(primaryKeyNames)
 const restores = computed(selectionRestores)
+const exportColumns = computed(columnNames)
+const exportRows = computed(rowsToExport)
 
 // Row numbers mean other rows after a reload. Drop the selection.
 watch(sessionPage, clearSelection)
@@ -46,6 +52,30 @@ function toGridColumns(): GridColumn[] {
     columns.push({ name: column.name, type: column.dataType, nullable: column.nullable })
   }
   return columns
+}
+
+function columnNames(): string[] {
+  const names: string[] = []
+  for (const column of props.session.page?.columns ?? []) {
+    names.push(column.name)
+  }
+  return names
+}
+
+/**
+ * The selected rows, or all loaded rows when none is selected. These are the stored
+ * values, without unsaved edits. Draft new rows are skipped: they are not saved yet.
+ */
+function rowsToExport(): Row[] {
+  return props.session.pickRows(props.session.page?.rows ?? [], selected.value)
+}
+
+function openMenu(event: MouseEvent): void {
+  menu.value = { x: event.clientX, y: event.clientY }
+}
+
+function closeMenu(): void {
+  menu.value = null
 }
 
 function describeRange(): string {
@@ -114,6 +144,17 @@ function deleteSelected(): void {
     :key-columns="keyColumns"
     @sort="session.run(session.sort($event))"
     @edit="edit"
+    @menu="openMenu"
+  />
+  <ExportRowsMenu
+    v-if="menu"
+    :session="session"
+    :x="menu.x"
+    :y="menu.y"
+    :columns="exportColumns"
+    :rows="exportRows"
+    :table="session.table"
+    @close="closeMenu"
   />
 
   <BottomBar :session="session">
@@ -135,6 +176,14 @@ function deleteSelected(): void {
       @click="session.run(session.reload())"
     >
       <RefreshCwIcon :size="13" />
+    </button>
+    <button
+      class="icon"
+      :title="selected.length > 0 ? 'Export selected rows' : 'Export loaded rows'"
+      :disabled="exportRows.length === 0"
+      @click="openMenu"
+    >
+      <DownloadIcon :size="13" />
     </button>
     <span class="divider" />
     <template v-if="session.pendingCount > 0">

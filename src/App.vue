@@ -24,7 +24,7 @@ function detail(session: Session): string {
 }
 
 /**
- * The one place for the save, refresh and zoom keys. Only the active tab saves or refreshes.
+ * The one place for the save, refresh, export and zoom keys. Only the active tab saves, refreshes or exports.
  * The default is always stopped. It would save or reload the whole page of the app.
  */
 function onKey(event: KeyboardEvent): void {
@@ -51,7 +51,10 @@ function onKey(event: KeyboardEvent): void {
   if (document.activeElement instanceof HTMLTextAreaElement) {
     document.activeElement.blur()
   }
-  if (action === 'refresh') {
+  if (action === 'export') {
+    // The workspace of the tab sees this and opens the export dialog.
+    session.exportAsked += 1
+  } else if (action === 'refresh') {
     session.run(session.refresh())
   } else if (session.view === 'content') {
     session.run(session.saveChanges())

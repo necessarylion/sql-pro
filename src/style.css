@@ -25,6 +25,7 @@
   --success-text: #86e3a6;
   --warn: #f2b45c;
   --stmt-highlight: #1e2a45;
+  --picked: #2c3d63;
   --syntax-type: #4fd1c5;
   --on-accent: #ffffff;
   --mysql: #b95c00;
@@ -100,6 +101,7 @@
   --success-text: #14663a;
   --warn: #a75a00;
   --stmt-highlight: #eef4ff;
+  --picked: #d6e3fd;
   --syntax-type: #0f766e;
   --folder-grey: #8c8d93;
   --folder-red: #c8261b;

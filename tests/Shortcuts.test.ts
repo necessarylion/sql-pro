@@ -27,3 +27,19 @@ test('Windows and Linux use Ctrl and ignore the other modifiers', function () {
     expect(shortcuts.hasModifier({ metaKey: false, ctrlKey: true })).toBe(true)
   }
 })
+
+test('Shift with the main modifier gives the export action', function () {
+  const mac = new Shortcuts('MacIntel')
+  // With Shift held, the key is upper case.
+  expect(mac.action({ ...NONE, key: 'E', metaKey: true, shiftKey: true })).toBe('export')
+  expect(mac.action({ ...NONE, key: 'e', metaKey: true })).toBeNull()
+  expect(mac.action({ ...NONE, key: 'S', metaKey: true, shiftKey: true })).toBeNull()
+  expect(mac.hint('E', true)).toBe('⇧⌘E')
+
+  const windows = new Shortcuts('Win32')
+  expect(windows.action({ ...NONE, key: 'E', ctrlKey: true, shiftKey: true })).toBe('export')
+  expect(
+    windows.action({ ...NONE, key: 'E', ctrlKey: true, shiftKey: true, altKey: true }),
+  ).toBeNull()
+  expect(windows.hint('E', true)).toBe('Ctrl+Shift+E')
+})

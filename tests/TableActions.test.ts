@@ -195,3 +195,33 @@ test('truncating the open table reloads its first page', async function () {
   await session.truncateTable(ORDERS)
   expect(api.requests.length).toBe(2)
 })
+
+test('dropping many tables asks once, reloads the list once and says how many', async function () {
+  const { api, session, prompt } = await openUsers()
+  addUnsavedRow(session)
+  prompt.answer = true
+  await session.dropTables([ORDERS, { ...USERS }])
+  expect(prompt.questions.length).toBe(1)
+  expect(api.tables).toEqual([])
+  expect(session.tables).toEqual([])
+  expect(session.table).toBeNull()
+  expect(session.status).toBe('2 tables dropped')
+})
+
+test('dropping many tables stops at the first error and still reloads the list', async function () {
+  const { api, session } = await openUsers()
+  const missing: TableRef = { schema: null, name: 'missing', kind: 'table' }
+  const view: TableRef = { schema: null, name: 'recent', kind: 'view' }
+  expect(await session.run(session.dropTables([ORDERS, missing, view]))).toBe(false)
+  expect(session.error).toBe('Could not drop "missing" (1 of 3 done): Unknown table')
+  expect(api.tables).toEqual([USERS])
+  expect(session.tables).toEqual([USERS])
+})
+
+test('truncating many tables reloads the open table once', async function () {
+  const { api, session } = await openUsers()
+  await session.truncateTables([ORDERS, { ...USERS }])
+  expect(api.truncated).toEqual(['orders', 'users'])
+  expect(api.requests.length).toBe(2)
+  expect(session.status).toBe('2 tables truncated')
+})

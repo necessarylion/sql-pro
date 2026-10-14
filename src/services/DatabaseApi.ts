@@ -1,15 +1,20 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
   BrowseRequest,
+  ColumnInfo,
   ColumnSpec,
   ConnectionConfig,
+  CsvImport,
+  CsvPreview,
   DbUser,
   Diagram,
+  ExportRequest,
   NewColumn,
   GrantableAccess,
   NewUser,
   ResultSet,
   RowUpdate,
+  RowsExport,
   SaveResult,
   TablePage,
   TableRef,
@@ -104,6 +109,35 @@ export class DatabaseApi {
   /** Writes a SQL dump of the current database to the file at `path`. */
   dumpDatabase(id: string, path: string): Promise<void> {
     return invoke('dump_database', { id, path })
+  }
+
+  /** Writes tables to a SQL or CSV file. It only reads from the database. */
+  exportTables(id: string, request: ExportRequest): Promise<void> {
+    return invoke('export_tables', { id, request })
+  }
+
+  /** Writes rows the app already has to a SQL or CSV file. It does not touch the database. */
+  exportRows(id: string, request: RowsExport): Promise<void> {
+    return invoke('export_rows', { id, request })
+  }
+
+  listColumns(id: string, table: TableRef): Promise<ColumnInfo[]> {
+    return invoke('list_columns', { id, table })
+  }
+
+  /** The first rows of a CSV file and how many rows it has. */
+  previewCsv(path: string): Promise<CsvPreview> {
+    return invoke('preview_csv', { path })
+  }
+
+  /** Inserts the rows of a CSV file into a table, in one transaction. Gives the row count. */
+  importCsv(id: string, request: CsvImport): Promise<number> {
+    return invoke('import_csv', { id, request })
+  }
+
+  /** Runs all statements of a SQL file, in one transaction. Gives the statement count. */
+  importSql(id: string, path: string): Promise<number> {
+    return invoke('import_sql', { id, path })
   }
 
   /** The tables of the current database with their columns and foreign keys. */

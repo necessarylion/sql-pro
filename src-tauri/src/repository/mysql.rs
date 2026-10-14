@@ -2,13 +2,13 @@
 
 use async_trait::async_trait;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlQueryResult, MySqlRow};
-use sqlx::{MySql, Row as _};
+use sqlx::{AssertSqlSafe, MySql, Row as _};
 
 use std::collections::{BTreeSet, HashMap};
 
 use super::{
     Repository, Statement, bytes_to_text, cell, collect, default_sql, execute_all, first_column,
-    kind, password_safe, pool_options, relations, single,
+    kind, password_safe, pool_options, relations, run_script, single,
 };
 use crate::constants::{
     ANY_HOST, MYSQL_DATABASE_PRIVILEGES, MYSQL_HOST_MAX, MYSQL_SYSTEM_USERS, MYSQL_USER_NAME_MAX,
@@ -77,9 +77,7 @@ impl MysqlRepository {
     /// The definition of a column as `SHOW CREATE TABLE` prints it, without the name.
     /// Example: ``varchar(20) NOT NULL DEFAULT 'x' COMMENT 'note'``.
     async fn column_definition(&self, table: &TableRef, column: &str) -> AppResult<String> {
-        let sql = format!("SHOW CREATE TABLE {}", self.table_name(table));
-        let set = single(self.query(&sql).await?);
-        let create = set.rows.first().map(|row| cell(row, 1)).unwrap_or_default();
+        let create = self.create_sql(table).await?.unwrap_or_default();
         let prefix = format!("{} ", self.quote(column));
         for line in create.lines() {
             if let Some(definition) = line.trim().strip_prefix(&prefix) {
@@ -384,12 +382,12 @@ impl Repository for MysqlRepository {
     }
 
     async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>> {
-        let stream = sqlx::raw_sql(sql).fetch_many(&self.pool);
+        let stream = sqlx::raw_sql(AssertSqlSafe(sql.to_owned())).fetch_many(&self.pool);
         collect::<MySql>(stream, Self::read, MySqlQueryResult::rows_affected).await
     }
 
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64> {
-        let mut query = sqlx::query(sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql.to_owned()));
         for param in params {
             query = query.bind(param);
         }
@@ -400,6 +398,10 @@ impl Repository for MysqlRepository {
     // Changes made before the failed one stay there. Only InnoDB is all or nothing.
     async fn execute_all(&self, statements: Vec<Statement>) -> AppResult<Vec<u64>> {
         execute_all(&self.pool, statements, MySqlQueryResult::rows_affected).await
+    }
+
+    async fn run_script(&self, statements: Vec<Statement>) -> AppResult<()> {
+        run_script(&self.pool, statements).await
     }
 
     async fn databases(&self) -> AppResult<Vec<String>> {
@@ -444,6 +446,13 @@ impl Repository for MysqlRepository {
         let keys = single(self.query(FOREIGN_KEYS_SQL).await?);
         let unique = single(self.query(UNIQUE_SQL).await?);
         Ok(relations(&keys, &unique))
+    }
+
+    /// Also works for a view. Then it gives the `CREATE VIEW` statement.
+    async fn create_sql(&self, table: &TableRef) -> AppResult<Option<String>> {
+        let sql = format!("SHOW CREATE TABLE {}", self.table_name(table));
+        let set = single(self.query(&sql).await?);
+        Ok(set.rows.first().map(|row| cell(row, 1)))
     }
 
     async fn modify_column_sql(

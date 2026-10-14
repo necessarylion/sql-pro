@@ -2,11 +2,11 @@
 
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRow};
-use sqlx::{Row as _, Sqlite, TypeInfo as _, ValueRef as _};
+use sqlx::{AssertSqlSafe, Row as _, Sqlite, TypeInfo as _, ValueRef as _};
 
 use super::{
     Repository, Statement, bytes_to_text, cell, collect, double_quote, execute_all, kind, literal,
-    pool_options, relations, single, standard_columns,
+    pool_options, relations, run_script, single, standard_columns,
 };
 use crate::error::AppResult;
 use crate::model::{ColumnInfo, ColumnSpec, ConnectionConfig, Relation, ResultSet, TableRef};
@@ -100,12 +100,12 @@ impl Repository for SqliteRepository {
     }
 
     async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>> {
-        let stream = sqlx::raw_sql(sql).fetch_many(&self.pool);
+        let stream = sqlx::raw_sql(AssertSqlSafe(sql.to_owned())).fetch_many(&self.pool);
         collect::<Sqlite>(stream, Self::read, SqliteQueryResult::rows_affected).await
     }
 
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64> {
-        let mut query = sqlx::query(sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql.to_owned()));
         for param in params {
             query = query.bind(param);
         }
@@ -114,6 +114,10 @@ impl Repository for SqliteRepository {
 
     async fn execute_all(&self, statements: Vec<Statement>) -> AppResult<Vec<u64>> {
         execute_all(&self.pool, statements, SqliteQueryResult::rows_affected).await
+    }
+
+    async fn run_script(&self, statements: Vec<Statement>) -> AppResult<()> {
+        run_script(&self.pool, statements).await
     }
 
     /// A `SQLite` file is one database.
@@ -148,6 +152,19 @@ impl Repository for SqliteRepository {
         let keys = single(self.query(FOREIGN_KEYS_SQL).await?);
         let unique = single(self.query(UNIQUE_SQL).await?);
         Ok(relations(&keys, &unique))
+    }
+
+    /// `SQLite` keeps the `CREATE` statement of every table and view as it was typed.
+    async fn create_sql(&self, table: &TableRef) -> AppResult<Option<String>> {
+        let sql = format!(
+            "SELECT sql FROM sqlite_master WHERE name = {}",
+            literal(&table.name)
+        );
+        let set = single(self.query(&sql).await?);
+        Ok(set
+            .rows
+            .first()
+            .and_then(|row| row.first().cloned().flatten()))
     }
 
     /// `SQLite` can only rename, add and drop columns. Other changes need a table rebuild.

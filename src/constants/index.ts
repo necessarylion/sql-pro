@@ -3,6 +3,9 @@ import type { ConnectionConfig, Driver, SessionView, SshConfig } from '../types'
 /** Rows loaded per page in the content view. */
 export const PAGE_SIZE = 500
 
+/** The table and file name for exported query result rows, which have no table. */
+export const QUERY_RESULT_NAME = 'query_result'
+
 /** Longer cell text is cut in the grid. The full value is still used for editing. */
 export const CELL_PREVIEW_LENGTH = 200
 

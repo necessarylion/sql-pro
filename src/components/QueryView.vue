@@ -1,13 +1,20 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { CircleAlertIcon, CircleCheckIcon, HistoryIcon, PlayIcon } from 'lucide-vue-next'
+import {
+  CircleAlertIcon,
+  CircleCheckIcon,
+  DownloadIcon,
+  HistoryIcon,
+  PlayIcon,
+} from 'lucide-vue-next'
 import { QUERY_HISTORY, SHORTCUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
 import { SqlEditor } from '../services/SqlEditor'
 import { SqlRisk } from '../services/SqlRisk'
-import type { GridColumn } from '../types'
+import type { GridColumn, ResultSet, Row } from '../types'
 import DataGrid from './DataGrid.vue'
+import ExportRowsMenu from './ExportRowsMenu.vue'
 import PaneResizer from './PaneResizer.vue'
 import QueryHistoryList from './QueryHistoryList.vue'
 
@@ -17,6 +24,10 @@ const history = injectRequired(QUERY_HISTORY)
 
 const host = useTemplateRef<HTMLDivElement>('host')
 const columns = computed(resultColumns)
+const selected = ref<number[]>([])
+// Where the export menu is open. null = closed.
+const menu = ref<{ x: number; y: number } | null>(null)
+const exportRows = computed(rowsToExport)
 // True when the history list is shown in the place of the result.
 const showHistory = ref(false)
 // Not a ref: Vue must not wrap the CodeMirror objects.
@@ -28,6 +39,27 @@ function resultColumns(): GridColumn[] {
     columns.push({ name })
   }
   return columns
+}
+
+function sessionResult(): ResultSet | null {
+  return props.session.result
+}
+
+function clearSelection(): void {
+  selected.value = []
+}
+
+/** The selected result rows, or all of them when none is selected. */
+function rowsToExport(): Row[] {
+  return props.session.pickRows(props.session.result?.rows ?? [], selected.value)
+}
+
+function openMenu(event: MouseEvent): void {
+  menu.value = { x: event.clientX, y: event.clientY }
+}
+
+function closeMenu(): void {
+  menu.value = null
 }
 
 /** Runs the selected text. Runs everything when nothing is selected. */
@@ -102,6 +134,8 @@ onMounted(createEditor)
 onBeforeUnmount(destroyEditor)
 watch(currentSql, showSql)
 watch(schemaSource, updateSchema)
+// Row numbers mean other rows in a new result. Drop the selection.
+watch(sessionResult, clearSelection)
 </script>
 
 <template>
@@ -134,8 +168,24 @@ watch(schemaSource, updateSchema)
       </button>
     </div>
     <QueryHistoryList v-if="showHistory" @pick="useHistory" />
-    <DataGrid v-else-if="session.result" :columns="columns" :rows="session.result.rows" />
+    <DataGrid
+      v-else-if="session.result"
+      v-model:selected="selected"
+      :columns="columns"
+      :rows="session.result.rows"
+      @menu="openMenu"
+    />
     <div v-else class="empty">No result</div>
+    <ExportRowsMenu
+      v-if="menu && session.result"
+      :session="session"
+      :x="menu.x"
+      :y="menu.y"
+      :columns="session.result.columns"
+      :rows="exportRows"
+      :table="null"
+      @close="closeMenu"
+    />
     <div class="bar bottom result">
       <template v-if="session.error">
         <CircleAlertIcon class="error" :size="13" />
@@ -146,6 +196,15 @@ watch(schemaSource, updateSchema)
         <CircleCheckIcon class="ok" :size="13" />
         <span class="message">{{ session.status }}</span>
       </template>
+      <button
+        v-if="session.result && !showHistory"
+        class="icon export"
+        :title="selected.length > 0 ? 'Export selected rows' : 'Export all result rows'"
+        :disabled="exportRows.length === 0"
+        @click="openMenu"
+      >
+        <DownloadIcon :size="13" />
+      </button>
     </div>
   </div>
 </template>
@@ -186,6 +245,11 @@ watch(schemaSource, updateSchema)
 
 .ok {
   color: var(--success);
+}
+
+/* Stays on the right edge, also when there is no status text. */
+.export {
+  margin-left: auto;
 }
 
 /* The History button while the list is open. */

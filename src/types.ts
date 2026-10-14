@@ -194,3 +194,55 @@ export interface Diagram {
   tables: DiagramTable[]
   relations: Relation[]
 }
+
+export type ExportFormat = 'sql' | 'csv'
+
+/** What to export, and where to write it. */
+export interface ExportRequest {
+  tables: TableRef[]
+  format: ExportFormat
+  /** SQL only: write the CREATE statement of each table. */
+  structure: boolean
+  /** SQL only: write the rows as INSERT statements. A CSV file always has the rows. */
+  data: boolean
+  /** The columns to export, in this order. Empty means all. Only for one table. */
+  columns: string[]
+  /** The file to write. For CSV it may be a folder: then each table goes to `<table>.csv`. */
+  path: string
+}
+
+/** Rows the app already shows, to write to a SQL or CSV file. */
+export interface RowsExport {
+  format: ExportFormat
+  /** SQL only: the table that the INSERT statements name. */
+  table: TableRef
+  columns: string[]
+  rows: Row[]
+  path: string
+}
+
+/** The start of a CSV file, for the import dialog. */
+export interface CsvPreview {
+  /** The first rows, as they are in the file. The header row is one of them. */
+  rows: string[][]
+  /** All rows of the file, the header row too. */
+  count: number
+}
+
+/** One table column that gets its value from CSV field number `field` (from 0). */
+export interface CsvColumn {
+  name: string
+  field: number
+}
+
+/** What to import from a CSV file, and into which table. */
+export interface CsvImport {
+  table: TableRef
+  path: string
+  /** The first row holds the column names. It is not imported. */
+  header: boolean
+  /** An empty field becomes NULL. Else it becomes an empty text. */
+  emptyIsNull: boolean
+  /** The columns to fill. The others get their default. */
+  columns: CsvColumn[]
+}

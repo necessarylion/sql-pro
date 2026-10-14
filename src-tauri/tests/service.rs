@@ -6,9 +6,9 @@
 //! Add `SQLPRO_TEST_SSH=host:port:user:password` to run both through an SSH tunnel.
 
 use sql_pro_lib::model::{
-    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, DbUser, Diagram, Driver,
-    FilterOperator, FilterRule, NewColumn, NewUser, Relation, RowUpdate, SaveResult, SshConfig,
-    TableRef, Values,
+    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, CsvColumn, CsvImport, DbUser,
+    Diagram, Driver, ExportFormat, ExportRequest, FilterOperator, FilterRule, NewColumn, NewUser,
+    Relation, RowUpdate, RowsExport, SaveResult, SshConfig, TableRef, Values,
 };
 use sql_pro_lib::repository::RepositoryFactory;
 use sql_pro_lib::service::ConnectionService;
@@ -18,6 +18,8 @@ const TABLE: &str = "sqlpro_check";
 const EXTRA: &str = "sqlpro_extra";
 const EXTRA_VIEW: &str = "sqlpro_extra_view";
 const MADE: &str = "sqlpro_made";
+/// The copy of the test table that the import makes.
+const IMPORTED: &str = "sqlpro_imported";
 /// A name that must be quoted to work.
 const RENAMED: &str = "sqlpro renamed \"x\"";
 
@@ -423,6 +425,199 @@ async fn dump(service: &ConnectionService, driver: Driver) {
     assert!(service.dump_database(ID, &missing).await.is_err());
     assert!(!missing.exists());
     assert!(!folder.join("sqlpro-no-such-folder").exists());
+}
+
+/// Exports the test table as SQL and as CSV. Expects the two rows that `exercise` inserts.
+async fn export(service: &ConnectionService, table: &TableRef, driver: Driver) {
+    let folder = std::env::temp_dir();
+    let path = folder.join(format!(
+        "sqlpro-export-{}-{driver:?}.sql",
+        std::process::id()
+    ));
+    let mut request = ExportRequest {
+        tables: vec![table.clone()],
+        format: ExportFormat::Sql,
+        structure: true,
+        data: true,
+        columns: Vec::new(),
+        path: path.clone(),
+    };
+    service
+        .export_tables(ID, &request)
+        .await
+        .expect("export sql");
+    let sql = std::fs::read_to_string(&path).expect("sql file");
+    assert!(sql.contains("CREATE TABLE"), "no CREATE TABLE in {sql}");
+    assert!(
+        sql.contains("'O''Brien'"),
+        "the quote is not escaped in {sql}"
+    );
+    assert!(sql.contains("'line 1\nline 2'"));
+    assert_eq!(sql.matches("INSERT INTO").count(), 2);
+    // NULL stays NULL, it does not become a text.
+    assert!(sql.contains(", NULL)"));
+
+    // Only the chosen columns, as CSV with a header row.
+    request.format = ExportFormat::Csv;
+    request.columns = vec!["note".to_owned(), "id".to_owned()];
+    service
+        .export_tables(ID, &request)
+        .await
+        .expect("export csv");
+    let csv = std::fs::read_to_string(&path).expect("csv file");
+    assert_eq!(csv, "note,id\r\n,1\r\n\"line 1\nline 2\",2\r\n");
+
+    // CSV into a folder: one file per table.
+    let out = folder.join(format!("sqlpro-export-{}-{driver:?}", std::process::id()));
+    std::fs::create_dir_all(&out).expect("folder");
+    request.columns = Vec::new();
+    request.path = out.clone();
+    service
+        .export_tables(ID, &request)
+        .await
+        .expect("export folder");
+    let csv = std::fs::read_to_string(out.join(format!("{TABLE}.csv"))).expect("table csv");
+    assert!(csv.starts_with("id,name,born,note\r\n1,O'Brien,2020-01-31,\r\n"));
+
+    // An unknown column fails and leaves no file behind.
+    std::fs::remove_file(&path).expect("remove export");
+    request.path = path.clone();
+    request.columns = vec!["nope".to_owned()];
+    assert!(service.export_tables(ID, &request).await.is_err());
+    assert!(!path.exists());
+    std::fs::remove_dir_all(&out).expect("remove export folder");
+
+    // Rows the app already has: written as they are, without reading the table.
+    let mut rows = RowsExport {
+        format: ExportFormat::Sql,
+        table: TableRef {
+            schema: None,
+            name: "picked".to_owned(),
+            kind: String::new(),
+        },
+        columns: vec!["id".to_owned(), "name".to_owned()],
+        rows: vec![
+            vec![Some("1".to_owned()), Some("O'Brien".to_owned())],
+            vec![Some("2".to_owned()), None],
+        ],
+        path: path.clone(),
+    };
+    service.export_rows(ID, &rows).expect("export rows sql");
+    let sql = std::fs::read_to_string(&path).expect("rows sql");
+    assert_eq!(sql.matches("INSERT INTO").count(), 2);
+    assert!(
+        sql.contains("'O''Brien'"),
+        "the quote is not escaped in {sql}"
+    );
+    assert!(sql.contains("NULL);"));
+    rows.format = ExportFormat::Csv;
+    service.export_rows(ID, &rows).expect("export rows csv");
+    let csv = std::fs::read_to_string(&path).expect("rows csv");
+    assert_eq!(csv, "id,name\r\n1,O'Brien\r\n2,\r\n");
+    std::fs::remove_file(&path).expect("remove rows export");
+}
+
+fn csv_column(name: &str, field: usize) -> CsvColumn {
+    CsvColumn {
+        name: name.to_owned(),
+        field,
+    }
+}
+
+/// Exports the test table as SQL and imports the file back under another name.
+/// Then imports CSV rows into that copy. Leaves the test table as it was.
+async fn import(service: &ConnectionService, table: &TableRef, driver: Driver) {
+    let folder = std::env::temp_dir();
+    let name = format!("sqlpro-import-{}-{driver:?}", std::process::id());
+    let path = folder.join(format!("{name}.sql"));
+    let request = ExportRequest {
+        tables: vec![table.clone()],
+        format: ExportFormat::Sql,
+        structure: true,
+        data: true,
+        columns: Vec::new(),
+        path: path.clone(),
+    };
+    service
+        .export_tables(ID, &request)
+        .await
+        .expect("export for import");
+    let sql = std::fs::read_to_string(&path).expect("sql file");
+    std::fs::write(&path, sql.replace(TABLE, IMPORTED)).expect("write sql");
+    service
+        .run_query(ID, &format!("DROP TABLE IF EXISTS {IMPORTED}"))
+        .await
+        .expect("drop old copy");
+    // One CREATE TABLE and two INSERTs.
+    assert_eq!(service.import_sql(ID, &path).await.expect("import sql"), 3);
+    let copy = listed(service, IMPORTED).await.expect("the copy is listed");
+    assert_eq!(
+        page(service, &copy).await.rows,
+        page(service, table).await.rows
+    );
+
+    // A bad statement rolls back the statements before it, and names its line.
+    let bad = format!("INSERT INTO {IMPORTED} (id) VALUES (9);\nSELEC nonsense;\n");
+    std::fs::write(&path, bad).expect("write bad sql");
+    let error = service.import_sql(ID, &path).await.expect_err("bad sql");
+    assert!(
+        error.to_string().starts_with("Statement at line 2: "),
+        "{error}"
+    );
+    assert_eq!(page(service, &copy).await.total, 2);
+
+    // CSV with a header, fields in another order, quotes and empty fields.
+    let csv = folder.join(format!("{name}.csv"));
+    std::fs::write(&csv, "note,id,name\r\n\"a, \"\"b\"\"\",10,\r\n,11,Zed\r\n").expect("csv");
+    let preview = ConnectionService::preview_csv(&csv).expect("preview");
+    assert_eq!(preview.count, 3);
+    assert_eq!(preview.rows[1], vec!["a, \"b\"", "10", ""]);
+    let mut request = CsvImport {
+        table: copy.clone(),
+        path: csv.clone(),
+        header: true,
+        empty_is_null: true,
+        columns: vec![
+            csv_column("id", 1),
+            csv_column("name", 2),
+            csv_column("note", 0),
+        ],
+    };
+    assert_eq!(service.import_csv(ID, &request).await.expect("csv"), 2);
+    let rows = page(service, &copy).await.rows;
+    assert_eq!(rows[2], vec![text("10"), None, None, text("a, \"b\"")]);
+    assert_eq!(rows[3], vec![text("11"), text("Zed"), None, None]);
+
+    // No header, empty text kept. Line 3 repeats the key of line 1, so nothing is kept.
+    std::fs::write(&csv, "12,\n13,x\n12,y\n").expect("csv");
+    request.header = false;
+    request.empty_is_null = false;
+    request.columns = vec![csv_column("id", 0), csv_column("name", 1)];
+    let error = service
+        .import_csv(ID, &request)
+        .await
+        .expect_err("same key");
+    assert!(
+        error.to_string().starts_with("Line 3 could not be saved"),
+        "{error}"
+    );
+    assert_eq!(page(service, &copy).await.total, 4);
+
+    std::fs::write(&csv, "12,\n").expect("csv");
+    assert_eq!(service.import_csv(ID, &request).await.expect("csv"), 1);
+    assert_eq!(page(service, &copy).await.rows[4][1], text(""));
+
+    // A row with too few fields fails before anything runs.
+    std::fs::write(&csv, "14\n").expect("csv");
+    let error = service
+        .import_csv(ID, &request)
+        .await
+        .expect_err("short row");
+    assert_eq!(error.to_string(), "Line 1 has only 1 fields");
+
+    service.drop_table(ID, &copy).await.expect("drop copy");
+    std::fs::remove_file(&path).expect("remove sql");
+    std::fs::remove_file(&csv).expect("remove csv");
 }
 
 /// The one foreign key that `table` holds.
@@ -1106,6 +1301,8 @@ async fn exercise(config: ConnectionConfig) {
     );
 
     dump(&service, driver).await;
+    export(&service, &table, driver).await;
+    import(&service, &table, driver).await;
     filters(&service, &table).await;
     save_changes(&service, &table).await;
     clone_connection(&service, &config, &table).await;

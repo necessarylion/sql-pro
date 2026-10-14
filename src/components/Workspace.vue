@@ -1,7 +1,18 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useTemplateRef, type Component } from 'vue'
-import { confirm, save } from '@tauri-apps/plugin-dialog'
 import {
+  computed,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  reactive,
+  ref,
+  useTemplateRef,
+  watch,
+  type Component,
+} from 'vue'
+import { confirm, open, save } from '@tauri-apps/plugin-dialog'
+import {
+  ChevronRightIcon,
   ChevronsUpDownIcon,
   DatabaseIcon,
   DownloadIcon,
@@ -13,16 +24,20 @@ import {
   TablePropertiesIcon,
   TerminalIcon,
   UnplugIcon,
+  UploadIcon,
   UsersIcon,
   WorkflowIcon,
 } from 'lucide-vue-next'
 import { VIEW_LABELS } from '../constants'
 import { SESSION_MANAGER, SHORTCUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
+import { TableSelection } from '../services/TableSelection'
 import type { SessionView, TableRef } from '../types'
 import ContentView from './ContentView.vue'
 import DiagramView from './DiagramView.vue'
 import EnvBadge from './EnvBadge.vue'
+import ExportDialog from './ExportDialog.vue'
+import ImportDialog from './ImportDialog.vue'
 import PaneResizer from './PaneResizer.vue'
 import QueryView from './QueryView.vue'
 import StructureView from './StructureView.vue'
@@ -43,18 +58,45 @@ const VIEW_ICONS: Record<SessionView, Component> = {
 
 // The size of the table menu. It keeps the menu inside the window.
 const MENU_WIDTH = 170
-const MENU_HEIGHT = 109
+const MENU_HEIGHT = 165
+// The width of the Export and Import submenus. It opens to the left when there is no room on the right.
+const SUBMENU_WIDTH = 290
+// The most table names a drop or truncate confirm lists. The rest are counted.
+const CONFIRM_NAMES = 10
 
 const search = ref('')
-/** The table menu that is open now, and where it is on screen. No table: the menu of the empty space. */
-const menu = ref<{ table: TableRef | null; x: number; y: number } | null>(null)
+/**
+ * The table menu that is open now, and where it is on screen. No table: the menu of the empty space.
+ * `tables` are the tables it acts on: the selection, or only the clicked table.
+ * `flip` opens the submenus to the left.
+ */
+const menu = ref<{
+  table: TableRef | null
+  tables: TableRef[]
+  x: number
+  y: number
+  flip: boolean
+} | null>(null)
+/** The tables that are selected in the sidebar with Shift-click and Cmd-click (Ctrl on Windows and Linux). */
+const selection = reactive(new TableSelection())
+/** The submenu that is shown now, if any. */
+const submenu = ref<'export' | 'import' | null>(null)
 const tableDialog = useTemplateRef<InstanceType<typeof TableDialog>>('tableDialog')
+const exportDialog = useTemplateRef<InstanceType<typeof ExportDialog>>('exportDialog')
+const importDialog = useTemplateRef<InstanceType<typeof ImportDialog>>('importDialog')
 const menuElement = ref<HTMLElement | null>(null)
 const filteredTables = computed(matchingTables)
 const groups = computed(tableGroups)
 const connection = computed(describeConnection)
 const summary = computed(describeTables)
 const backupBlocked = computed(hasNoDatabase)
+const exportAsked = computed(readExportAsked)
+const database = computed(readDatabase)
+
+watch(exportAsked, exportFromShortcut)
+watch(database, clearSelection)
+onMounted(listenForEscape)
+onUnmounted(stopEscape)
 
 /** Shows the schema only when it is not the default one. */
 function label(table: TableRef): string {
@@ -121,11 +163,19 @@ async function openMenu(event: MouseEvent, table: TableRef | null): Promise<void
   if (!table && backupBlocked.value) {
     return
   }
+  // A table outside the selection: the menu is for that table only.
+  if (table && !selection.has(label(table))) {
+    selection.only(label(table))
+  }
+  const x = Math.min(event.clientX, window.innerWidth - MENU_WIDTH - 4)
   menu.value = {
     table,
-    x: Math.min(event.clientX, window.innerWidth - MENU_WIDTH - 4),
+    tables: table ? selectedTables() : [],
+    x,
     y: Math.min(event.clientY, window.innerHeight - MENU_HEIGHT - 4),
+    flip: x + MENU_WIDTH + SUBMENU_WIDTH > window.innerWidth,
   }
+  submenu.value = null
   await nextTick()
   menuElement.value?.focus()
 }
@@ -134,11 +184,136 @@ function closeMenu(): void {
   menu.value = null
 }
 
-/** A click opens the table here. With Cmd (macOS) or Ctrl held, it opens in a new tab. */
+function showSubmenu(name: 'export' | 'import'): void {
+  submenu.value = name
+}
+
+function hideSubmenu(): void {
+  submenu.value = null
+}
+
+function readExportAsked(): number {
+  return props.session.exportAsked
+}
+
+function readDatabase(): string {
+  return props.session.config?.database ?? ''
+}
+
+/** The shown tables that are selected, in the order of the list. */
+function selectedTables(): TableRef[] {
+  const tables: TableRef[] = []
+  for (const group of groups.value) {
+    for (const table of group.items) {
+      if (selection.has(label(table))) {
+        tables.push(table)
+      }
+    }
+  }
+  return tables
+}
+
+/** The names of the shown tables, in the order of the list. Shift-click selects a range of it. */
+function shownNames(): string[] {
+  const names: string[] = []
+  for (const group of groups.value) {
+    for (const table of group.items) {
+      names.push(label(table))
+    }
+  }
+  return names
+}
+
+function clearSelection(): void {
+  selection.clear()
+}
+
+/** A click on the empty space of the list, not on a table, clears the selection. */
+function clickList(event: MouseEvent): void {
+  if (!(event.target as HTMLElement).closest('li')) {
+    selection.clear()
+  }
+}
+
+// Capture runs before the menu sees the key. So an Escape that closes the menu keeps the selection.
+function listenForEscape(): void {
+  window.addEventListener('keydown', escapeSelection, true)
+}
+
+function stopEscape(): void {
+  window.removeEventListener('keydown', escapeSelection, true)
+}
+
+/** Escape clears the selection, but not while the table menu is open. */
+function escapeSelection(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && !menu.value && !event.defaultPrevented) {
+    selection.clear()
+  }
+}
+
+/** The export shortcut: the selected tables are checked at the start, or else the open table. */
+function exportFromShortcut(): void {
+  const selected = selectedTables()
+  const table = props.session.table
+  exportDialog.value?.openTables(selected.length > 0 ? selected : table ? [table] : [])
+}
+
+/** Opens the export of many tables, with the tables of the menu checked. */
+function exportTables(tables: TableRef[]): void {
+  closeMenu()
+  exportDialog.value?.openTables(tables)
+}
+
+/** Opens the export of one table, where the columns can be chosen. */
+function exportColumns(table: TableRef): void {
+  closeMenu()
+  void exportDialog.value?.openColumns(table)
+}
+
+/** Asks for a CSV file, then opens the import dialog for it. Does nothing on cancel. */
+async function importCsv(table: TableRef): Promise<void> {
+  closeMenu()
+  const path = await open({
+    title: `Import CSV into "${label(table)}"`,
+    filters: [{ name: 'CSV', extensions: ['csv', 'txt'] }],
+  })
+  if (path) {
+    await importDialog.value?.openFile(table, path)
+  }
+}
+
+/** Asks for a SQL file, asks to confirm, then runs all its statements. */
+async function importSql(): Promise<void> {
+  closeMenu()
+  const session = props.session
+  const path = await open({
+    title: 'Import SQL file',
+    filters: [{ name: 'SQL', extensions: ['sql'] }],
+  })
+  if (!path) {
+    return
+  }
+  const sure = await confirm(
+    `Run all statements in ${path} on database "${databaseLabel()}"? This can change or delete data.`,
+    { title: 'Import SQL file', kind: 'warning' },
+  )
+  if (sure) {
+    await session.run(session.importSql(path))
+  }
+}
+
+/**
+ * A click opens the table here and clears the selection.
+ * Shift-click selects a range. Cmd-click (Ctrl on Windows and Linux) adds or removes one table.
+ */
 function pick(table: TableRef, event: MouseEvent): void {
-  if (shortcuts.hasModifier(event)) {
-    openInNewTab(table)
+  const name = label(table)
+  if (event.shiftKey) {
+    selection.range(shownNames(), name)
+  } else if (shortcuts.hasModifier(event)) {
+    selection.toggle(name)
   } else {
+    selection.start(name)
     props.session.run(props.session.selectTable(table))
   }
 }
@@ -155,33 +330,77 @@ function openDialog(table: TableRef | null): void {
   tableDialog.value?.open(table)
 }
 
-/** Asks first. Truncates or drops the table of the menu only on yes. */
+/** The confirm text of a truncate or a drop of one or many tables and views. */
+function confirmText(action: 'Truncate' | 'Drop', tables: TableRef[]): string {
+  const noun = TableSelection.noun(tables)
+  const one = tables.length === 1
+  let effect = one
+    ? `The ${noun} and all its data are deleted.`
+    : 'The tables and all their data are deleted.'
+  if (action === 'Truncate') {
+    effect = one ? 'All rows in it are deleted.' : 'All rows in them are deleted.'
+  } else if (noun === 'view' || noun === 'views') {
+    effect = one
+      ? 'The view is deleted. Its tables keep their data.'
+      : 'The views are deleted. Their tables keep their data.'
+  } else if (noun === 'tables and views') {
+    effect = 'The tables and all their data are deleted. The views are deleted too.'
+  }
+  if (one) {
+    return `${action} ${noun} "${label(tables[0])}"? ${effect} This cannot be undone.`
+  }
+  const names: string[] = []
+  for (const table of tables.slice(0, CONFIRM_NAMES)) {
+    names.push(label(table))
+  }
+  const more = tables.length > CONFIRM_NAMES ? ` and ${tables.length - CONFIRM_NAMES} more` : ''
+  return `${action} ${tables.length} ${noun}: ${names.join(', ')}${more}? ${effect} This cannot be undone.`
+}
+
+/** Asks first. Truncates or drops the tables of the menu only on yes, then clears the selection. */
 async function choose(action: 'Truncate' | 'Drop'): Promise<void> {
-  const table = menu.value?.table
+  const tables = menu.value?.tables ?? []
   closeMenu()
-  if (!table) {
+  if (tables.length === 0) {
     return
   }
   const session = props.session
-  const kind = table.kind
-  let effect = `The ${kind} and all its data are deleted.`
-  if (action === 'Truncate') {
-    effect = 'All rows in it are deleted.'
-  } else if (kind === 'view') {
-    effect = 'The view is deleted. Its tables keep their data.'
-  }
-  const sure = await confirm(
-    `${action} ${kind} "${label(table)}"? ${effect} This cannot be undone.`,
-    { title: `${action} ${kind}`, kind: 'warning' },
-  )
+  const sure = await confirm(confirmText(action, tables), {
+    title: `${action} ${TableSelection.noun(tables)}`,
+    kind: 'warning',
+  })
   if (sure) {
-    await session.run(action === 'Drop' ? session.dropTable(table) : session.truncateTable(table))
+    selection.clear()
+    await session.run(
+      action === 'Drop' ? session.dropTables(tables) : session.truncateTables(tables),
+    )
   }
+}
+
+/** True when the menu acts on only one table, so the actions for one table can be shown. */
+function single(): boolean {
+  return (menu.value?.tables.length ?? 0) <= 1
+}
+
+/** True when the menu acts on at least one view. Views cannot be truncated or get rows. */
+function hasView(): boolean {
+  for (const table of menu.value?.tables ?? []) {
+    if (table.kind === 'view') {
+      return true
+    }
+  }
+  return false
 }
 
 /** MySQL can be connected without a database. Then there is nothing to back up. */
 function hasNoDatabase(): boolean {
   return props.session.config?.driver === 'mysql' && props.session.config.database === ''
+}
+
+/** The database name. SQLite has none, so it is the file name. */
+function databaseLabel(): string {
+  const config = props.session.config
+  return config?.driver === 'sqlite' ? connection.value : (config?.database ?? '')
 }
 
 /** Asks where to save, asks to confirm, then writes the SQL dump. Does nothing on cancel or no. */
@@ -195,11 +414,8 @@ async function backup(): Promise<void> {
   if (!path) {
     return
   }
-  // SQLite has no database name, so show the file name.
-  const config = session.config
-  const name = config?.driver === 'sqlite' ? connection.value : (config?.database ?? '')
   const sure = await confirm(
-    `Back up database "${name}" to ${path}? A large database can take a few minutes.`,
+    `Back up database "${databaseLabel()}" to ${path}? A large database can take a few minutes.`,
     { title: 'Back up database', kind: 'info' },
   )
   if (sure) {
@@ -260,6 +476,14 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
       >
         <DownloadIcon :size="13" />
       </button>
+      <button
+        class="icon"
+        :title="backupBlocked ? 'Choose a database first' : 'Import a SQL file into this database'"
+        :disabled="backupBlocked"
+        @click="importSql"
+      >
+        <UploadIcon :size="13" />
+      </button>
       <button class="icon" title="Disconnect" @click="session.run(session.disconnect())">
         <UnplugIcon :size="13" />
       </button>
@@ -271,7 +495,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
           <SearchIcon :size="11" />
           <input v-model="search" placeholder="Filter tables" spellcheck="false" />
         </div>
-        <div class="tables" @contextmenu.prevent="openMenu($event, null)">
+        <div class="tables" @click="clickList" @contextmenu.prevent="openMenu($event, null)">
           <template v-for="group in groups" :key="group.title">
             <div class="section">
               <span>{{ group.title }}</span>
@@ -290,7 +514,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
               <li
                 v-for="table in group.items"
                 :key="label(table)"
-                :class="{ selected: session.isOpen(table) }"
+                :class="{ selected: session.isOpen(table), picked: selection.has(label(table)) }"
                 :title="label(table)"
                 @click="pick(table, $event)"
                 @click.middle="openInNewTab(table)"
@@ -352,34 +576,110 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
         :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
         @keydown.esc="closeMenu"
       >
-        <button v-if="!menu.table" role="menuitem" @click.stop="openDialog(null)">
-          New table…
-        </button>
+        <template v-if="!menu.table">
+          <button role="menuitem" @click.stop="openDialog(null)">New table…</button>
+          <span class="menu-line" />
+          <div class="has-submenu" @mouseenter="showSubmenu('import')" @mouseleave="hideSubmenu">
+            <button
+              role="menuitem"
+              aria-haspopup="menu"
+              :aria-expanded="submenu === 'import'"
+              :class="{ open: submenu === 'import' }"
+              @click.stop="showSubmenu('import')"
+            >
+              Import
+              <ChevronRightIcon class="arrow" :size="12" />
+            </button>
+            <div
+              v-if="submenu === 'import'"
+              class="menu submenu"
+              :class="{ flip: menu.flip }"
+              role="menu"
+            >
+              <button role="menuitem" @click.stop="importSql">Import SQL File…</button>
+            </div>
+          </div>
+        </template>
         <template v-else>
-          <button role="menuitem" @click.stop="openInNewTab(menu.table)">Open in new tab</button>
+          <button v-if="single()" role="menuitem" @click.stop="openInNewTab(menu.table)">
+            Open in new tab
+          </button>
           <button
-            v-if="menu.table.kind !== 'view'"
+            v-if="single() && menu.table.kind !== 'view'"
             role="menuitem"
             @click.stop="openDialog(menu.table)"
           >
             Rename table…
           </button>
-          <span class="menu-line" />
-          <button
-            v-if="menu.table.kind !== 'view'"
-            class="danger"
-            role="menuitem"
-            @click.stop="choose('Truncate')"
+          <span v-if="single()" class="menu-line" />
+          <div class="has-submenu" @mouseenter="showSubmenu('export')" @mouseleave="hideSubmenu">
+            <button
+              role="menuitem"
+              aria-haspopup="menu"
+              :aria-expanded="submenu === 'export'"
+              :class="{ open: submenu === 'export' }"
+              @click.stop="showSubmenu('export')"
+            >
+              Export
+              <ChevronRightIcon class="arrow" :size="12" />
+            </button>
+            <div
+              v-if="submenu === 'export'"
+              class="menu submenu"
+              :class="{ flip: menu.flip }"
+              role="menu"
+            >
+              <button role="menuitem" @click.stop="exportTables(menu.tables)">
+                Export Tables…
+                <span class="hint">{{ shortcuts.hint('E', true) }}</span>
+              </button>
+              <button v-if="single()" role="menuitem" @click.stop="exportColumns(menu.table)">
+                Export this Table with Column Selection…
+              </button>
+            </div>
+          </div>
+          <div
+            v-if="single() && menu.table.kind !== 'view'"
+            class="has-submenu"
+            @mouseenter="showSubmenu('import')"
+            @mouseleave="hideSubmenu"
           >
-            Truncate table…
+            <button
+              role="menuitem"
+              aria-haspopup="menu"
+              :aria-expanded="submenu === 'import'"
+              :class="{ open: submenu === 'import' }"
+              @click.stop="showSubmenu('import')"
+            >
+              Import
+              <ChevronRightIcon class="arrow" :size="12" />
+            </button>
+            <div
+              v-if="submenu === 'import'"
+              class="menu submenu"
+              :class="{ flip: menu.flip }"
+              role="menu"
+            >
+              <button role="menuitem" @click.stop="importCsv(menu.table)">
+                Import CSV into this Table…
+              </button>
+            </div>
+          </div>
+          <span class="menu-line" />
+          <button v-if="!hasView()" class="danger" role="menuitem" @click.stop="choose('Truncate')">
+            Truncate {{ single() ? '' : `${menu.tables.length} `
+            }}{{ TableSelection.noun(menu.tables) }}…
           </button>
           <button class="danger" role="menuitem" @click.stop="choose('Drop')">
-            Drop {{ menu.table.kind }}…
+            Drop {{ single() ? '' : `${menu.tables.length} `
+            }}{{ TableSelection.noun(menu.tables) }}…
           </button>
         </template>
       </div>
     </div>
     <TableDialog ref="tableDialog" :session="session" />
+    <ExportDialog ref="exportDialog" :session="session" />
+    <ImportDialog ref="importDialog" :session="session" />
   </div>
 </template>
 
@@ -510,6 +810,11 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
   color: var(--text);
 }
 
+/* A table in the selection. It differs from the open table, which has the full accent colour. */
+.list li.picked:not(.selected) {
+  background: var(--picked);
+}
+
 .menu-backdrop {
   position: fixed;
   inset: 0;
@@ -552,6 +857,40 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
   background: var(--border);
 }
 
+/* The Export and Import items and their submenus at the side. */
+/* It reaches over the padding and border of the menu, so the mouse can cross to the submenu. */
+.has-submenu {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  margin: 0 -6px;
+  padding: 0 6px;
+}
+
+.menu .arrow {
+  margin-left: auto;
+}
+
+.menu.submenu {
+  position: absolute;
+  top: -6px;
+  left: 100%;
+  width: max-content;
+}
+
+.menu.submenu.flip {
+  right: 100%;
+  left: auto;
+}
+
+/* The shortcut at the right end of an item, like in a macOS menu. */
+.menu .hint {
+  margin-left: auto;
+  padding-left: 24px;
+  opacity: 0.6;
+}
+
+.menu button.open,
 .menu button:hover,
 .menu button:focus-visible {
   background: var(--accent);

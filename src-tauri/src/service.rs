@@ -1,5 +1,8 @@
 //! Business logic: open connections and the SQL for browsing and changing rows.
 
+mod export;
+mod import;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -12,8 +15,8 @@ use crate::constants::{
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, BrowseRequest, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, Diagram,
-    DiagramTable, Driver, FilterOperator, FilterRule, NewColumn, NewUser, ResultSet, RowUpdate,
-    SaveResult, TablePage, TableRef, UserList, Values,
+    DiagramTable, Driver, ExportRequest, FilterOperator, FilterRule, NewColumn, NewUser, ResultSet,
+    RowUpdate, RowsExport, SaveResult, TablePage, TableRef, UserList, Values,
 };
 use crate::repository::{
     DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, not_saved,
@@ -128,6 +131,26 @@ impl ConnectionService {
             config.port = tunnel.local_port();
         }
         DumpRepository::dump(&config, path).await
+    }
+
+    /// Writes tables to a SQL or CSV file. See `ExportRequest`.
+    /// It only reads, on the connection of the tab. So the tab waits until it is done.
+    pub async fn export_tables(&self, id: &str, request: &ExportRequest) -> AppResult<()> {
+        let repository = self.repository(id)?;
+        export::Exporter::new(repository.as_ref(), request)
+            .run()
+            .await
+    }
+
+    /// Writes rows the app already has to a SQL or CSV file. It does not touch the database.
+    pub fn export_rows(&self, id: &str, request: &RowsExport) -> AppResult<()> {
+        let repository = self.repository(id)?;
+        export::Exporter::write_rows(repository.as_ref(), request)
+    }
+
+    /// The columns of a table or view.
+    pub async fn columns(&self, id: &str, table: &TableRef) -> AppResult<Vec<ColumnInfo>> {
+        self.repository(id)?.columns(table).await
     }
 
     /// Loads one page of a table, with its columns and the total row count.

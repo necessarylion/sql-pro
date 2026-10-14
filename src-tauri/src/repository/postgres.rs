@@ -2,11 +2,11 @@
 
 use async_trait::async_trait;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgQueryResult, PgRow};
-use sqlx::{Postgres, Row as _};
+use sqlx::{AssertSqlSafe, Postgres, Row as _};
 
 use super::{
     Repository, Statement, cell, collect, default_sql, double_quote, execute_all, first_column,
-    kind, literal, password_safe, pool_options, relations, single, standard_columns,
+    kind, literal, password_safe, pool_options, relations, run_script, single, standard_columns,
 };
 use crate::constants::POSTGRES_ROLE_NAME_MAX;
 use crate::error::{AppError, AppResult};
@@ -260,12 +260,12 @@ impl Repository for PostgresRepository {
     }
 
     async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>> {
-        let stream = sqlx::raw_sql(sql).fetch_many(&self.pool);
+        let stream = sqlx::raw_sql(AssertSqlSafe(sql.to_owned())).fetch_many(&self.pool);
         collect::<Postgres>(stream, Self::read, PgQueryResult::rows_affected).await
     }
 
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64> {
-        let mut query = sqlx::query(sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql.to_owned()));
         for param in params {
             query = query.bind(param);
         }
@@ -274,6 +274,10 @@ impl Repository for PostgresRepository {
 
     async fn execute_all(&self, statements: Vec<Statement>) -> AppResult<Vec<u64>> {
         execute_all(&self.pool, statements, PgQueryResult::rows_affected).await
+    }
+
+    async fn run_script(&self, statements: Vec<Statement>) -> AppResult<()> {
+        run_script(&self.pool, statements).await
     }
 
     async fn databases(&self) -> AppResult<Vec<String>> {

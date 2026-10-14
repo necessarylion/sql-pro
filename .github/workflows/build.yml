@@ -68,7 +68,7 @@ jobs:
 
       - name: Install the Linux packages
         if: runner.os == 'Linux'
-        # libdbus-1-dev is for the password store (keyring crate). The rest is for Tauri.
+        # All of these are for Tauri. libdbus-1-dev is for the tao crate.
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils libdbus-1-dev

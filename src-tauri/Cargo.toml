@@ -1,10 +1,10 @@
 [package]
 name = "sql-pro"
-version = "0.3.0"
+version = "0.4.0"
 description = "A compact SQL client for MySQL, PostgreSQL and SQLite"
 authors = ["Zin Kyaw Kyaw"]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.99"
 
 [lib]
 # The `_lib` suffix keeps the lib name different from the bin name.
@@ -21,7 +21,7 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # sqlx is a driver toolkit, not an ORM. We write all SQL by hand.
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
     "mysql",
@@ -32,15 +32,10 @@ async-trait = "0.1"
 futures-util = "0.3"
 thiserror = "2"
 parking_lot = "0.12"
-# One password store per system. Each feature only does something on its own system.
-# Linux uses the Secret Service (GNOME Keyring, KWallet) over D-Bus.
-# Building on Linux needs the package `libdbus-1-dev`.
-keyring = { version = "3", features = [
-    "apple-native",
-    "windows-native",
-    "sync-secret-service",
-    "crypto-rust",
-] }
+# The OS password store: Keychain on macOS, Credential Manager on Windows,
+# and the Secret Service (GNOME Keyring, KWallet) over D-Bus on Linux.
+# Version 4 finds the same items as version 3, so saved passwords stay.
+keyring = "4"
 # Runs the system ssh program for tunnels.
 tokio = { version = "1", features = ["process", "net", "time", "io-util"] }
 tauri-plugin-updater = "2"

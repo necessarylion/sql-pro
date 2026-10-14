@@ -9,8 +9,9 @@ use tauri::State;
 
 use crate::error::AppResult;
 use crate::model::{
-    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, Diagram, NewColumn, NewUser,
-    ResultSet, RowUpdate, SaveResult, TablePage, TableRef, UserList, Values,
+    AccessLevel, BrowseRequest, ColumnInfo, ColumnSpec, ConnectionConfig, CsvImport, CsvPreview,
+    Diagram, ExportRequest, NewColumn, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult,
+    TablePage, TableRef, UserList, Values,
 };
 use crate::repository::PasswordRepository;
 use crate::service::ConnectionService;
@@ -162,6 +163,45 @@ pub async fn truncate_table(service: Service<'_>, id: String, table: TableRef) -
 #[tauri::command]
 pub async fn dump_database(service: Service<'_>, id: String, path: PathBuf) -> AppResult<()> {
     service.dump_database(&id, &path).await
+}
+
+#[tauri::command]
+pub async fn export_tables(
+    service: Service<'_>,
+    id: String,
+    request: ExportRequest,
+) -> AppResult<()> {
+    service.export_tables(&id, &request).await
+}
+
+#[tauri::command]
+// Async, so a large file is not written on the main thread.
+pub async fn export_rows(service: Service<'_>, id: String, request: RowsExport) -> AppResult<()> {
+    service.export_rows(&id, &request)
+}
+
+#[tauri::command]
+pub async fn list_columns(
+    service: Service<'_>,
+    id: String,
+    table: TableRef,
+) -> AppResult<Vec<ColumnInfo>> {
+    service.columns(&id, &table).await
+}
+
+#[tauri::command]
+pub async fn preview_csv(path: PathBuf) -> AppResult<CsvPreview> {
+    ConnectionService::preview_csv(&path)
+}
+
+#[tauri::command]
+pub async fn import_csv(service: Service<'_>, id: String, request: CsvImport) -> AppResult<usize> {
+    service.import_csv(&id, &request).await
+}
+
+#[tauri::command]
+pub async fn import_sql(service: Service<'_>, id: String, path: PathBuf) -> AppResult<usize> {
+    service.import_sql(&id, &path).await
 }
 
 #[tauri::command]

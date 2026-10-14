@@ -1,12 +1,18 @@
-import { DELETE_ROWS_TITLE, PAGE_SIZE } from '../constants'
+import { DELETE_ROWS_TITLE, PAGE_SIZE, QUERY_RESULT_NAME } from '../constants'
 import { DIAGRAM_SAVED_STATUS_MS } from '../constants/diagram'
 import { RAW_FILTER_COLUMN, VALUELESS_OPERATORS } from '../constants/filters'
 import { ACCESS_LABELS } from '../constants/users'
 import type {
+  ColumnInfo,
   ColumnSpec,
   ConnectionConfig,
+  CsvImport,
+  CsvPreview,
   DbUser,
   Diagram,
+  ExportFormat,
+  ExportRequest,
+  RowsExport,
   GrantableAccess,
   NewUser,
   FilterRow,
@@ -23,6 +29,7 @@ import type { DatabaseApi } from './DatabaseApi'
 import type { DiscardPrompt } from './DiscardPrompt'
 import { Environment } from './Environment'
 import { TableDraft } from './TableDraft'
+import { TableSelection } from './TableSelection'
 import type { ColumnDraft } from './TableDraft'
 
 const NEW_TITLE = 'New connection'
@@ -75,6 +82,8 @@ export class Session {
   canManageUsers = false
   /** What the Diagram view shows. null = not loaded. */
   diagram: Diagram | null = null
+  /** Goes up by one on each press of the export shortcut. The workspace then opens the export dialog. */
+  exportAsked = 0
   /** The timer that removes the "Diagram saved" status. */
   private statusTimer: ReturnType<typeof setTimeout> | undefined
   private api: DatabaseApi
@@ -633,28 +642,86 @@ export class Session {
 
   /** Removes a table or a view. The backend picks DROP TABLE or DROP VIEW. */
   async dropTable(table: TableRef): Promise<void> {
-    if (this.isOpen(table) && !(await this.mayDiscard())) {
+    await this.dropTables([table])
+  }
+
+  /**
+   * Removes tables and views one by one. It stops at the first error and says which one failed.
+   * The list is loaded again once at the end, also after an error.
+   */
+  async dropTables(tables: TableRef[]): Promise<void> {
+    if (this.opensOneOf(tables) && !(await this.mayDiscard())) {
       return
     }
-    await this.api.dropTable(this.id, table)
-    if (this.isOpen(table)) {
-      this.clearTable()
+    try {
+      await this.runEach(tables, 'drop')
+    } finally {
+      await this.loadTables()
     }
-    this.status = `${table.kind === 'view' ? 'View' : 'Table'} "${table.name}" dropped`
-    await this.loadTables()
+    this.status = this.doneText(tables, 'dropped')
   }
 
   /** Deletes all rows of a table. */
   async truncateTable(table: TableRef): Promise<void> {
-    if (this.isOpen(table) && !(await this.mayDiscard())) {
+    await this.truncateTables([table])
+  }
+
+  /** Deletes all rows of each table, one by one. It stops at the first error and says which one failed. */
+  async truncateTables(tables: TableRef[]): Promise<void> {
+    const open = this.opensOneOf(tables)
+    if (open && !(await this.mayDiscard())) {
       return
     }
-    await this.api.truncateTable(this.id, table)
-    this.status = `Table "${table.name}" truncated`
-    if (this.isOpen(table)) {
-      this.offset = 0
-      await this.loadPage()
+    try {
+      await this.runEach(tables, 'truncate')
+    } finally {
+      if (open) {
+        this.offset = 0
+        await this.loadPage()
+      }
     }
+    this.status = this.doneText(tables, 'truncated')
+  }
+
+  /** Drops or truncates each table in turn. With many tables, an error says how far it got. */
+  private async runEach(tables: TableRef[], verb: 'drop' | 'truncate'): Promise<void> {
+    let done = 0
+    for (const table of tables) {
+      try {
+        if (verb === 'drop') {
+          await this.api.dropTable(this.id, table)
+          if (this.isOpen(table)) {
+            this.clearTable()
+          }
+        } else {
+          await this.api.truncateTable(this.id, table)
+        }
+      } catch (error) {
+        if (tables.length === 1) {
+          throw error
+        }
+        throw `Could not ${verb} "${table.name}" (${done} of ${tables.length} done): ${String(error)}`
+      }
+      done += 1
+    }
+  }
+
+  private opensOneOf(tables: TableRef[]): boolean {
+    for (const table of tables) {
+      if (this.isOpen(table)) {
+        return true
+      }
+    }
+    return false
+  }
+
+  /** Like 'Table "users" dropped' or '3 tables dropped'. */
+  private doneText(tables: TableRef[], verb: string): string {
+    if (tables.length === 1) {
+      const kind = tables[0].kind === 'view' ? 'View' : 'Table'
+      return `${kind} "${tables[0].name}" ${verb}`
+    }
+    return `${tables.length} ${TableSelection.noun(tables)} ${verb}`
   }
 
   /**
@@ -738,6 +805,103 @@ export class Session {
   async backup(path: string): Promise<void> {
     await this.api.dumpDatabase(this.id, path)
     this.status = `Backup saved to ${path}`
+  }
+
+  /** The columns of any table or view of the current database. */
+  listColumns(table: TableRef): Promise<ColumnInfo[]> {
+    return this.api.listColumns(this.id, table)
+  }
+
+  /** The file name we offer for an export, like `users.csv`, or `shop.sql` for many tables. */
+  exportName(tables: TableRef[], format: ExportFormat): string {
+    const name = tables.length === 1 ? tables[0].name : this.databaseName() || 'export'
+    return `${name}.${format}`
+  }
+
+  /** Writes tables to a SQL or CSV file, then says where they went. */
+  async exportTables(request: ExportRequest): Promise<void> {
+    await this.api.exportTables(this.id, request)
+    const what =
+      request.tables.length === 1
+        ? `"${request.tables[0].name}"`
+        : this.plural(request.tables.length, 'table')
+    this.status = `Exported ${what} to ${request.path}`
+  }
+
+  /**
+   * The rows to export: the rows at `indexes`, in grid order, or all rows when
+   * `indexes` is empty. Indexes past the end are skipped. In the content view
+   * those are draft new rows, which are not saved yet.
+   * Pass the stored rows (`page.rows`), so unsaved cell edits are not exported.
+   */
+  pickRows(rows: Row[], indexes: number[]): Row[] {
+    if (indexes.length === 0) {
+      return rows
+    }
+    const wanted = new Set(indexes)
+    const picked: Row[] = []
+    for (const [index, row] of rows.entries()) {
+      if (wanted.has(index)) {
+        picked.push(row)
+      }
+    }
+    return picked
+  }
+
+  /** The file name we offer for exported rows, like `users.csv`. A query result has no table. */
+  rowsName(table: TableRef | null, format: ExportFormat): string {
+    return `${table?.name ?? QUERY_RESULT_NAME}.${format}`
+  }
+
+  /**
+   * Writes rows the app already has to a file, then says where they went.
+   * A query result has no table (`table` is null). Its INSERT statements use the file name.
+   */
+  async exportRows(
+    format: ExportFormat,
+    table: TableRef | null,
+    columns: string[],
+    rows: Row[],
+    path: string,
+  ): Promise<void> {
+    const fileName = path
+      .split(/[\\/]/)
+      .pop()
+      ?.replace(/\.[^.]*$/, '')
+    const target = table ?? { schema: null, name: fileName || QUERY_RESULT_NAME, kind: 'table' }
+    const request: RowsExport = { format, table: target, columns, rows, path }
+    await this.api.exportRows(this.id, request)
+    this.status = `Exported ${this.plural(rows.length, 'row')} to ${path}`
+  }
+
+  /** The first rows of a CSV file and how many rows it has. */
+  previewCsv(path: string): Promise<CsvPreview> {
+    return this.api.previewCsv(path)
+  }
+
+  /**
+   * Inserts the rows of a CSV file into a table. When that table is open,
+   * its unsaved changes must go first, and its rows are loaded again after.
+   */
+  async importCsv(request: CsvImport): Promise<void> {
+    const open = this.isOpen(request.table)
+    if (open && !(await this.mayDiscard())) {
+      return
+    }
+    this.status = `Importing into "${request.table.name}"…`
+    const count = await this.api.importCsv(this.id, request)
+    this.status = `Imported ${this.plural(count, 'row')} into "${request.table.name}"`
+    if (open) {
+      await this.loadPage()
+    }
+  }
+
+  /** Runs all statements of a SQL file. It may have made or dropped tables, so they load again. */
+  async importSql(path: string): Promise<void> {
+    this.status = `Importing ${path}…`
+    const count = await this.api.importSql(this.id, path)
+    this.status = `Ran ${this.plural(count, 'statement')} from ${path}`
+    await this.loadTables()
   }
 
   /** The table list is replaced on refresh, so compare by name and not by object. */

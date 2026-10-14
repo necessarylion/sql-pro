@@ -16,7 +16,10 @@ use async_trait::async_trait;
 use futures_util::StreamExt as _;
 use futures_util::stream::BoxStream;
 use sqlx::pool::PoolOptions;
-use sqlx::{Column as _, Database, Either, Encode, Executor, IntoArguments, Pool, Row as _, Type};
+use sqlx::{
+    AssertSqlSafe, Column as _, Database, Either, Encode, Executor, IntoArguments, Pool, Row as _,
+    Type,
+};
 
 pub use dump::DumpRepository;
 pub use password::{Keychain, OsKeychain, PasswordRepository};
@@ -73,6 +76,10 @@ pub trait Repository: Send + Sync {
     /// Gives the number of changed rows of each statement.
     async fn execute_all(&self, statements: Vec<Statement>) -> AppResult<Vec<u64>>;
 
+    /// Runs raw SQL statements in one transaction, in the given order. Their bound values
+    /// are not used. When one fails, everything is rolled back and the error names it.
+    async fn run_script(&self, statements: Vec<Statement>) -> AppResult<()>;
+
     async fn databases(&self) -> AppResult<Vec<String>>;
 
     async fn tables(&self) -> AppResult<Vec<TableRef>>;
@@ -81,6 +88,12 @@ pub trait Repository: Send + Sync {
 
     /// All foreign keys of the current database.
     async fn relations(&self) -> AppResult<Vec<Relation>>;
+
+    /// The statement that creates `table`, as the database itself writes it.
+    /// `None` when the database cannot give one. Then the caller builds it from the columns.
+    async fn create_sql(&self, _table: &TableRef) -> AppResult<Option<String>> {
+        Ok(None)
+    }
 
     async fn close(&self);
 
@@ -235,13 +248,13 @@ async fn execute_all<DB>(
 where
     DB: Database,
     for<'conn> &'conn mut DB::Connection: Executor<'conn, Database = DB>,
-    for<'args> DB::Arguments<'args>: IntoArguments<'args, DB>,
+    DB::Arguments: IntoArguments<DB>,
     for<'args> Option<String>: Encode<'args, DB> + Type<DB>,
 {
     let mut transaction = pool.begin().await?;
     let mut counts = Vec::with_capacity(statements.len());
     for statement in statements {
-        let mut query = sqlx::query(&statement.sql);
+        let mut query = sqlx::query(AssertSqlSafe(statement.sql));
         for param in statement.params {
             query = query.bind(param);
         }
@@ -259,6 +272,31 @@ where
     }
     transaction.commit().await?;
     Ok(counts)
+}
+
+/// Runs raw statements in one transaction. See `Repository::run_script`.
+///
+/// `MySQL` commits by itself before and after each `CREATE`, `DROP` or `ALTER`.
+/// So there a failed script keeps what ran up to the last such statement.
+async fn run_script<DB>(pool: &Pool<DB>, statements: Vec<Statement>) -> AppResult<()>
+where
+    DB: Database,
+    for<'conn> &'conn mut DB::Connection: Executor<'conn, Database = DB>,
+{
+    let mut transaction = pool.begin().await?;
+    for statement in statements {
+        let run = sqlx::raw_sql(AssertSqlSafe(statement.sql))
+            .execute(&mut *transaction)
+            .await;
+        if let Err(error) = run {
+            // A failed rollback closes the connection, and that rolls back too.
+            let _ = transaction.rollback().await;
+            let error = AppError::from(error);
+            return Err(AppError::Message(format!("{}: {error}", statement.label)));
+        }
+    }
+    transaction.commit().await?;
+    Ok(())
 }
 
 /// What sqlx streams back: rows, and one statement result after each statement.

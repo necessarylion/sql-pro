@@ -29,6 +29,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   sort: [column: string]
   edit: [rowIndex: number, columnIndex: number, value: string | null]
+  /** A right-click on a row. The selection is already updated. */
+  menu: [event: MouseEvent]
 }>()
 
 const selected = defineModel<number[]>('selected')
@@ -172,6 +174,21 @@ function select(rowIndex: number, event: MouseEvent): void {
   selected.value = next
 }
 
+/**
+ * A right-click on a row outside the selection selects only that row, like Finder does.
+ * The cell editor keeps the native menu, for copy and paste.
+ */
+function openMenu(rowIndex: number, event: MouseEvent): void {
+  if ((event.target as HTMLElement).closest('textarea')) {
+    return
+  }
+  event.preventDefault()
+  if (!isSelected(rowIndex)) {
+    selected.value = [rowIndex]
+  }
+  emit('menu', event)
+}
+
 function isEditing(rowIndex: number, columnIndex: number): boolean {
   return editing.value?.row === rowIndex && editing.value.column === columnIndex
 }
@@ -269,6 +286,7 @@ function onEnter(event: KeyboardEvent): void {
             deleted: isDeleted(rowIndex),
           }"
           @click="select(rowIndex, $event)"
+          @contextmenu="openMenu(rowIndex, $event)"
         >
           <td
             v-for="(value, columnIndex) in row"

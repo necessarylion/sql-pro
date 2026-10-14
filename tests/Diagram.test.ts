@@ -338,3 +338,19 @@ test('the "Diagram saved" status goes away after a few seconds', async function 
     jest.useRealTimers()
   }
 })
+
+test('a clicked table is related to the tables it points to and the tables that point to it', function () {
+  const edges = DiagramRelations.edges(SHOP)
+  expect([...DiagramRelations.related(edges, 'users')].sort()).toEqual([
+    'orders',
+    'profiles',
+    'user_roles',
+    'users',
+  ])
+  expect([...DiagramRelations.related(edges, 'user_roles')].sort()).toEqual([
+    'roles',
+    'user_roles',
+    'users',
+  ])
+  expect([...DiagramRelations.related(edges, 'notes')]).toEqual(['notes'])
+})

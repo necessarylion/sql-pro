@@ -13,6 +13,7 @@ import {
   type EdgeProps,
   type Node,
   type NodeDragEvent,
+  type NodeMouseEvent,
 } from '@vue-flow/core'
 import '@vue-flow/core/dist/style.css'
 import { toBlob } from 'html-to-image'
@@ -49,6 +50,9 @@ const canvas = useTemplateRef<HTMLElement>('canvas')
 const nodes = ref<Node<TableData>[]>([])
 const edges = ref<Edge<DiagramEdge>[]>([])
 const count = computed(describeCount)
+// The table that was clicked, or null. It and its related tables are shown in green.
+const focus = ref<string | null>(null)
+const related = computed(relatedTables)
 
 // The sizes of a box, for the CSS. The automatic layout uses the same numbers.
 const sizes = {
@@ -87,8 +91,39 @@ function label(schema: string | null, name: string): string {
   return schema && schema !== 'public' ? `${schema}.${name}` : name
 }
 
+/** The clicked table and its related tables, or null when no table is clicked. */
+function relatedTables(): Set<string> | null {
+  return focus.value ? DiagramRelations.related(edges.value, focus.value) : null
+}
+
+/** Clicking a table shows its relations. Clicking it again clears them. */
+function toggleFocus(event: NodeMouseEvent): void {
+  focus.value = focus.value === event.node.id ? null : event.node.id
+}
+
+function clearFocus(): void {
+  focus.value = null
+}
+
+/** "lit" for a shown table, "dim" for the others, nothing when no table is clicked. */
+function tableState(id: string): string {
+  if (!related.value) {
+    return ''
+  }
+  return related.value.has(id) ? 'lit' : 'dim'
+}
+
+/** "lit" for a line of the clicked table, "dim" for the others. */
+function edgeState(edge: EdgeProps): string {
+  if (!focus.value) {
+    return ''
+  }
+  return edge.source === focus.value || edge.target === focus.value ? 'lit' : 'dim'
+}
+
 /** Makes the boxes and the lines from the loaded diagram. */
 function build(): void {
+  focus.value = null
   const diagram = props.session.diagram
   const boxes: Node<TableData>[] = []
   const lines: Edge<DiagramEdge>[] = []
@@ -160,6 +195,11 @@ function describe(edge: DiagramEdge): string {
   return `${RELATION_NAMES[edge.kind]}: ${from} → ${to}`
 }
 
+/** Leaves the greyed out tables and lines out of the picture. */
+function keepInPicture(element: HTMLElement): boolean {
+  return !element.classList?.contains('dim')
+}
+
 /** Asks where to save, then writes the picture. Does nothing on cancel. */
 async function exportPng(): Promise<void> {
   const session = props.session
@@ -184,12 +224,20 @@ async function writePng(path: string): Promise<void> {
   if (!canvas.value || !pane) {
     throw 'The diagram is not ready'
   }
-  const bounds = getRectOfNodes(flow.getNodes.value)
+  // With a clicked table, the picture holds only it and its related tables.
+  const shown = []
+  for (const node of flow.getNodes.value) {
+    if (!related.value || related.value.has(node.id)) {
+      shown.push(node)
+    }
+  }
+  const bounds = getRectOfNodes(shown)
   const width = bounds.width + 2 * DIAGRAM_EXPORT_PADDING
   const height = bounds.height + 2 * DIAGRAM_EXPORT_PADDING
   const blob = await toBlob(pane, {
     // The colour of the theme that shows now. So the picture is not see-through.
     backgroundColor: getComputedStyle(canvas.value).backgroundColor,
+    filter: keepInPicture,
     width,
     height,
     style: {
@@ -246,9 +294,11 @@ async function writePng(path: string): Promise<void> {
       :min-zoom="0.05"
       :max-zoom="2"
       @node-drag-stop="savePositions"
+      @node-click="toggleFocus"
+      @pane-click="clearFocus"
     >
-      <template #node-table="{ data }: { data: TableData }">
-        <div class="table">
+      <template #node-table="{ id, data }: { id: string; data: TableData }">
+        <div class="table" :class="tableState(id)">
           <div class="title">{{ data.label }}</div>
           <div v-for="column in data.columns" :key="column.name" class="column">
             <!-- A line ends at the row of its key column and starts at the row it points at. -->
@@ -275,22 +325,24 @@ async function writePng(path: string): Promise<void> {
       </template>
 
       <template #edge-relation="edge: EdgeProps<DiagramEdge>">
-        <BaseEdge
-          :path="route(edge).path"
-          :label="RELATION_LABELS[edge.data.kind]"
-          :label-x="route(edge).x"
-          :label-y="route(edge).y"
-          label-show-bg
-          :label-bg-padding="[4, 2]"
-          :label-bg-border-radius="3"
-        />
-        <!-- The marks at the two ends: the "one" side and the side with the key. -->
-        <text class="mark" :x="edge.sourceX + 7" :y="edge.sourceY - 5">
-          {{ RELATION_MARKS[edge.data.kind][0] }}
-        </text>
-        <text class="mark end" :x="edge.targetX - 7" :y="edge.targetY - 5">
-          {{ RELATION_MARKS[edge.data.kind][1] }}
-        </text>
+        <g :class="edgeState(edge)">
+          <BaseEdge
+            :path="route(edge).path"
+            :label="RELATION_LABELS[edge.data.kind]"
+            :label-x="route(edge).x"
+            :label-y="route(edge).y"
+            label-show-bg
+            :label-bg-padding="[4, 2]"
+            :label-bg-border-radius="3"
+          />
+          <!-- The marks at the two ends: the "one" side and the side with the key. -->
+          <text class="mark" :x="edge.sourceX + 7" :y="edge.sourceY - 5">
+            {{ RELATION_MARKS[edge.data.kind][0] }}
+          </text>
+          <text class="mark end" :x="edge.targetX - 7" :y="edge.targetY - 5">
+            {{ RELATION_MARKS[edge.data.kind][1] }}
+          </text>
+        </g>
         <title>{{ describe(edge.data) }}</title>
       </template>
     </VueFlow>
@@ -453,5 +505,31 @@ async function writePng(path: string): Promise<void> {
 
 .mark.end {
   text-anchor: end;
+}
+
+/* A clicked table, its related tables and the lines between them. */
+.table.lit {
+  border-color: var(--success);
+}
+
+.table.lit .title {
+  color: var(--success-text);
+}
+
+/* ".canvas" makes these win over the many to many, hover and selected colours above. */
+.canvas .lit :deep(.vue-flow__edge-path) {
+  stroke: var(--success);
+  stroke-width: 2;
+}
+
+.canvas .lit :deep(.vue-flow__edge-text),
+.lit .mark {
+  fill: var(--success-text);
+}
+
+/* All other tables and lines look disabled. */
+.table.dim,
+g.dim {
+  opacity: 0.3;
 }
 </style>

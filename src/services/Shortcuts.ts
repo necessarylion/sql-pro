@@ -1,4 +1,9 @@
-import { MAC_PLATFORM_PATTERN, SHORTCUT_KEYS, type ShortcutAction } from '../constants/shortcuts'
+import {
+  MAC_PLATFORM_PATTERN,
+  SHIFT_SHORTCUT_KEYS,
+  SHORTCUT_KEYS,
+  type ShortcutAction,
+} from '../constants/shortcuts'
 import { ZOOM_CODES, ZOOM_KEYS, type ZoomAction } from '../constants/zoom'
 
 /** The keys of a key or mouse event that matter here. */
@@ -25,12 +30,15 @@ export class Shortcuts {
     return main && !other && !event.shiftKey && !event.altKey
   }
 
-  /** The action of a key press, like Cmd+S. null when the press is not a shortcut. */
+  /** The action of a key press, like Cmd+S or Shift+Cmd+E. null when the press is not a shortcut. */
   action(event: ModifierKeys & { key: string }): ShortcutAction | null {
-    if (!this.hasModifier(event)) {
+    // Read each key by name. A spread copy of a real KeyboardEvent has none of them.
+    const { metaKey, ctrlKey, shiftKey, altKey } = event
+    if (!this.hasModifier({ metaKey, ctrlKey, altKey })) {
       return null
     }
-    return SHORTCUT_KEYS[event.key.toLowerCase()] ?? null
+    const keys = shiftKey ? SHIFT_SHORTCUT_KEYS : SHORTCUT_KEYS
+    return keys[event.key.toLowerCase()] ?? null
   }
 
   /**
@@ -47,8 +55,11 @@ export class Shortcuts {
     return ZOOM_KEYS[event.key] ?? ZOOM_CODES[event.code] ?? null
   }
 
-  /** The text that shows a shortcut, like ⌘S or Ctrl+S. */
-  hint(key: string): string {
-    return this.mac ? `⌘${key}` : `Ctrl+${key}`
+  /** The text that shows a shortcut, like ⌘S or Ctrl+S. With `shift`: ⇧⌘E or Ctrl+Shift+E. */
+  hint(key: string, shift = false): string {
+    if (this.mac) {
+      return `${shift ? '⇧' : ''}⌘${key}`
+    }
+    return `Ctrl+${shift ? 'Shift+' : ''}${key}`
   }
 }

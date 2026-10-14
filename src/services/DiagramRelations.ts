@@ -71,6 +71,19 @@ export class DiagramRelations {
     return columns
   }
 
+  /** The table `id` and every table it has a foreign key to or from. */
+  static related(edges: Pick<DiagramEdge, 'source' | 'target'>[], id: string): Set<string> {
+    const tables = new Set<string>([id])
+    for (const edge of edges) {
+      if (edge.source === id) {
+        tables.add(edge.target)
+      } else if (edge.target === id) {
+        tables.add(edge.source)
+      }
+    }
+    return tables
+  }
+
   /**
    * The foreign keys of all join tables.
    * A join table has exactly two foreign keys inside its primary key,

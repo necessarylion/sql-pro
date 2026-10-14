@@ -1,6 +1,7 @@
 //! Plain data that moves between the layers and to the frontend.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -247,4 +248,72 @@ pub struct NewUser {
     pub host: Option<String>,
     pub password: String,
     pub access: AccessLevel,
+}
+
+/// The file format of an export.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    Sql,
+    Csv,
+}
+
+/// What to export, and where to write it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportRequest {
+    pub tables: Vec<TableRef>,
+    pub format: ExportFormat,
+    /// SQL only: write the `CREATE` statement of each table.
+    pub structure: bool,
+    /// SQL only: write the rows as `INSERT` statements. A CSV file always has the rows.
+    pub data: bool,
+    /// The columns to export, in this order. Empty means all. Only for one table.
+    #[serde(default)]
+    pub columns: Vec<String>,
+    /// The file to write. For CSV it may be a folder: then each table goes to `<table>.csv` in it.
+    pub path: PathBuf,
+}
+
+/// Rows the app already shows, to write to a SQL or CSV file.
+#[derive(Debug, Deserialize)]
+pub struct RowsExport {
+    pub format: ExportFormat,
+    /// SQL only: the table that the `INSERT` statements name.
+    pub table: TableRef,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+    pub path: PathBuf,
+}
+
+/// One table column that gets its value from a CSV field.
+#[derive(Debug, Deserialize)]
+pub struct CsvColumn {
+    /// The name of the table column.
+    pub name: String,
+    /// The number of the CSV field, starting at 0.
+    pub field: usize,
+}
+
+/// What to import from a CSV file, and into which table.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CsvImport {
+    pub table: TableRef,
+    pub path: PathBuf,
+    /// The first row holds the column names. It is not imported.
+    pub header: bool,
+    /// An empty field becomes NULL. Else it becomes an empty text.
+    pub empty_is_null: bool,
+    /// The table columns to fill. Columns that are not here get their default.
+    pub columns: Vec<CsvColumn>,
+}
+
+/// The start of a CSV file, for the import dialog.
+#[derive(Debug, Serialize)]
+pub struct CsvPreview {
+    /// The first rows, as they are in the file. The header row is one of them.
+    pub rows: Vec<Vec<String>>,
+    /// All rows of the file, the header row too.
+    pub count: usize,
 }

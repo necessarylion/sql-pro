@@ -3,6 +3,9 @@
 /// The most rows one result set keeps. More rows are dropped and the set is marked as cut.
 pub const MAX_QUERY_ROWS: usize = 2000;
 
+/// How many rows of a CSV file the import dialog shows. The header row counts too.
+pub const CSV_PREVIEW_ROWS: usize = 6;
+
 /// How long we wait for a connection before we give up.
 pub const CONNECT_TIMEOUT_SECONDS: u64 = 10;
 
