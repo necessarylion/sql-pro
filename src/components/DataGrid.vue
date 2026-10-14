@@ -40,6 +40,19 @@ const text = ref('')
 /** Puts the cursor in the editor when it appears. */
 const vFocus = {
   mounted(element: HTMLTextAreaElement): void {
+    // An editor that would pass the right edge of the grid moves left until it fits,
+    // but not past the left edge. This runs before focus, because focus scrolls the
+    // grid to show the whole editor.
+    const editor = element.parentElement
+    const grid = element.closest('.grid')
+    if (editor && grid) {
+      const box = editor.getBoundingClientRect()
+      const left = grid.getBoundingClientRect().left
+      const shift = Math.min(box.right - left - grid.clientWidth, box.left - left)
+      if (shift > 0) {
+        editor.style.left = `${-shift}px`
+      }
+    }
     element.focus()
     element.select()
   },
@@ -268,7 +281,7 @@ function onEnter(event: KeyboardEvent): void {
             :style="columnStyles[columnIndex]"
             @dblclick="startEdit(rowIndex, columnIndex)"
           >
-            <template v-if="isEditing(rowIndex, columnIndex)">
+            <div v-if="isEditing(rowIndex, columnIndex)" class="editor">
               <textarea
                 v-model="text"
                 v-focus
@@ -287,7 +300,7 @@ function onEnter(event: KeyboardEvent): void {
               >
                 NULL
               </button>
-            </template>
+            </div>
             <span v-else-if="value === null" class="null">NULL</span>
             <template v-else>{{ preview(value) }}</template>
           </td>
@@ -436,23 +449,35 @@ tr.selected .null {
   opacity: 0.7;
 }
 
-/* The editor lies over the cell. It may grow past the cell for long text. */
+/*
+  The editor lies over the cell and the cells next to it. It is absolute, so the
+  table keeps its column widths and row heights. A narrow column still gets a
+  box that is wide enough to read the text.
+*/
 td.editing {
   overflow: visible;
 }
 
-textarea {
+.editor {
   position: absolute;
   top: 0;
   left: 0;
   z-index: 1;
-  width: 100%;
-  min-width: 120px;
+  display: flex;
+  width: max(100%, 220px);
   min-height: 100%;
+  border: 1px solid var(--accent);
+  outline: 1px solid var(--accent);
+  background: var(--bg);
+}
+
+textarea {
+  flex: 1;
+  min-width: 0;
   max-height: 160px;
   padding: 3px 7px;
-  border-color: var(--accent);
-  outline: 1px solid var(--accent);
+  border: 0;
+  outline: none;
   color: var(--text);
   font-size: 11px;
   text-align: left;
@@ -460,12 +485,10 @@ textarea {
   field-sizing: content;
 }
 
+/* The button stands after the text, so it never covers it. */
 .null-button {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  z-index: 1;
   height: 16px;
+  margin: 2px 2px 0 0;
   padding: 0 4px;
   border-radius: 3px;
   color: var(--text-2);

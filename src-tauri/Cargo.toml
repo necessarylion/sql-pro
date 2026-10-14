@@ -44,6 +44,12 @@ keyring = { version = "3", features = [
 # Runs the system ssh program for tunnels.
 tokio = { version = "1", features = ["process", "net", "time", "io-util"] }
 
+# Windows and Linux have no Dock. There the tray icon brings a hidden window back,
+# and a second start of the app shows the window of the first one.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 

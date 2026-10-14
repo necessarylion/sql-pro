@@ -1,6 +1,17 @@
-# SQL Pro
+<p align="center">
+  <img src="docs/logo.svg" width="96" height="96" alt="SQL Pro logo">
+</p>
 
-A small desktop SQL client, like Sequel Pro. It works with MySQL, PostgreSQL and SQLite.
+<h1 align="center">SQL Pro</h1>
+
+<p align="center">
+  A small desktop SQL client, like Sequel Pro. It works with MySQL, PostgreSQL and SQLite.
+</p>
+
+<p align="center">
+  <img src="docs/screenshot.png" width="900" alt="SQL Pro showing the rows of a table">
+</p>
+
 It is built with Tauri v2 (Rust backend) and Vue 3 + TypeScript (frontend).
 
 ## Install

@@ -9,9 +9,10 @@ pub mod service;
 
 use std::sync::Arc;
 
-use constants::{PROFILE, PROFILE_GLOBAL, PROFILE_PLUGIN};
+use constants::{MAIN_WINDOW, PROFILE, PROFILE_GLOBAL, PROFILE_PLUGIN};
 use repository::{OsKeychain, PasswordRepository, RepositoryFactory};
 use service::ConnectionService;
+use tauri::Manager as _;
 
 /// Starts the app. All objects are built here and handed to the commands as state.
 ///
@@ -23,9 +24,18 @@ pub fn run() {
     #[cfg(all(debug_assertions, target_os = "macos"))]
     run_under_dev_name();
     let builder = tauri::Builder::default();
+    // This plugin must be the first one. A debug build leaves it out, so a dev
+    // build and the installed app can run side by side.
+    #[cfg(all(not(target_os = "macos"), not(debug_assertions)))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        show_main_window(app);
+    }));
     #[cfg(target_os = "macos")]
     let builder = builder.menu(app_menu);
-    builder
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.setup(add_tray);
+    let app = builder
+        .on_window_event(hide_instead_of_close)
         .plugin(tauri_plugin_dialog::init())
         .plugin(profile_plugin())
         .manage(ConnectionService::new(RepositoryFactory))
@@ -59,8 +69,124 @@ pub fn run() {
             commands::load_password,
             commands::delete_password,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("error while running SQL Pro");
+    app.run(on_run_event);
+}
+
+/// Closing the main window only hides it. The app keeps running, with all tabs,
+/// connections and unsaved edits as they are.
+///
+/// Quit still quits: Cmd-Q and the app menu on macOS, the tray menu elsewhere.
+/// Those do not send a close request, so they do not pass through here.
+fn hide_instead_of_close(window: &tauri::Window, event: &tauri::WindowEvent) {
+    let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+        return;
+    };
+    if window.label() != MAIN_WINDOW {
+        return;
+    }
+    // Without a tray icon the user could not get a hidden window back.
+    // Then the window closes as before, and the app quits.
+    #[cfg(not(target_os = "macos"))]
+    if window.app_handle().tray_by_id(constants::TRAY_ID).is_none() {
+        return;
+    }
+    // A window that cannot be hidden closes as before. So it never gets stuck.
+    if window.hide().is_ok() {
+        api.prevent_close();
+    }
+}
+
+/// Shows the main window again and gives it the keyboard.
+fn show_main_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+        return;
+    };
+    // These only fail when the window is gone. Then there is nothing to show.
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// macOS: a click on the Dock icon brings the hidden window back.
+#[cfg(target_os = "macos")]
+#[allow(clippy::needless_pass_by_value)] // Tauri hands the event over by value.
+fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
+    if let tauri::RunEvent::Reopen {
+        has_visible_windows: false,
+        ..
+    } = event
+    {
+        show_main_window(app);
+    }
+}
+
+/// Windows and Linux have no Dock. The tray icon brings the window back.
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::needless_pass_by_value)] // Tauri hands the event over by value.
+fn on_run_event(_app: &tauri::AppHandle, _event: tauri::RunEvent) {}
+
+/// Adds the tray icon with its menu: show the window, or quit for real.
+///
+/// A tray that cannot be made does not stop the app. Closing the window then
+/// quits the app, as it did before.
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::unnecessary_wraps)] // Tauri wants this return type for `setup`.
+fn add_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    if let Err(error) = build_tray(app) {
+        eprintln!("SQL Pro: no tray icon: {error}");
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use constants::{TRAY_ID, TRAY_QUIT_ID, TRAY_QUIT_TEXT, TRAY_SHOW_ID, TRAY_SHOW_TEXT};
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::TrayIconBuilder;
+
+    let show = MenuItem::with_id(app, TRAY_SHOW_ID, TRAY_SHOW_TEXT, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, TRAY_QUIT_ID, TRAY_QUIT_TEXT, true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
+        .tooltip(&app.package_info().name)
+        .menu(&menu)
+        // A left click shows the window. The menu opens on a right click.
+        // Linux sends no click, so there the menu is the only way.
+        .show_menu_on_left_click(false)
+        .on_menu_event(on_tray_menu)
+        .on_tray_icon_event(on_tray_click);
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::needless_pass_by_value)] // Tauri hands the event over by value.
+fn on_tray_menu(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
+    match event.id.as_ref() {
+        constants::TRAY_SHOW_ID => show_main_window(app),
+        constants::TRAY_QUIT_ID => app.exit(0),
+        _ => {}
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::needless_pass_by_value)] // Tauri hands the event over by value.
+fn on_tray_click(tray: &tauri::tray::TrayIcon, event: tauri::tray::TrayIconEvent) {
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+
+    if let TrayIconEvent::Click {
+        button: MouseButton::Left,
+        button_state: MouseButtonState::Up,
+        ..
+    } = event
+    {
+        show_main_window(tray.app_handle());
+    }
 }
 
 /// Tells the frontend which build it runs in, before any script of the page runs.

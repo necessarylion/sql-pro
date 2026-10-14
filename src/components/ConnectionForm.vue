@@ -285,8 +285,15 @@ async function saveFavorite(): Promise<void> {
   setNote(KEYCHAIN_WRITE_NOTE, failure)
 }
 
+/** Asks first. The saved password goes away with the connection. */
 async function removeFavorite(favorite: Favorite): Promise<void> {
-  setNote(KEYCHAIN_DELETE_NOTE, await store.remove(favorite.id))
+  const sure = await confirm(
+    `Delete the saved connection "${favorite.name}"? Its saved password is removed too. This cannot be undone.`,
+    { title: 'Delete connection', kind: 'warning' },
+  )
+  if (sure) {
+    setNote(KEYCHAIN_DELETE_NOTE, await store.remove(favorite.id))
+  }
 }
 
 async function browse(): Promise<void> {
@@ -352,7 +359,7 @@ async function browseKey(): Promise<void> {
               <button
                 type="button"
                 class="icon remove"
-                title="Delete favorite"
+                title="Delete connection"
                 @click.stop="session.run(removeFavorite(favorite))"
               >
                 <XIcon :size="11" />

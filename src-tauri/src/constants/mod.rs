@@ -126,6 +126,20 @@ pub const PASSWORD_ERROR_HIDDEN: &str = "The database refused the statement. The
 /// The file name the program runs under in dev on macOS. The Dock shows it.
 pub const DEV_APP_NAME: &str = "SQL Pro";
 
+/// The label of the one window of the app. Tauri gives it this name.
+pub const MAIN_WINDOW: &str = "main";
+
+/// The id of the tray icon. Windows and Linux only: macOS has the Dock.
+pub const TRAY_ID: &str = "main";
+
+/// The tray menu item that shows the window again.
+pub const TRAY_SHOW_ID: &str = "show";
+pub const TRAY_SHOW_TEXT: &str = "Show SQL Pro";
+
+/// The tray menu item that quits the app for real.
+pub const TRAY_QUIT_ID: &str = "quit";
+pub const TRAY_QUIT_TEXT: &str = "Quit";
+
 #[cfg(test)]
 mod tests {
     use super::{KEYCHAIN_SERVICE, PROFILE};
