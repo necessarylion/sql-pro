@@ -4,6 +4,7 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   FolderPlusIcon,
+  LoaderCircleIcon,
   PlusIcon,
   SearchIcon,
   XIcon,
@@ -68,6 +69,8 @@ const env = reactive({ kind: DEFAULT_ENVIRONMENT as EnvironmentKind, custom: '' 
  * `detail` is the raw keychain text. It is shown only as a tooltip.
  */
 const note = reactive({ text: '', detail: '' })
+/** True while a connect runs. The form then says "Connecting…", not only "Working…". */
+const connecting = ref(false)
 
 /** The pasted connection string. It can hold a password, so it is cleared after use. */
 const pasted = ref('')
@@ -399,7 +402,12 @@ async function load(favorite: Favorite): Promise<boolean> {
 
 async function connect(): Promise<void> {
   setNote('', '')
-  await props.session.connect(currentConfig(), title(), environment())
+  connecting.value = true
+  try {
+    await props.session.connect(currentConfig(), title(), environment())
+  } finally {
+    connecting.value = false
+  }
 }
 
 /** Does not connect with an empty password. The user types it first. */
@@ -793,7 +801,13 @@ async function browseKey(): Promise<void> {
           <CircleAlertIcon :size="13" />
           <span>{{ session.error }}</span>
         </div>
-        <div v-else-if="session.busy" class="banner">Working…</div>
+        <div v-else-if="session.busy" class="banner">
+          <template v-if="connecting">
+            <LoaderCircleIcon :size="13" class="spin" />
+            <span>Connecting…</span>
+          </template>
+          <template v-else>Working…</template>
+        </div>
         <div v-else-if="note.text" class="banner note" :title="note.detail">
           <CircleAlertIcon :size="13" />
           <span>{{ note.text }}</span>
@@ -1209,6 +1223,16 @@ header p {
 
 .banner svg {
   margin-top: 1px;
+}
+
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .actions {
