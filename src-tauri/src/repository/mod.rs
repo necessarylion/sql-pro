@@ -10,6 +10,7 @@ mod tunnel;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::sync::Arc;
+use std::sync::atomic::AtomicI64;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -26,12 +27,13 @@ pub use password::{Keychain, OsKeychain, PasswordRepository};
 pub use tunnel::SshTunnel;
 
 use crate::constants::{
-    CONNECT_TIMEOUT_SECONDS, LOCALHOST, MAX_QUERY_ROWS, NO_USER_ACCOUNTS, PASSWORD_ERROR_HIDDEN,
+    CANCEL_NOT_REACHED, CONNECT_TIMEOUT_SECONDS, LOCALHOST, MAX_QUERY_ROWS, NO_USER_ACCOUNTS,
+    PASSWORD_ERROR_HIDDEN, PROCEDURE, TRIGGER,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, Driver, Relation, ResultSet, Row,
-    TableRef, UserList,
+    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, Driver, ForeignKey, IndexInfo,
+    Relation, ResultSet, Row, TableRef, UserList,
 };
 
 /// Stops the console window that Windows opens for every tool a window app starts.
@@ -89,13 +91,68 @@ pub trait Repository: Send + Sync {
     /// All foreign keys of the current database.
     async fn relations(&self) -> AppResult<Vec<Relation>>;
 
+    /// The indexes of one table. The primary key comes first.
+    async fn indexes(&self, table: &TableRef) -> AppResult<Vec<IndexInfo>>;
+
+    /// The foreign keys of one table.
+    async fn foreign_keys(&self, table: &TableRef) -> AppResult<Vec<ForeignKey>>;
+
+    /// Fails when this database cannot add or drop a foreign key of an existing table.
+    fn check_foreign_key_change(&self) -> AppResult<()> {
+        Ok(())
+    }
+
+    /// The statement that drops index `name` of `table`. `name` is not quoted yet.
+    /// An index lives in the schema of its table, so the schema goes in front.
+    fn drop_index_sql(&self, table: &TableRef, name: &str) -> String {
+        let index = TableRef {
+            schema: table.schema.clone(),
+            name: name.to_owned(),
+            kind: String::new(),
+        };
+        format!("DROP INDEX {}", self.table_name(&index))
+    }
+
+    /// The statement that drops a foreign key. Both names are already quoted.
+    fn drop_foreign_key_sql(&self, table: &str, name: &str) -> String {
+        format!("ALTER TABLE {table} DROP CONSTRAINT {name}")
+    }
+
     /// The statement that creates `table`, as the database itself writes it.
     /// `None` when the database cannot give one. Then the caller builds it from the columns.
     async fn create_sql(&self, _table: &TableRef) -> AppResult<Option<String>> {
         Ok(None)
     }
 
+    /// The triggers and routines of the current database. Views come with `tables`.
+    async fn objects(&self) -> AppResult<Vec<DbObject>>;
+
+    /// The `CREATE` statement of a trigger or routine from `objects`.
+    async fn object_sql(&self, object: &DbObject) -> AppResult<String>;
+
+    /// The statement that drops a trigger or routine from `objects`.
+    fn drop_object_sql(&self, object: &DbObject) -> String {
+        format!("DROP {} {}", keyword(object), self.object_name(object))
+    }
+
+    /// The full, quoted name of a trigger or routine.
+    fn object_name(&self, object: &DbObject) -> String {
+        self.table_name(&TableRef {
+            schema: object.schema.clone(),
+            name: object.name.clone(),
+            kind: String::new(),
+        })
+    }
+
     async fn close(&self);
+
+    /// Stops the statement that runs now on the connection of this tab.
+    /// The query that runs then fails with the error `QUERY_CANCELLED`.
+    /// Does nothing when no statement runs.
+    ///
+    /// It must not wait for the busy connection of the tab. So `MySQL` and
+    /// `PostgreSQL` send the cancel over a second, short-lived connection.
+    async fn cancel(&self) -> AppResult<()>;
 
     /// The statements that change the type, null rule and default of a column.
     /// A rename is not part of this. The service does it after.
@@ -219,6 +276,32 @@ impl RepositoryFactory {
         };
         Ok((repository, tunnel))
     }
+}
+
+/// The server id of the one connection of a pool: the thread id in `MySQL`, the
+/// process id in `PostgreSQL`. The pool sets it each time it opens a connection,
+/// so it stays right after a reconnect. 0 = not known yet.
+type ServerId = Arc<AtomicI64>;
+
+/// Opens a new connection with `options`, runs `sql` on it and closes it again.
+/// Cancel uses this, because the connection of the tab is busy with the query.
+async fn run_on_new_connection<C>(options: &C::Options, sql: String) -> AppResult<()>
+where
+    C: sqlx::Connection,
+    for<'conn> &'conn mut C: Executor<'conn, Database = C::Database>,
+{
+    let wait = Duration::from_secs(CONNECT_TIMEOUT_SECONDS);
+    let Ok(connected) = tokio::time::timeout(wait, C::connect_with(options)).await else {
+        return Err(CANCEL_NOT_REACHED.into());
+    };
+    let mut connection = connected?;
+    let result = sqlx::raw_sql(AssertSqlSafe(sql))
+        .execute(&mut connection)
+        .await;
+    // A failed close only leaves a dead socket. The server drops it soon.
+    let _ = connection.close().await;
+    result?;
+    Ok(())
 }
 
 /// Pool settings shared by all drivers.
@@ -472,6 +555,95 @@ fn relations(keys: &ResultSet, unique: &ResultSet) -> Vec<Relation> {
         }
     }
     relations
+}
+
+/// Builds indexes from rows shaped as: name, column, unique (YES/NO), primary (YES/NO).
+/// The rows of one index must follow each other, in column order.
+fn indexes(set: &ResultSet) -> Vec<IndexInfo> {
+    let mut indexes: Vec<IndexInfo> = Vec::new();
+    for row in &set.rows {
+        let name = cell(row, 0);
+        let same = indexes.last().is_some_and(|last| last.name == name);
+        if !same {
+            indexes.push(IndexInfo {
+                name,
+                columns: Vec::new(),
+                unique: cell(row, 2) == "YES",
+                primary: cell(row, 3) == "YES",
+            });
+        }
+        if let Some(index) = indexes.last_mut() {
+            index.columns.push(cell(row, 1));
+        }
+    }
+    indexes
+}
+
+/// Builds foreign keys from rows shaped as: key id, name, column, parent schema,
+/// parent table, parent column, on delete, on update.
+/// The rows of one key must follow each other, in column order.
+fn foreign_keys(set: &ResultSet) -> Vec<ForeignKey> {
+    let mut keys: Vec<ForeignKey> = Vec::new();
+    let mut current = None;
+    for row in &set.rows {
+        let id = cell(row, 0);
+        if current.as_ref() != Some(&id) {
+            current = Some(id);
+            keys.push(ForeignKey {
+                name: cell(row, 1),
+                columns: Vec::new(),
+                ref_schema: row.get(3).cloned().flatten(),
+                ref_table: cell(row, 4),
+                ref_columns: Vec::new(),
+                on_delete: cell(row, 6),
+                on_update: cell(row, 7),
+            });
+        }
+        if let Some(key) = keys.last_mut() {
+            key.columns.push(cell(row, 2));
+            key.ref_columns.push(cell(row, 5));
+        }
+    }
+    keys
+}
+
+/// Builds triggers and routines from rows shaped as: kind, schema, name, table, args.
+fn objects(set: &ResultSet) -> Vec<DbObject> {
+    let mut objects = Vec::with_capacity(set.rows.len());
+    for row in &set.rows {
+        objects.push(DbObject {
+            kind: cell(row, 0),
+            schema: row.get(1).cloned().flatten(),
+            name: cell(row, 2),
+            table: row.get(3).cloned().flatten(),
+            args: row.get(4).cloned().flatten(),
+        });
+    }
+    objects
+}
+
+/// The SQL word for the kind of a trigger or routine.
+fn keyword(object: &DbObject) -> &'static str {
+    match object.kind.as_str() {
+        TRIGGER => "TRIGGER",
+        PROCEDURE => "PROCEDURE",
+        _ => "FUNCTION",
+    }
+}
+
+/// The first cell of the first row. Fails when it is missing or NULL.
+/// A database gives NULL when the account may not read the definition.
+fn definition(set: &ResultSet, column: usize, name: &str) -> AppResult<String> {
+    match set
+        .rows
+        .first()
+        .and_then(|row| row.get(column).cloned().flatten())
+    {
+        Some(sql) => Ok(sql),
+        None => Err(AppError::Message(format!(
+            "Cannot read the definition of {name}. Your account may not be allowed to see it."
+        ))),
+    }
 }
 
 /// Is this table type a view?

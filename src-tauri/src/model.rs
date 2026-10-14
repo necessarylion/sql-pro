@@ -49,6 +49,20 @@ pub struct TableRef {
     pub kind: String,
 }
 
+/// A view, trigger, procedure or function. `kind` is one of those four words.
+/// Only `PostgreSQL` fills `schema` and `args`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DbObject {
+    pub kind: String,
+    pub schema: Option<String>,
+    pub name: String,
+    /// The table of a trigger.
+    pub table: Option<String>,
+    /// The argument types of a `PostgreSQL` routine, as the server writes them.
+    /// Two functions can have the same name, so the drop needs them.
+    pub args: Option<String>,
+}
+
 /// One column of a table.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,6 +93,92 @@ pub struct Relation {
     /// True when `columns` are exactly the primary key or one unique index of `table`.
     /// Then one row of `ref_table` has at most one row here.
     pub unique: bool,
+}
+
+/// One index of a table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct IndexInfo {
+    /// Empty for the primary key of a `SQLite` row id table. It has no index name.
+    pub name: String,
+    /// In index order. Empty text for a part that is an expression.
+    pub columns: Vec<String>,
+    pub unique: bool,
+    pub primary: bool,
+}
+
+/// One foreign key of a table: `columns` point at `ref_columns` of `ref_table`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignKey {
+    /// Empty on `SQLite`. It does not keep the names of foreign keys.
+    pub name: String,
+    pub columns: Vec<String>,
+    /// Only set when the referenced table is in another schema or database.
+    pub ref_schema: Option<String>,
+    pub ref_table: String,
+    /// In the same order as `columns`.
+    pub ref_columns: Vec<String>,
+    /// The rules as the database writes them, like `CASCADE` or `NO ACTION`.
+    pub on_delete: String,
+    pub on_update: String,
+}
+
+/// The indexes and foreign keys of one table.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableKeys {
+    pub indexes: Vec<IndexInfo>,
+    pub foreign_keys: Vec<ForeignKey>,
+}
+
+/// An index to create.
+#[derive(Deserialize)]
+pub struct NewIndex {
+    pub name: String,
+    /// In index order.
+    pub columns: Vec<String>,
+    pub unique: bool,
+}
+
+/// What a foreign key does when the referenced row is deleted or its key changes.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub enum ReferentialAction {
+    #[serde(rename = "NO ACTION")]
+    NoAction,
+    #[serde(rename = "RESTRICT")]
+    Restrict,
+    #[serde(rename = "CASCADE")]
+    Cascade,
+    #[serde(rename = "SET NULL")]
+    SetNull,
+    #[serde(rename = "SET DEFAULT")]
+    SetDefault,
+}
+
+impl ReferentialAction {
+    /// The words for SQL, like `SET NULL`.
+    pub fn sql(self) -> &'static str {
+        match self {
+            Self::NoAction => "NO ACTION",
+            Self::Restrict => "RESTRICT",
+            Self::Cascade => "CASCADE",
+            Self::SetNull => "SET NULL",
+            Self::SetDefault => "SET DEFAULT",
+        }
+    }
+}
+
+/// A foreign key to add to a table.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewForeignKey {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub ref_table: TableRef,
+    /// In the same order as `columns`.
+    pub ref_columns: Vec<String>,
+    pub on_delete: ReferentialAction,
+    pub on_update: ReferentialAction,
 }
 
 /// One table of the diagram.

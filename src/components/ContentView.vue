@@ -6,22 +6,25 @@ import {
   DownloadIcon,
   LockIcon,
   MinusIcon,
+  PanelRightIcon,
   PlusIcon,
   RefreshCwIcon,
   Undo2Icon,
 } from 'lucide-vue-next'
 import { PAGE_SIZE } from '../constants'
-import { SHORTCUTS, injectRequired } from '../services/keys'
+import { LAYOUT_SERVICE, SHORTCUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
 import type { GridColumn, Row, TablePage } from '../types'
 import BottomBar from './BottomBar.vue'
 import DataGrid from './DataGrid.vue'
 import ExportRowsMenu from './ExportRowsMenu.vue'
 import FilterBar from './FilterBar.vue'
+import RowDetail from './RowDetail.vue'
 
 // The parent shows this view only when `session.page` is set.
 const props = defineProps<{ session: Session }>()
 const shortcuts = injectRequired(SHORTCUTS)
+const layout = injectRequired(LAYOUT_SERVICE)
 
 const selected = ref<number[]>([])
 // Where the export menu is open. null = closed.
@@ -34,6 +37,11 @@ const keyColumns = computed(primaryKeyNames)
 const restores = computed(selectionRestores)
 const exportColumns = computed(columnNames)
 const exportRows = computed(rowsToExport)
+const detailIndex = computed(lastSelected)
+const detailRow = computed(rowOfDetail)
+const detailEditable = computed(detailCanEdit)
+const detailChanged = computed(changedOfDetail)
+const detailTag = computed(tagOfDetail)
 
 // Row numbers mean other rows after a reload. Drop the selection.
 watch(sessionPage, clearSelection)
@@ -52,6 +60,38 @@ function toGridColumns(): GridColumn[] {
     columns.push({ name: column.name, type: column.dataType, nullable: column.nullable })
   }
   return columns
+}
+
+/**
+ * The row the detail panel shows: the last selected one. After a click that is the clicked row.
+ * After a drag or a Shift-click it is the last row of the range. -1 = none.
+ */
+function lastSelected(): number {
+  const index = selected.value.at(-1)
+  return index !== undefined && index < props.session.shownRows.length ? index : -1
+}
+
+function rowOfDetail(): Row | null {
+  return props.session.shownRows[detailIndex.value] ?? null
+}
+
+/** The same rule as the grid: an editable table, and not a row that is marked as deleted. */
+function detailCanEdit(): boolean {
+  return props.session.editable && !props.session.deletedRows.includes(detailIndex.value)
+}
+
+function changedOfDetail(): number[] {
+  return props.session.changedCells[detailIndex.value] ?? []
+}
+
+function tagOfDetail(): string {
+  if (props.session.deletedRows.includes(detailIndex.value)) {
+    return 'Marked for delete'
+  }
+  if (detailIndex.value >= (props.session.page?.rows.length ?? 0)) {
+    return 'New row'
+  }
+  return props.session.editable ? '' : 'Read only'
 }
 
 function columnNames(): string[] {
@@ -131,21 +171,33 @@ function deleteSelected(): void {
 <template>
   <FilterBar :session="session" />
 
-  <DataGrid
-    v-model:selected="selected"
-    :columns="gridColumns"
-    :rows="session.shownRows"
-    :editable="session.editable"
-    :order-by="session.orderBy"
-    :descending="session.descending"
-    :new-from="session.page?.rows.length"
-    :changed="session.changedCells"
-    :deleted="session.deletedRows"
-    :key-columns="keyColumns"
-    @sort="session.run(session.sort($event))"
-    @edit="edit"
-    @menu="openMenu"
-  />
+  <div class="body">
+    <DataGrid
+      v-model:selected="selected"
+      :columns="gridColumns"
+      :rows="session.shownRows"
+      :editable="session.editable"
+      :order-by="session.orderBy"
+      :descending="session.descending"
+      :new-from="session.page?.rows.length"
+      :changed="session.changedCells"
+      :deleted="session.deletedRows"
+      :key-columns="keyColumns"
+      @sort="session.run(session.sort($event))"
+      @edit="edit"
+      @menu="openMenu"
+    />
+    <RowDetail
+      v-if="layout.detailOpen"
+      :columns="gridColumns"
+      :row="detailRow"
+      :row-index="detailIndex"
+      :editable="detailEditable"
+      :changed="detailChanged"
+      :tag="detailTag"
+      @edit="edit"
+    />
+  </div>
   <ExportRowsMenu
     v-if="menu"
     :session="session"
@@ -185,6 +237,15 @@ function deleteSelected(): void {
     >
       <DownloadIcon :size="13" />
     </button>
+    <button
+      class="icon"
+      :class="{ active: layout.detailOpen }"
+      :title="`${layout.detailOpen ? 'Hide' : 'Show'} row details (${shortcuts.hint('I')})`"
+      :aria-pressed="layout.detailOpen"
+      @click="layout.toggleDetail()"
+    >
+      <PanelRightIcon :size="13" />
+    </button>
     <span class="divider" />
     <template v-if="session.pendingCount > 0">
       <span class="pill unsaved"><span class="dot" />{{ session.unsavedText }}</span>
@@ -222,6 +283,22 @@ function deleteSelected(): void {
 </template>
 
 <style scoped>
+/* The grid and the row detail panel, side by side. */
+.body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.body > .grid {
+  min-width: 0;
+}
+
+/* The row details button while the panel is open. */
+button.icon.active {
+  color: var(--accent-text);
+}
+
 .page {
   font-weight: 500;
 }

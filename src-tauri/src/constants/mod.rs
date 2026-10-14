@@ -123,6 +123,13 @@ pub const CANNOT_MANAGE_USERS: &str = "Your account is not allowed to manage use
 /// The error for a database kind that has no accounts.
 pub const NO_USER_ACCOUNTS: &str = "SQLite has no user accounts";
 
+/// The error for a foreign key change on `SQLite`.
+pub const SQLITE_FOREIGN_KEYS_FIXED: &str =
+    "SQLite cannot add or drop a foreign key of an existing table";
+
+/// The error for a try to drop the primary key as an index.
+pub const PRIMARY_KEY_NOT_DROPPED: &str = "The primary key cannot be dropped here";
+
 /// Shown in place of a database message that could hold a password.
 pub const PASSWORD_ERROR_HIDDEN: &str = "The database refused the statement. The details are hidden because they could show the password.";
 
@@ -152,6 +159,22 @@ pub const UPDATE_LATER_TEXT: &str = "Later";
 
 /// The title of the popup that says the update could not be installed.
 pub const UPDATE_ERROR_TITLE: &str = "Update failed";
+
+/// The error of a query that the user cancelled.
+pub const QUERY_CANCELLED: &str = "Query cancelled";
+
+/// The error when the cancel cannot reach the server in time.
+pub const CANCEL_NOT_REACHED: &str = "Could not reach the server to cancel the query";
+
+/// The `kind` of a `DbObject`. A view is also a `TableRef` with the kind `view`.
+pub const VIEW: &str = "view";
+pub const TRIGGER: &str = "trigger";
+pub const PROCEDURE: &str = "procedure";
+pub const FUNCTION: &str = "function";
+
+/// How many `SQLite` steps run between two checks for a cancel.
+/// A smaller number reacts faster but makes every query a little slower.
+pub const SQLITE_CANCEL_CHECK_STEPS: i32 = 1000;
 
 #[cfg(test)]
 mod tests {

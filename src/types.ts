@@ -30,6 +30,25 @@ export interface TableRef {
   kind: 'table' | 'view'
 }
 
+export type DbObjectKind = 'view' | 'trigger' | 'procedure' | 'function'
+
+/** A view, trigger, procedure or function. Only PostgreSQL fills `schema` and `args`. */
+export interface DbObject {
+  kind: DbObjectKind
+  schema: string | null
+  name: string
+  /** The table of a trigger. */
+  table: string | null
+  /** The argument types of a PostgreSQL routine. Two routines can share a name. */
+  args: string | null
+}
+
+/** The SQL definition that is shown in the place of a table. */
+export interface ObjectDefinition {
+  object: DbObject
+  sql: string
+}
+
 export interface ColumnInfo {
   name: string
   dataType: string
@@ -189,6 +208,54 @@ export interface Relation {
   refColumns: string[]
   /** True when the key columns are exactly a primary key or a unique index of `table`. */
   unique: boolean
+}
+
+/** One index of a table. `name` is empty for the primary key of a SQLite row id table. */
+export interface IndexInfo {
+  name: string
+  /** In index order. An empty text is a part that is an expression. */
+  columns: string[]
+  unique: boolean
+  primary: boolean
+}
+
+/** What a foreign key does when the referenced row is deleted or its key changes. */
+export type ReferentialAction = 'NO ACTION' | 'RESTRICT' | 'CASCADE' | 'SET NULL' | 'SET DEFAULT'
+
+/** One foreign key of the open table. `name` is empty on SQLite. */
+export interface ForeignKey {
+  name: string
+  columns: string[]
+  /** Set only when the referenced table is in another schema or database. */
+  refSchema: string | null
+  refTable: string
+  /** In the same order as `columns`. */
+  refColumns: string[]
+  /** As the database writes it, like CASCADE. */
+  onDelete: string
+  onUpdate: string
+}
+
+/** The indexes and foreign keys of one table. */
+export interface TableKeys {
+  indexes: IndexInfo[]
+  foreignKeys: ForeignKey[]
+}
+
+export interface NewIndex {
+  name: string
+  columns: string[]
+  unique: boolean
+}
+
+export interface NewForeignKey {
+  name: string
+  columns: string[]
+  refTable: TableRef
+  /** In the same order as `columns`. */
+  refColumns: string[]
+  onDelete: ReferentialAction
+  onUpdate: ReferentialAction
 }
 
 /** All tables of the current database and their foreign keys. Views are left out. */

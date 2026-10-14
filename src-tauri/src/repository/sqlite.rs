@@ -1,19 +1,33 @@
 //! `SQLite` access.
 
 use async_trait::async_trait;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRow};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteConnection, SqlitePool, SqliteQueryResult, SqliteRow,
+};
 use sqlx::{AssertSqlSafe, Row as _, Sqlite, TypeInfo as _, ValueRef as _};
 
 use super::{
-    Repository, Statement, bytes_to_text, cell, collect, double_quote, execute, execute_all, kind,
-    literal, pool_options, relations, run_script, single, standard_columns,
+    Repository, Statement, bytes_to_text, cell, collect, definition, double_quote, execute,
+    execute_all, foreign_keys, indexes, kind, literal, objects, pool_options, relations,
+    run_script, single, standard_columns,
 };
+use crate::constants::{SQLITE_CANCEL_CHECK_STEPS, SQLITE_FOREIGN_KEYS_FIXED};
 use crate::error::AppResult;
-use crate::model::{ColumnInfo, ColumnSpec, ConnectionConfig, Relation, ResultSet, TableRef};
+use crate::model::{
+    ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, ForeignKey, IndexInfo, Relation, ResultSet,
+    TableRef,
+};
 
 const TABLES_SQL: &str = "SELECT name, type FROM sqlite_master \
     WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' \
     ORDER BY name";
+
+/// The triggers, in the shape `objects` reads. `SQLite` has no routines.
+const OBJECTS_SQL: &str = "SELECT 'trigger', NULL, name, tbl_name, NULL FROM sqlite_master \
+    WHERE type = 'trigger' ORDER BY name";
 
 /// One row per foreign key column, in the shape `relations` reads.
 ///
@@ -46,14 +60,32 @@ const UNIQUE_SQL: &str = "SELECT NULL, m.name, i.name, c.name \
 
 pub struct SqliteRepository {
     pool: SqlitePool,
+    /// Set by cancel. `SQLite` checks it while a statement runs and stops the statement.
+    cancelled: Arc<AtomicBool>,
 }
 
 impl SqliteRepository {
     /// Opens an existing file. We never create one, so a typo does not leave junk files.
     pub async fn connect(config: &ConnectionConfig) -> AppResult<Self> {
         let options = SqliteConnectOptions::new().filename(&config.database);
-        let pool = pool_options().connect_with(options).await?;
-        Ok(Self { pool })
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancelled);
+        let pool = pool_options()
+            .after_connect(move |connection: &mut SqliteConnection, _| {
+                let flag = Arc::clone(&flag);
+                Box::pin(async move {
+                    // The check runs inside SQLite, so it works while the connection is busy.
+                    // `swap` clears the flag, so one cancel stops one statement only.
+                    let mut handle = connection.lock_handle().await?;
+                    handle.set_progress_handler(SQLITE_CANCEL_CHECK_STEPS, move || {
+                        !flag.swap(false, Ordering::Relaxed)
+                    });
+                    Ok(())
+                })
+            })
+            .connect_with(options)
+            .await?;
+        Ok(Self { pool, cancelled })
     }
 
     /// `SQLite` types each value on its own, so we look at the value, not the column.
@@ -99,9 +131,15 @@ impl Repository for SqliteRepository {
         "AUTOINCREMENT"
     }
 
+    // ponytail: a cancel that comes after the query ended stays set until the next
+    // `query` clears it, so a write in between could stop. The frontend only sends
+    // a cancel while a query or a page load runs. Count running queries if that bites.
     async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>> {
+        self.cancelled.store(false, Ordering::Relaxed);
         let stream = sqlx::raw_sql(AssertSqlSafe(sql.to_owned())).fetch_many(&self.pool);
-        collect::<Sqlite>(stream, Self::read, SqliteQueryResult::rows_affected).await
+        let result = collect::<Sqlite>(stream, Self::read, SqliteQueryResult::rows_affected).await;
+        self.cancelled.store(false, Ordering::Relaxed);
+        result
     }
 
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64> {
@@ -150,6 +188,46 @@ impl Repository for SqliteRepository {
         Ok(relations(&keys, &unique))
     }
 
+    /// A primary key on the row id has no index. It comes from the table info, with no name.
+    async fn indexes(&self, table: &TableRef) -> AppResult<Vec<IndexInfo>> {
+        let name = literal(&table.name);
+        let sql = format!(
+            "SELECT i.name, coalesce(c.name, ''), CASE WHEN i.\"unique\" THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN i.origin = 'pk' THEN 'YES' ELSE 'NO' END, i.origin <> 'pk', c.seqno \
+            FROM pragma_index_list({name}) i \
+            JOIN pragma_index_info(i.name) c \
+            UNION ALL \
+            SELECT '', name, 'YES', 'YES', 0, pk \
+            FROM pragma_table_info({name}) \
+            WHERE pk > 0 AND NOT EXISTS \
+                (SELECT 1 FROM pragma_index_list({name}) WHERE origin = 'pk') \
+            ORDER BY 5, 1, 6"
+        );
+        Ok(indexes(&single(self.query(&sql).await?)))
+    }
+
+    /// Looks up the real names like `FOREIGN_KEYS_SQL` does. `SQLite` keeps no key names.
+    async fn foreign_keys(&self, table: &TableRef) -> AppResult<Vec<ForeignKey>> {
+        let name = literal(&table.name);
+        let sql = format!(
+            "SELECT f.id, '', coalesce(c.name, f.\"from\"), NULL, coalesce(p.name, f.\"table\"), \
+                coalesce(pc.name, f.\"to\"), f.on_delete, f.on_update \
+            FROM pragma_foreign_key_list({name}) f \
+            LEFT JOIN pragma_table_info({name}) c ON c.name = f.\"from\" COLLATE NOCASE \
+            LEFT JOIN sqlite_master p ON p.type = 'table' AND p.name = f.\"table\" COLLATE NOCASE \
+            LEFT JOIN pragma_table_info(p.name) pc \
+                ON pc.name = f.\"to\" COLLATE NOCASE OR (f.\"to\" IS NULL AND pc.pk = f.seq + 1) \
+            ORDER BY f.id, f.seq"
+        );
+        Ok(foreign_keys(&single(self.query(&sql).await?)))
+    }
+
+    /// `SQLite` has no `ADD CONSTRAINT` or `DROP CONSTRAINT`. It would need a table rebuild.
+    // ponytail: read only. Rebuild the table in one transaction if users need this.
+    fn check_foreign_key_change(&self) -> AppResult<()> {
+        Err(SQLITE_FOREIGN_KEYS_FIXED.into())
+    }
+
     /// `SQLite` keeps the `CREATE` statement of every table and view as it was typed.
     async fn create_sql(&self, table: &TableRef) -> AppResult<Option<String>> {
         let sql = format!(
@@ -161,6 +239,18 @@ impl Repository for SqliteRepository {
             .rows
             .first()
             .and_then(|row| row.first().cloned().flatten()))
+    }
+
+    async fn objects(&self) -> AppResult<Vec<DbObject>> {
+        Ok(objects(&single(self.query(OBJECTS_SQL).await?)))
+    }
+
+    async fn object_sql(&self, object: &DbObject) -> AppResult<String> {
+        let sql = format!(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = {}",
+            literal(&object.name)
+        );
+        definition(&single(self.query(&sql).await?), 0, &object.name)
     }
 
     /// `SQLite` can only rename, add and drop columns. Other changes need a table rebuild.
@@ -185,5 +275,10 @@ impl Repository for SqliteRepository {
 
     async fn close(&self) {
         self.pool.close().await;
+    }
+
+    async fn cancel(&self) -> AppResult<()> {
+        self.cancelled.store(true, Ordering::Relaxed);
+        Ok(())
     }
 }

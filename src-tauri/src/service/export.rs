@@ -185,8 +185,7 @@ impl<'run> Exporter<'run> {
 
     /// The database's own `CREATE` statement. Without one, it is built from the columns.
     // ponytail: the built statement (PostgreSQL) has the columns and the primary key,
-    // but no indexes, foreign keys or checks. A view comes out as a table. The Backup
-    // button (pg_dump) makes a full copy.
+    // but no indexes, foreign keys or checks. The Backup button (pg_dump) makes a full copy.
     async fn create_statement(
         &self,
         table: &TableRef,

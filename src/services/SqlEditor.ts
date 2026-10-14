@@ -73,9 +73,11 @@ export interface SqlEditorOptions {
   parent: HTMLElement
   text: string
   /** Called with the full text after each edit. */
-  onChange(text: string): void
+  onChange?(text: string): void
   /** Called on Cmd+Enter or Ctrl+Enter. */
-  onRun(): void
+  onRun?(): void
+  /** True to only show the text. It can still be selected and copied. */
+  readOnly?: boolean
 }
 
 /** The SQL editor: CodeMirror with our look, our keys and the table names. */
@@ -107,6 +109,7 @@ export class SqlEditor {
           syntaxHighlighting(HIGHLIGHT),
           LOOK,
           EditorView.updateListener.of(this.handleUpdate.bind(this)),
+          EditorState.readOnly.of(options.readOnly ?? false),
         ],
       }),
     })
@@ -145,13 +148,13 @@ export class SqlEditor {
   }
 
   private handleRun(): boolean {
-    this.options.onRun()
+    this.options.onRun?.()
     return true
   }
 
   private handleUpdate(update: ViewUpdate): void {
     if (update.docChanged) {
-      this.options.onChange(update.state.doc.toString())
+      this.options.onChange?.(update.state.doc.toString())
     }
   }
 }

@@ -1,11 +1,19 @@
 // A check of the sidebar width and editor height logic, with a fake storage and a fake root element. Run: bun test
 import { expect, test } from 'bun:test'
 import {
+  DETAIL_DEFAULT_WIDTH,
+  DETAIL_MIN_WIDTH,
+  DETAIL_OPEN_STORAGE_KEY,
+  DETAIL_WIDTH_PROPERTY,
   EDITOR_DEFAULT_HEIGHT,
   EDITOR_HEIGHT_PROPERTY,
   EDITOR_HEIGHT_STORAGE_KEY,
   EDITOR_MAX_HEIGHT,
   EDITOR_MIN_HEIGHT,
+  KEYS_DEFAULT_HEIGHT,
+  KEYS_HEIGHT_PROPERTY,
+  KEYS_HEIGHT_STORAGE_KEY,
+  KEYS_MIN_HEIGHT,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
@@ -106,4 +114,46 @@ test('a broken saved value gives the default editor height', function () {
     storage.items[EDITOR_HEIGHT_STORAGE_KEY] = bad
     expect(build(storage, new FakeRoot()).editorHeight).toBe(EDITOR_DEFAULT_HEIGHT)
   }
+})
+
+test('the detail panel width is kept inside its limits, saved and restored', function () {
+  const storage = new FakeStorage()
+  const root = new FakeRoot()
+  const layout = build(storage, root)
+  expect(layout.detailWidth).toBe(DETAIL_DEFAULT_WIDTH)
+  expect(root.properties[DETAIL_WIDTH_PROPERTY]).toBe(`${DETAIL_DEFAULT_WIDTH}px`)
+  layout.resize(10, 'detailWidth')
+  expect(layout.detailWidth).toBe(DETAIL_MIN_WIDTH)
+  layout.resize(400, 'detailWidth')
+  layout.save('detailWidth')
+  expect(build(storage, new FakeRoot()).detailWidth).toBe(400)
+})
+
+test('the detail panel starts closed, and open or closed is saved', function () {
+  const storage = new FakeStorage()
+  const layout = build(storage, new FakeRoot())
+  expect(layout.detailOpen).toBe(false)
+  layout.toggleDetail()
+  expect(layout.detailOpen).toBe(true)
+  expect(storage.items[DETAIL_OPEN_STORAGE_KEY]).toBe('1')
+  expect(build(storage, new FakeRoot()).detailOpen).toBe(true)
+  layout.toggleDetail()
+  expect(build(storage, new FakeRoot()).detailOpen).toBe(false)
+})
+
+test('the keys area height is kept inside its limits, saved, restored and reset', function () {
+  const storage = new FakeStorage()
+  const root = new FakeRoot()
+  const layout = build(storage, root)
+  expect(layout.keysHeight).toBe(KEYS_DEFAULT_HEIGHT)
+  expect(root.properties[KEYS_HEIGHT_PROPERTY]).toBe(`${KEYS_DEFAULT_HEIGHT}px`)
+  layout.resize(5, 'keysHeight')
+  expect(layout.keysHeight).toBe(KEYS_MIN_HEIGHT)
+  layout.resize(250.4, 'keysHeight')
+  layout.save('keysHeight')
+  expect(build(storage, new FakeRoot()).keysHeight).toBe(250)
+  layout.reset('keysHeight')
+  expect(storage.items[KEYS_HEIGHT_STORAGE_KEY]).toBe(String(KEYS_DEFAULT_HEIGHT))
+  storage.items[KEYS_HEIGHT_STORAGE_KEY] = 'abc'
+  expect(build(storage, new FakeRoot()).keysHeight).toBe(KEYS_DEFAULT_HEIGHT)
 })

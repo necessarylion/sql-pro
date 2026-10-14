@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch, type CSSProperties } from 'vue'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  ref,
+  useTemplateRef,
+  watch,
+  type CSSProperties,
+} from 'vue'
 import { ChevronDownIcon, ChevronUpIcon, KeyRoundIcon } from 'lucide-vue-next'
 import {
   BINARY_TYPE_PATTERN,
@@ -39,6 +47,7 @@ const selected = defineModel<number[]>('selected')
 const shortcuts = injectRequired(SHORTCUTS)
 // The selection logic. `selected` stays the source: the parent can clear it, like after a reload.
 const selection = new TableSelection<number>()
+const grid = useTemplateRef<HTMLElement>('grid')
 // The mouse button can be let go in the middle of a drag when the grid goes away.
 onBeforeUnmount(endDrag)
 
@@ -226,6 +235,38 @@ function dragOver(rowIndex: number): void {
   }
 }
 
+/**
+ * Up and down arrows select the row above or below the last selected row.
+ * Only when the grid itself has the focus. The cell editor keeps its arrows.
+ */
+function moveSelection(event: KeyboardEvent): void {
+  if (event.target !== event.currentTarget || props.rows.length === 0) {
+    return
+  }
+  let step = 0
+  if (event.key === 'ArrowDown') {
+    step = 1
+  } else if (event.key === 'ArrowUp') {
+    step = -1
+  } else {
+    return
+  }
+  event.preventDefault()
+  const last = selected.value?.at(-1)
+  const next = last === undefined ? 0 : Math.min(props.rows.length - 1, Math.max(0, last + step))
+  selection.only(next)
+  selected.value = [next]
+  void nextTick(showSelected)
+}
+
+/** Scrolls the grid so the last selected row can be seen. */
+function showSelected(): void {
+  const index = selected.value?.at(-1)
+  if (index !== undefined) {
+    grid.value?.querySelectorAll('tbody tr')[index]?.scrollIntoView({ block: 'nearest' })
+  }
+}
+
 function endDrag(): void {
   selection.endDrag()
   document.documentElement.classList.remove('selecting')
@@ -300,7 +341,7 @@ function onEnter(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <div class="grid" @mousedown.left="pressEmpty">
+  <div ref="grid" class="grid" tabindex="0" @mousedown.left="pressEmpty" @keydown="moveSelection">
     <table>
       <thead>
         <tr @pointerdown="allowSort">
@@ -396,6 +437,11 @@ function onEnter(event: KeyboardEvent): void {
   font-size: 11px;
 }
 
+/* The grid takes the focus for the arrow keys. The selected row already shows where it is. */
+.grid:focus {
+  outline: none;
+}
+
 table {
   border-spacing: 0;
 }
@@ -473,6 +519,11 @@ td {
 /* The last row gets a bottom line, so a short table does not look open. */
 tbody tr:last-child td {
   border-bottom: 1px solid var(--border-soft);
+}
+
+/* A row that the arrow keys scroll to is not hidden under the sticky header. */
+tbody tr {
+  scroll-margin-top: 22px;
 }
 
 tbody tr:nth-child(even) {

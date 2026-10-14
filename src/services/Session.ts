@@ -1,4 +1,10 @@
-import { DELETE_ROWS_TITLE, PAGE_SIZE, QUERY_RESULT_NAME } from '../constants'
+import {
+  DELETE_ROWS_TITLE,
+  OBJECT_KIND_LABELS,
+  PAGE_SIZE,
+  QUERY_CANCELLED_STATUS,
+  QUERY_RESULT_NAME,
+} from '../constants'
 import { DIAGRAM_SAVED_STATUS_MS } from '../constants/diagram'
 import { RAW_FILTER_COLUMN, VALUELESS_OPERATORS } from '../constants/filters'
 import { ACCESS_LABELS } from '../constants/users'
@@ -8,19 +14,24 @@ import type {
   ConnectionConfig,
   CsvImport,
   CsvPreview,
+  DbObject,
   DbUser,
   Diagram,
   ExportFormat,
   ExportRequest,
   RowsExport,
   GrantableAccess,
+  NewForeignKey,
+  NewIndex,
   NewUser,
+  ObjectDefinition,
   FilterRow,
   FilterRule,
   ResultSet,
   Row,
   RowUpdate,
   SessionView,
+  TableKeys,
   TablePage,
   TableRef,
   Values,
@@ -46,12 +57,22 @@ export class Session {
   /** The environment of the open connection, like `dev` or `prod`. '' = none. */
   environment = ''
   busy = false
+  /** True while a query or a page load runs that the user may cancel. */
+  cancellable = false
+  /** True after the user asked to cancel. The run then ends with a short status, not an error. */
+  cancelling = false
   error = ''
   databases: string[] = []
   tables: TableRef[] = []
+  /** The triggers and routines of the current database. */
+  objects: DbObject[] = []
   table: TableRef | null = null
+  /** The SQL of a view, trigger or routine. It is shown in the place of a table. */
+  definition: ObjectDefinition | null = null
   view: SessionView = 'content'
   page: TablePage | null = null
+  /** The indexes and foreign keys of the open table. Loaded only for the Structure view. */
+  keys: TableKeys | null = null
   offset = 0
   /** The raw SQL filter that is applied now. */
   filter = ''
@@ -213,13 +234,45 @@ export class Session {
     this.error = ''
     try {
       await work
-      return true
+      return !this.endCancelled()
     } catch (error) {
-      this.error = String(error)
+      if (!this.endCancelled()) {
+        this.error = String(error)
+      }
       return false
     } finally {
       this.busy = false
+      this.cancellable = false
+      this.cancelling = false
     }
+  }
+
+  /**
+   * Stops the running query or page load. The backend stops it on the server.
+   * Does nothing when nothing that can be cancelled runs.
+   */
+  async cancel(): Promise<void> {
+    if (!this.busy || !this.cancellable || this.cancelling) {
+      return
+    }
+    this.cancelling = true
+    try {
+      await this.api.cancelQuery(this.id)
+    } catch (error) {
+      this.cancelling = false
+      this.error = String(error)
+    }
+  }
+
+  /**
+   * True when the user cancelled the work that just ended. Then it shows the short status.
+   * A cancelled query may still end without an error: MySQL ends a cancelled SLEEP like that.
+   */
+  private endCancelled(): boolean {
+    if (this.cancelling) {
+      this.status = QUERY_CANCELLED_STATUS
+    }
+    return this.cancelling
   }
 
   async connect(config: ConnectionConfig, title: string, environment = ''): Promise<void> {
@@ -258,6 +311,7 @@ export class Session {
       this.environment = ''
       this.databases = []
       this.tables = []
+      this.objects = []
       this.result = null
       this.status = ''
       this.diagram = null
@@ -285,8 +339,73 @@ export class Session {
     }
   }
 
+  /** Loads the tables and views, then the triggers and routines. */
   async loadTables(): Promise<void> {
     this.tables = await this.api.listTables(this.id)
+    await this.loadObjects()
+  }
+
+  /**
+   * Loads the triggers and routines. It never throws.
+   * The list is extra. An account that may not read it still sees its tables.
+   */
+  async loadObjects(): Promise<void> {
+    try {
+      this.objects = await this.api.listObjects(this.id)
+    } catch {
+      this.objects = []
+    }
+  }
+
+  /** Shows the CREATE statement of a view, trigger or routine. It replaces the open table. */
+  async showDefinition(object: DbObject): Promise<void> {
+    if (!(await this.mayDiscard())) {
+      return
+    }
+    this.clearTable()
+    if (this.view !== 'content' && this.view !== 'structure') {
+      this.view = 'content'
+    }
+    const sql = await this.api.objectDefinition(this.id, object)
+    this.definition = { object, sql }
+  }
+
+  /** Puts the shown definition into the Query view, so it can be changed and run there. */
+  editDefinition(): void {
+    if (this.definition) {
+      this.sql = this.definition.sql
+      this.view = 'query'
+    }
+  }
+
+  /** A view as an object, for `showDefinition`. */
+  static viewObject(view: TableRef): DbObject {
+    return { kind: 'view', schema: view.schema, name: view.name, table: null, args: null }
+  }
+
+  /** True when the definition of `object` is shown now. */
+  shows(object: DbObject): boolean {
+    const shown = this.definition?.object
+    return (
+      shown?.kind === object.kind &&
+      shown.name === object.name &&
+      shown.schema === object.schema &&
+      shown.table === object.table &&
+      shown.args === object.args
+    )
+  }
+
+  /** Drops a trigger or routine. The list is loaded again, also after an error. */
+  async dropObject(object: DbObject): Promise<void> {
+    try {
+      await this.api.dropObject(this.id, object)
+    } finally {
+      await this.loadObjects()
+    }
+    if (this.shows(object)) {
+      this.definition = null
+    }
+    this.status = `${OBJECT_KIND_LABELS[object.kind]} "${object.name}" dropped`
   }
 
   async selectTable(table: TableRef): Promise<void> {
@@ -329,6 +448,7 @@ export class Session {
     if (!table) {
       return
     }
+    this.cancellable = true
     const page = await this.api.browse(this.id, {
       table,
       filter: this.filter,
@@ -339,6 +459,7 @@ export class Session {
       offset: this.offset,
       total,
     })
+    this.cancellable = false
     // The user may have picked another table while this one was loading.
     if (this.table === table) {
       this.page = page
@@ -349,7 +470,69 @@ export class Session {
           row.column = page.columns[0]?.name ?? ''
         }
       }
+      // A column change can change the indexes too. Other views do not need them.
+      this.keys = null
+      if (this.view === 'structure') {
+        await this.loadKeys()
+      }
     }
+  }
+
+  /** Loads the indexes and foreign keys of the open table. A view has none. */
+  async loadKeys(): Promise<void> {
+    const table = this.table
+    if (!table || table.kind !== 'table') {
+      this.keys = null
+      return
+    }
+    const keys = await this.api.tableKeys(this.id, table)
+    // The user may have picked another table while this one was loading.
+    if (this.table === table) {
+      this.keys = keys
+    }
+  }
+
+  /** SQLite cannot add or drop a foreign key of an existing table. */
+  get canChangeForeignKeys(): boolean {
+    return this.config?.driver !== 'sqlite'
+  }
+
+  async addIndex(index: NewIndex): Promise<void> {
+    const name = index.name.trim()
+    if (!this.table || name === '') {
+      return
+    }
+    await this.api.addIndex(this.id, this.table, { ...index, name })
+    this.status = `Index "${name}" added`
+    await this.loadKeys()
+  }
+
+  async dropIndex(name: string): Promise<void> {
+    if (!this.table) {
+      return
+    }
+    await this.api.dropIndex(this.id, this.table, name)
+    this.status = `Index "${name}" dropped`
+    await this.loadKeys()
+  }
+
+  async addForeignKey(key: NewForeignKey): Promise<void> {
+    const name = key.name.trim()
+    if (!this.table || name === '') {
+      return
+    }
+    await this.api.addForeignKey(this.id, this.table, { ...key, name })
+    this.status = `Foreign key "${name}" added`
+    await this.loadKeys()
+  }
+
+  async dropForeignKey(name: string): Promise<void> {
+    if (!this.table) {
+      return
+    }
+    await this.api.dropForeignKey(this.id, this.table, name)
+    this.status = `Foreign key "${name}" dropped`
+    await this.loadKeys()
   }
 
   async sort(column: string): Promise<void> {
@@ -695,7 +878,8 @@ export class Session {
       try {
         if (verb === 'drop') {
           await this.api.dropTable(this.id, table)
-          if (this.isOpen(table)) {
+          // The definition of a dropped view goes too.
+          if (this.isOpen(table) || this.shows(Session.viewObject(table))) {
             this.clearTable()
           }
         } else {
@@ -927,7 +1111,9 @@ export class Session {
   /** Shows the last result that has columns. Adds up the affected rows of the rest. */
   async runQuery(sql: string): Promise<void> {
     const started = performance.now()
+    this.cancellable = true
     const sets = await this.api.runQuery(this.id, sql)
+    this.cancellable = false
     const seconds = ((performance.now() - started) / 1000).toFixed(2)
 
     let result: ResultSet | null = null
@@ -1015,7 +1201,9 @@ export class Session {
 
   private clearTable(): void {
     this.table = null
+    this.definition = null
     this.page = null
+    this.keys = null
     this.discardChanges()
     this.offset = 0
     this.filter = ''

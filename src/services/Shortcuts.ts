@@ -1,4 +1,6 @@
 import {
+  CANCEL_KEY,
+  CANCEL_SHORTCUT_KEY,
   MAC_PLATFORM_PATTERN,
   SHIFT_SHORTCUT_KEYS,
   SHORTCUT_KEYS,
@@ -39,6 +41,18 @@ export class Shortcuts {
     }
     const keys = shiftKey ? SHIFT_SHORTCUT_KEYS : SHORTCUT_KEYS
     return keys[event.key.toLowerCase()] ?? null
+  }
+
+  /** True for Escape alone, or Cmd+. (macOS) or Ctrl+. (Windows, Linux). Both stop a running query. */
+  cancels(event: ModifierKeys & { key: string }): boolean {
+    // Read each key by name. A spread copy of a real KeyboardEvent has none of them.
+    const { metaKey, ctrlKey, shiftKey, altKey } = event
+    if (event.key === CANCEL_KEY) {
+      return !metaKey && !ctrlKey && !shiftKey && !altKey
+    }
+    return (
+      event.key === CANCEL_SHORTCUT_KEY && this.hasModifier({ metaKey, ctrlKey, shiftKey, altKey })
+    )
   }
 
   /**

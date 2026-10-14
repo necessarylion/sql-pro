@@ -10,8 +10,8 @@ use tauri::State;
 use crate::error::AppResult;
 use crate::model::{
     AccessLevel, BrowseRequest, ColumnInfo, ColumnSpec, ConnectionConfig, CsvImport, CsvPreview,
-    Diagram, ExportRequest, NewColumn, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult,
-    TablePage, TableRef, UserList, Values,
+    DbObject, Diagram, ExportRequest, NewColumn, NewForeignKey, NewIndex, NewUser, ResultSet,
+    RowUpdate, RowsExport, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::repository::PasswordRepository;
 use crate::service::ConnectionService;
@@ -62,6 +62,12 @@ pub async fn browse(
 #[tauri::command]
 pub async fn run_query(service: Service<'_>, id: String, sql: String) -> AppResult<Vec<ResultSet>> {
     service.run_query(&id, &sql).await
+}
+
+/// Runs at the same time as the query it stops. Tauri runs async commands side by side.
+#[tauri::command]
+pub async fn cancel_query(service: Service<'_>, id: String) -> AppResult<()> {
+    service.cancel_query(&id).await
 }
 
 #[tauri::command]
@@ -131,6 +137,51 @@ pub async fn alter_column(
 }
 
 #[tauri::command]
+pub async fn table_keys(service: Service<'_>, id: String, table: TableRef) -> AppResult<TableKeys> {
+    service.table_keys(&id, &table).await
+}
+
+#[tauri::command]
+pub async fn add_index(
+    service: Service<'_>,
+    id: String,
+    table: TableRef,
+    index: NewIndex,
+) -> AppResult<()> {
+    service.add_index(&id, &table, &index).await
+}
+
+#[tauri::command]
+pub async fn drop_index(
+    service: Service<'_>,
+    id: String,
+    table: TableRef,
+    name: String,
+) -> AppResult<()> {
+    service.drop_index(&id, &table, &name).await
+}
+
+#[tauri::command]
+pub async fn add_foreign_key(
+    service: Service<'_>,
+    id: String,
+    table: TableRef,
+    key: NewForeignKey,
+) -> AppResult<()> {
+    service.add_foreign_key(&id, &table, &key).await
+}
+
+#[tauri::command]
+pub async fn drop_foreign_key(
+    service: Service<'_>,
+    id: String,
+    table: TableRef,
+    name: String,
+) -> AppResult<()> {
+    service.drop_foreign_key(&id, &table, &name).await
+}
+
+#[tauri::command]
 pub async fn create_table(
     service: Service<'_>,
     id: String,
@@ -153,6 +204,25 @@ pub async fn rename_table(
 #[tauri::command]
 pub async fn drop_table(service: Service<'_>, id: String, table: TableRef) -> AppResult<()> {
     service.drop_table(&id, &table).await
+}
+
+#[tauri::command]
+pub async fn list_objects(service: Service<'_>, id: String) -> AppResult<Vec<DbObject>> {
+    service.objects(&id).await
+}
+
+#[tauri::command]
+pub async fn object_definition(
+    service: Service<'_>,
+    id: String,
+    object: DbObject,
+) -> AppResult<String> {
+    service.object_definition(&id, &object).await
+}
+
+#[tauri::command]
+pub async fn drop_object(service: Service<'_>, id: String, object: DbObject) -> AppResult<()> {
+    service.drop_object(&id, &object).await
 }
 
 #[tauri::command]

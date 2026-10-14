@@ -20,6 +20,7 @@ import {
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
+  SquareFunctionIcon,
   TableIcon,
   TablePropertiesIcon,
   TerminalIcon,
@@ -27,13 +28,16 @@ import {
   UploadIcon,
   UsersIcon,
   WorkflowIcon,
+  ZapIcon,
 } from 'lucide-vue-next'
-import { VIEW_LABELS } from '../constants'
+import { OBJECT_KIND_LABELS, VIEW_LABELS } from '../constants'
 import { SESSION_MANAGER, SHORTCUTS, injectRequired } from '../services/keys'
-import type { Session } from '../services/Session'
+import { Session } from '../services/Session'
 import { TableSelection } from '../services/TableSelection'
-import type { SessionView, TableRef } from '../types'
+import type { DbObject, DbObjectKind, SessionView, TableRef } from '../types'
 import ContentView from './ContentView.vue'
+import ContextMenu from './ContextMenu.vue'
+import DefinitionView from './DefinitionView.vue'
 import DiagramView from './DiagramView.vue'
 import EnvBadge from './EnvBadge.vue'
 import ExportDialog from './ExportDialog.vue'
@@ -92,6 +96,12 @@ const summary = computed(describeTables)
 const backupBlocked = computed(hasNoDatabase)
 const exportAsked = computed(readExportAsked)
 const database = computed(readDatabase)
+const triggers = computed(matchingTriggers)
+const routines = computed(matchingRoutines)
+/** The trigger and routine groups that are closed. */
+const collapsed = reactive({ triggers: false, routines: false })
+/** The menu of a trigger or routine that is open now. */
+const objectMenu = ref<{ object: DbObject; x: number; y: number } | null>(null)
 
 watch(exportAsked, exportFromShortcut)
 watch(database, clearSelection)
@@ -129,6 +139,79 @@ function tableGroups(): { title: string; icon: Component; items: TableRef[] }[] 
     { title: 'Tables', icon: TableIcon, items: tables },
     { title: 'Views', icon: EyeIcon, items: views },
   ]
+}
+
+/** The objects of these kinds whose name matches the filter. */
+function matchingObjects(kinds: DbObjectKind[]): DbObject[] {
+  const needle = search.value.trim().toLowerCase()
+  const matches: DbObject[] = []
+  for (const object of props.session.objects) {
+    if (kinds.includes(object.kind) && objectLabel(object).toLowerCase().includes(needle)) {
+      matches.push(object)
+    }
+  }
+  return matches
+}
+
+function matchingTriggers(): DbObject[] {
+  return matchingObjects(['trigger'])
+}
+
+function matchingRoutines(): DbObject[] {
+  return matchingObjects(['procedure', 'function'])
+}
+
+/** The name, with the schema when it is not the default one, and the argument types of a PostgreSQL routine. */
+function objectLabel(object: DbObject): string {
+  const name =
+    object.schema && object.schema !== 'public' ? `${object.schema}.${object.name}` : object.name
+  return object.args === null ? name : `${name}(${object.args})`
+}
+
+/** Where the object is, like "on orders" for a trigger. */
+function objectTitle(object: DbObject): string {
+  const table = object.table ? ` on ${object.table}` : ''
+  return `${OBJECT_KIND_LABELS[object.kind]} ${objectLabel(object)}${table}`
+}
+
+function toggle(group: 'triggers' | 'routines'): void {
+  collapsed[group] = !collapsed[group]
+}
+
+function showDefinition(object: DbObject): void {
+  closeMenu()
+  closeObjectMenu()
+  selection.clear()
+  props.session.run(props.session.showDefinition(object))
+}
+
+function openObjectMenu(event: MouseEvent, object: DbObject): void {
+  objectMenu.value = { object, x: event.clientX, y: event.clientY }
+}
+
+function closeObjectMenu(): void {
+  objectMenu.value = null
+}
+
+/** Opens the SQL of the object in the Query view. */
+async function editObject(object: DbObject): Promise<void> {
+  await props.session.showDefinition(object)
+  props.session.editDefinition()
+}
+
+/** Asks first. Drops the trigger or routine only on yes. */
+async function dropObject(object: DbObject): Promise<void> {
+  closeObjectMenu()
+  const kind = OBJECT_KIND_LABELS[object.kind]
+  const effect =
+    object.kind === 'trigger' ? 'Its table and data stay.' : 'Code that calls it stops working.'
+  const sure = await confirm(
+    `Drop ${kind.toLowerCase()} "${objectLabel(object)}"? ${effect} This cannot be undone.`,
+    { title: `Drop ${kind.toLowerCase()}`, kind: 'warning' },
+  )
+  if (sure) {
+    await props.session.run(props.session.dropObject(object))
+  }
 }
 
 /** `user@host:port`, or the file name for SQLite. */
@@ -525,6 +608,50 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
               </li>
             </ul>
           </template>
+          <button class="section toggle" @click="toggle('triggers')">
+            <span
+              ><ChevronRightIcon :class="{ open: !collapsed.triggers }" :size="10" />Triggers</span
+            >
+            <span class="count">{{ triggers.length }}</span>
+          </button>
+          <ul v-if="!collapsed.triggers" class="list">
+            <li
+              v-for="object in triggers"
+              :key="objectTitle(object)"
+              :class="{ selected: session.shows(object) }"
+              :title="objectTitle(object)"
+              @click="showDefinition(object)"
+              @contextmenu.prevent.stop="openObjectMenu($event, object)"
+            >
+              <ZapIcon :size="12" />
+              <span class="name">{{ objectLabel(object) }}</span>
+            </li>
+          </ul>
+          <!-- SQLite has no stored procedures or functions. -->
+          <template v-if="session.config?.driver !== 'sqlite'">
+            <button class="section toggle" @click="toggle('routines')">
+              <span
+                ><ChevronRightIcon
+                  :class="{ open: !collapsed.routines }"
+                  :size="10"
+                />Routines</span
+              >
+              <span class="count">{{ routines.length }}</span>
+            </button>
+            <ul v-if="!collapsed.routines" class="list">
+              <li
+                v-for="object in routines"
+                :key="objectTitle(object)"
+                :class="{ selected: session.shows(object) }"
+                :title="objectTitle(object)"
+                @click="showDefinition(object)"
+                @contextmenu.prevent.stop="openObjectMenu($event, object)"
+              >
+                <SquareFunctionIcon :size="12" />
+                <span class="name">{{ objectLabel(object) }}</span>
+              </li>
+            </ul>
+          </template>
         </div>
         <button
           class="sidebar-footer"
@@ -548,6 +675,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
           <!-- The diagram shows all tables. It has its own bottom bar too. -->
           <DiagramView v-else-if="session.view === 'diagram'" :session="session" />
           <!-- No table is open, so no view with a bottom bar. Show the error or the status here. -->
+          <DefinitionView v-else-if="session.definition" :session="session" />
           <div v-else-if="!session.page" class="empty">
             <span v-if="session.error" class="error failure">{{ session.error }}</span>
             <template v-else-if="session.busy">Working…</template>
@@ -610,6 +738,13 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
             @click.stop="openDialog(menu.table)"
           >
             Rename table…
+          </button>
+          <button
+            v-if="single() && menu.table.kind === 'view'"
+            role="menuitem"
+            @click.stop="showDefinition(Session.viewObject(menu.table))"
+          >
+            Show definition
           </button>
           <span v-if="single()" class="menu-line" />
           <div class="has-submenu" @mouseenter="showSubmenu('export')" @mouseleave="hideSubmenu">
@@ -677,6 +812,16 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
         </template>
       </div>
     </div>
+    <ContextMenu v-if="objectMenu" :x="objectMenu.x" :y="objectMenu.y" @close="closeObjectMenu">
+      <button role="menuitem" @click="showDefinition(objectMenu.object)">Show definition</button>
+      <button role="menuitem" @click="session.run(editObject(objectMenu.object))">
+        Edit in Query view
+      </button>
+      <span class="menu-line" />
+      <button class="danger" role="menuitem" @click="dropObject(objectMenu.object)">
+        Drop {{ OBJECT_KIND_LABELS[objectMenu.object.kind].toLowerCase() }}…
+      </button>
+    </ContextMenu>
     <TableDialog ref="tableDialog" :session="session" />
     <ExportDialog ref="exportDialog" :session="session" />
     <ImportDialog ref="importDialog" :session="session" />
@@ -808,6 +953,30 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
 
 .section .add:hover:enabled {
   color: var(--text);
+}
+
+/* The title of the trigger and routine groups. A click opens or closes the group. */
+.section.toggle {
+  width: 100%;
+  height: auto;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  text-align: left;
+}
+
+.section.toggle span:first-child {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.section.toggle svg {
+  transition: transform 0.1s;
+}
+
+.section.toggle svg.open {
+  transform: rotate(90deg);
 }
 
 /* A table in the selection. It differs from the open table, which has the full accent colour. */

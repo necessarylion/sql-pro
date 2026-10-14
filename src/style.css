@@ -59,6 +59,8 @@
   --sidebar-fit: max(var(--traffic-lights), min(var(--sidebar-width), 100vw - var(--main-min)));
   /* The chosen height of the SQL editor. LayoutService sets it on this element. */
   --editor-height: 220px;
+  /* The chosen width of the row detail panel. LayoutService sets it on this element. */
+  --detail-width: 320px;
   font: 12px/1.3 var(--font-ui);
 }
 

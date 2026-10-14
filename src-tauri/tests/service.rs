@@ -5,11 +5,15 @@
 //! `SQLPRO_TEST_POSTGRES=host:port:user:password:database`
 //! Add `SQLPRO_TEST_SSH=host:port:user:password` to run both through an SSH tunnel.
 
+use sql_pro_lib::model::DbObject;
 use sql_pro_lib::model::{
     AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, CsvColumn, CsvImport, DbUser,
-    Diagram, Driver, ExportFormat, ExportRequest, FilterOperator, FilterRule, NewColumn, NewUser,
-    Relation, RowUpdate, RowsExport, SaveResult, SshConfig, TableRef, Values,
+    Diagram, Driver, ExportFormat, ExportRequest, FilterOperator, FilterRule, ForeignKey,
+    IndexInfo, NewColumn, NewForeignKey, NewIndex, NewUser, ReferentialAction, Relation, RowUpdate,
+    RowsExport, SaveResult, SshConfig, TableRef, Values,
 };
+use std::time::{Duration, Instant};
+
 use sql_pro_lib::repository::RepositoryFactory;
 use sql_pro_lib::service::ConnectionService;
 
@@ -276,6 +280,162 @@ async fn schema_changes(service: &ConnectionService, table: &TableRef, driver: D
     assert!(service.drop_column(ID, table, "points").await.is_err());
 }
 
+fn names(list: &[&str]) -> Vec<String> {
+    let mut names = Vec::with_capacity(list.len());
+    for name in list {
+        names.push((*name).to_owned());
+    }
+    names
+}
+
+fn new_index(name: &str, columns: &[&str], unique: bool) -> NewIndex {
+    NewIndex {
+        name: name.to_owned(),
+        columns: names(columns),
+        unique,
+    }
+}
+
+async fn index_named(
+    service: &ConnectionService,
+    table: &TableRef,
+    name: &str,
+) -> Option<IndexInfo> {
+    let keys = service.table_keys(ID, table).await.expect("table keys");
+    keys.indexes.into_iter().find(|index| index.name == name)
+}
+
+/// Adds and drops indexes of the child table of `keys`.
+async fn index_changes(service: &ConnectionService, child: &TableRef) {
+    // A name that must be quoted, and two columns in an order the table does not have.
+    let odd = "sqlpro k \"idx\"";
+    service
+        .add_index(ID, child, &new_index(odd, &["note", "code"], true))
+        .await
+        .expect("add index");
+    let added = index_named(service, child, odd).await.expect("new index");
+    assert_eq!(added.columns, ["note", "code"]);
+    assert!(added.unique && !added.primary);
+    service
+        .add_index(ID, child, &new_index("sqlpro_k_plain", &["code"], false))
+        .await
+        .expect("add plain index");
+    let plain = index_named(service, child, "sqlpro_k_plain").await;
+    assert!(!plain.expect("plain index").unique);
+
+    // Bad input is refused before any SQL runs.
+    for bad in [
+        new_index(" ", &["code"], false),
+        new_index("sqlpro_k_none", &[], false),
+        new_index("sqlpro_k_bad", &["nope"], false),
+    ] {
+        assert!(service.add_index(ID, child, &bad).await.is_err());
+    }
+
+    service
+        .drop_index(ID, child, odd)
+        .await
+        .expect("drop index");
+    assert!(index_named(service, child, odd).await.is_none());
+    assert!(service.drop_index(ID, child, odd).await.is_err());
+}
+
+/// Lists, adds and drops indexes and foreign keys of a child table.
+async fn keys(service: &ConnectionService, driver: Driver) {
+    let setup = "DROP TABLE IF EXISTS sqlpro_k_child; DROP TABLE IF EXISTS sqlpro_k_parent; \
+        CREATE TABLE sqlpro_k_parent (id INTEGER PRIMARY KEY, code INTEGER NOT NULL UNIQUE); \
+        CREATE TABLE sqlpro_k_child (id INTEGER PRIMARY KEY, parent_id INTEGER, code INTEGER, \
+            note VARCHAR(20), \
+            CONSTRAINT sqlpro_k_first FOREIGN KEY (parent_id) REFERENCES sqlpro_k_parent (id) \
+                ON DELETE CASCADE)";
+    service.run_query(ID, setup).await.expect("key tables");
+    let child = listed(service, "sqlpro_k_child").await.expect("child");
+    let parent = listed(service, "sqlpro_k_parent").await.expect("parent");
+
+    let loaded = service.table_keys(ID, &child).await.expect("table keys");
+    let primary = &loaded.indexes[0];
+    assert!(
+        primary.primary && primary.unique,
+        "the primary key comes first"
+    );
+    assert_eq!(primary.columns, ["id"]);
+    let first = &loaded.foreign_keys[0];
+    assert_eq!(loaded.foreign_keys.len(), 1);
+    assert_eq!(first.columns, ["parent_id"]);
+    assert_eq!(
+        (first.ref_table.as_str(), first.ref_schema.as_deref()),
+        ("sqlpro_k_parent", None)
+    );
+    assert_eq!(first.ref_columns, ["id"]);
+    assert_eq!(first.on_delete, "CASCADE");
+    if driver != Driver::Sqlite {
+        assert_eq!(first.name, "sqlpro_k_first");
+    }
+
+    index_changes(service, &child).await;
+    // The primary key is never dropped as an index.
+    let primary = primary.name.clone();
+    assert!(service.drop_index(ID, &child, &primary).await.is_err());
+
+    let key = NewForeignKey {
+        name: "sqlpro_k_second".to_owned(),
+        columns: names(&["code"]),
+        ref_table: parent.clone(),
+        ref_columns: names(&["code"]),
+        on_delete: ReferentialAction::SetNull,
+        on_update: ReferentialAction::Cascade,
+    };
+    let result = service.add_foreign_key(ID, &child, &key).await;
+    if driver == Driver::Sqlite {
+        // SQLite cannot do this. It must say so and change nothing.
+        assert!(result.is_err());
+        assert!(service.drop_foreign_key(ID, &child, "").await.is_err());
+        let after = service.table_keys(ID, &child).await.expect("table keys");
+        assert_eq!(after.foreign_keys.len(), 1);
+    } else {
+        result.expect("add foreign key");
+        let after = service.table_keys(ID, &child).await.expect("table keys");
+        let second: Vec<&ForeignKey> = after
+            .foreign_keys
+            .iter()
+            .filter(|key| key.name == "sqlpro_k_second")
+            .collect();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].ref_columns, ["code"]);
+        assert_eq!(
+            (second[0].on_delete.as_str(), second[0].on_update.as_str()),
+            ("SET NULL", "CASCADE")
+        );
+
+        let mut wrong = NewForeignKey {
+            ref_columns: Vec::new(),
+            ..key
+        };
+        assert!(service.add_foreign_key(ID, &child, &wrong).await.is_err());
+        wrong.ref_columns = names(&["nope"]);
+        assert!(service.add_foreign_key(ID, &child, &wrong).await.is_err());
+
+        service
+            .drop_foreign_key(ID, &child, "sqlpro_k_first")
+            .await
+            .expect("drop foreign key");
+        let after = service.table_keys(ID, &child).await.expect("table keys");
+        assert_eq!(after.foreign_keys.len(), 1);
+        assert_eq!(after.foreign_keys[0].name, "sqlpro_k_second");
+        assert!(
+            service
+                .drop_foreign_key(ID, &child, "sqlpro_k_first")
+                .await
+                .is_err()
+        );
+    }
+
+    service
+        .run_query(ID, "DROP TABLE sqlpro_k_child; DROP TABLE sqlpro_k_parent")
+        .await
+        .expect("drop key tables");
+}
+
 async fn listed(service: &ConnectionService, name: &str) -> Option<TableRef> {
     let tables = service.tables(ID).await.expect("tables");
     tables.into_iter().find(|table| table.name == name)
@@ -322,6 +482,140 @@ async fn drop_and_truncate(service: &ConnectionService) {
     assert!(listed(service, EXTRA).await.is_none());
     assert!(service.drop_table(ID, &table).await.is_err());
     assert!(listed(service, TABLE).await.is_some());
+}
+
+const TRIGGER: &str = "sqlpro_trg";
+const ROUTINE: &str = "sqlpro_func";
+const PROCEDURE: &str = "sqlpro_proc";
+const OBJECT_VIEW: &str = "sqlpro_obj_view";
+
+async fn object(service: &ConnectionService, kind: &str, name: &str) -> Vec<DbObject> {
+    let objects = service.objects(ID).await.expect("objects");
+    objects
+        .into_iter()
+        .filter(|object| object.kind == kind && object.name == name)
+        .collect()
+}
+
+/// Shows and drops a procedure and functions. `PostgreSQL` has two functions with one name.
+async fn routines(service: &ConnectionService, driver: Driver) {
+    let procedure = object(service, "procedure", PROCEDURE).await;
+    assert_eq!(procedure.len(), 1);
+    let sql = service
+        .object_definition(ID, &procedure[0])
+        .await
+        .expect("procedure sql");
+    assert!(sql.to_uppercase().contains("PROCEDURE"), "{sql}");
+    // A procedure sent as a function is not known.
+    let mut fake = procedure[0].clone();
+    "function".clone_into(&mut fake.kind);
+    assert!(service.drop_object(ID, &fake).await.is_err());
+    service
+        .drop_object(ID, &procedure[0])
+        .await
+        .expect("drop procedure");
+    assert_eq!(object(service, "procedure", PROCEDURE).await.len(), 0);
+
+    let functions = object(service, "function", ROUTINE).await;
+    let count = if driver == Driver::Postgres { 2 } else { 1 };
+    assert_eq!(functions.len(), count);
+    let sql = service
+        .object_definition(ID, &functions[0])
+        .await
+        .expect("function sql");
+    assert!(sql.to_uppercase().contains("FUNCTION"), "{sql}");
+    // The argument types come from the catalog, never from the caller.
+    let mut fake = functions[0].clone();
+    fake.args = Some(format!("integer); DROP TABLE {TABLE}; --"));
+    assert!(service.drop_object(ID, &fake).await.is_err());
+    // Two functions with one name: the drop takes only the one with these types.
+    service
+        .drop_object(ID, &functions[0])
+        .await
+        .expect("drop function");
+    assert_eq!(object(service, "function", ROUTINE).await.len(), count - 1);
+    for left in object(service, "function", ROUTINE).await {
+        service.drop_object(ID, &left).await.expect("drop other");
+    }
+}
+
+/// Lists, shows and drops a trigger, a procedure and functions. Shows the `CREATE VIEW` of a view.
+async fn objects(service: &ConnectionService, driver: Driver) {
+    let setup = match driver {
+        Driver::Sqlite => {
+            format!("CREATE TRIGGER {TRIGGER} AFTER INSERT ON {TABLE} BEGIN SELECT 1; END")
+        }
+        Driver::Mysql => format!(
+            "CREATE TRIGGER {TRIGGER} BEFORE INSERT ON {TABLE} FOR EACH ROW SET NEW.note = NEW.note; \
+            CREATE PROCEDURE {PROCEDURE}() SELECT 1; \
+            CREATE FUNCTION {ROUTINE}(a INT) RETURNS INT DETERMINISTIC RETURN a + 1"
+        ),
+        Driver::Postgres => format!(
+            "CREATE FUNCTION {TRIGGER}_fn() RETURNS trigger LANGUAGE plpgsql \
+                AS $$ BEGIN RETURN NEW; END $$; \
+            CREATE TRIGGER {TRIGGER} BEFORE INSERT ON {TABLE} \
+                FOR EACH ROW EXECUTE FUNCTION {TRIGGER}_fn(); \
+            CREATE PROCEDURE {PROCEDURE}() LANGUAGE sql AS 'SELECT 1'; \
+            CREATE FUNCTION {ROUTINE}(a integer) RETURNS integer LANGUAGE sql AS 'SELECT a + 1'; \
+            CREATE FUNCTION {ROUTINE}(a text) RETURNS text LANGUAGE sql AS 'SELECT a'"
+        ),
+    };
+    let view_sql = format!("CREATE VIEW {OBJECT_VIEW} AS SELECT id FROM {TABLE}");
+    service.run_query(ID, &setup).await.expect("objects setup");
+    service.run_query(ID, &view_sql).await.expect("view setup");
+
+    // A view shows its CREATE statement.
+    let view = listed(service, OBJECT_VIEW).await.expect("view is listed");
+    let view_object = DbObject {
+        kind: "view".to_owned(),
+        schema: view.schema.clone(),
+        name: view.name.clone(),
+        table: None,
+        args: None,
+    };
+    let sql = service
+        .object_definition(ID, &view_object)
+        .await
+        .expect("view sql");
+    assert!(sql.to_uppercase().contains("VIEW"), "{sql}");
+    assert!(sql.contains(TABLE), "{sql}");
+    service.drop_table(ID, &view).await.expect("drop view");
+
+    let trigger = object(service, "trigger", TRIGGER).await;
+    assert_eq!(trigger.len(), 1);
+    assert_eq!(trigger[0].table.as_deref(), Some(TABLE));
+    let sql = service
+        .object_definition(ID, &trigger[0])
+        .await
+        .expect("trigger sql");
+    assert!(
+        sql.to_uppercase().contains("TRIGGER") && sql.contains(TRIGGER),
+        "{sql}"
+    );
+
+    // A changed object never reaches the SQL.
+    let mut fake = trigger[0].clone();
+    fake.name = format!("{TRIGGER}; DROP TABLE {TABLE}");
+    assert!(service.drop_object(ID, &fake).await.is_err());
+    assert!(service.object_definition(ID, &fake).await.is_err());
+
+    if driver != Driver::Sqlite {
+        routines(service, driver).await;
+    }
+
+    service
+        .drop_object(ID, &trigger[0])
+        .await
+        .expect("drop trigger");
+    assert_eq!(object(service, "trigger", TRIGGER).await.len(), 0);
+    assert!(listed(service, TABLE).await.is_some());
+    if driver == Driver::Postgres {
+        let cleanup = format!("DROP FUNCTION {TRIGGER}_fn()");
+        service
+            .run_query(ID, &cleanup)
+            .await
+            .expect("drop trigger function");
+    }
 }
 
 fn new_column(spec: ColumnSpec, primary_key: bool, auto_increment: bool) -> NewColumn {
@@ -1266,6 +1560,74 @@ async fn clone_connection(
 }
 
 #[allow(clippy::too_many_lines, reason = "one end-to-end flow")]
+/// Custom SQL with two statements gives two result sets. Bad SQL is an error.
+async fn custom_sql(service: &ConnectionService) {
+    let sets = service
+        .run_query(ID, "SELECT 1 AS one; SELECT 2 AS two, NULL AS empty_value")
+        .await;
+    let sets = sets.expect("query");
+    assert_eq!(sets.len(), 2);
+    assert_eq!(sets[0].columns, vec!["one"]);
+    assert_eq!(sets[1].rows[0], vec![text("2"), None]);
+
+    // Bad SQL is an error, not a panic.
+    assert!(service.run_query(ID, "SELEC nonsense").await.is_err());
+}
+
+/// Drops the test table and closes the tab. A closed tab cannot be used.
+async fn clean_up(service: &ConnectionService) {
+    service
+        .run_query(ID, &format!("DROP TABLE {TABLE}"))
+        .await
+        .expect("cleanup");
+    service.disconnect(ID).await;
+    assert!(service.tables(ID).await.is_err());
+}
+
+/// A slow query stops soon after a cancel, and the tab still works after it.
+async fn cancel(service: &ConnectionService, driver: Driver) {
+    let slow = match driver {
+        Driver::Mysql => "SELECT SLEEP(5)",
+        Driver::Postgres => "SELECT pg_sleep(5)",
+        // Counts to one billion. That takes far longer than the test waits.
+        Driver::Sqlite => {
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000000000) \
+             SELECT count(*) FROM n"
+        }
+    };
+    let started = Instant::now();
+    let later = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        service.cancel_query(ID).await
+    };
+    let (result, cancelled) = tokio::join!(service.run_query(ID, slow), later);
+    cancelled.expect("cancel");
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "the query stopped"
+    );
+    match result {
+        Err(error) => assert_eq!(error.to_string(), "Query cancelled"),
+        // MySQL ends a cancelled SLEEP without an error. It gives 1.
+        Ok(sets) => {
+            assert_eq!(driver, Driver::Mysql);
+            assert_eq!(sets[0].rows[0], vec![text("1")]);
+        }
+    }
+    let sets = service
+        .run_query(ID, "SELECT 1")
+        .await
+        .expect("query after cancel");
+    assert_eq!(sets[0].rows[0], vec![text("1")]);
+    // A cancel while nothing runs does nothing.
+    service.cancel_query(ID).await.expect("idle cancel");
+    let sets = service
+        .run_query(ID, "SELECT 2")
+        .await
+        .expect("query after idle cancel");
+    assert_eq!(sets[0].rows[0], vec![text("2")]);
+}
+
 async fn exercise(config: ConnectionConfig) {
     let driver = config.driver;
     let service = ConnectionService::new(RepositoryFactory);
@@ -1368,28 +1730,16 @@ async fn exercise(config: ConnectionConfig) {
 
     schema_changes(&service, &table, driver).await;
     drop_and_truncate(&service).await;
+    objects(&service, driver).await;
     create_and_rename(&service).await;
     diagram(&service, driver).await;
+    keys(&service, driver).await;
+    cancel(&service, driver).await;
     save_image();
 
-    // Custom SQL with two statements gives two result sets.
-    let sets = service
-        .run_query(ID, "SELECT 1 AS one; SELECT 2 AS two, NULL AS empty_value")
-        .await;
-    let sets = sets.expect("query");
-    assert_eq!(sets.len(), 2);
-    assert_eq!(sets[0].columns, vec!["one"]);
-    assert_eq!(sets[1].rows[0], vec![text("2"), None]);
+    custom_sql(&service).await;
 
-    // Bad SQL is an error, not a panic.
-    assert!(service.run_query(ID, "SELEC nonsense").await.is_err());
-
-    service
-        .run_query(ID, &format!("DROP TABLE {TABLE}"))
-        .await
-        .expect("cleanup");
-    service.disconnect(ID).await;
-    assert!(service.tables(ID).await.is_err());
+    clean_up(&service).await;
 }
 
 #[tokio::test]

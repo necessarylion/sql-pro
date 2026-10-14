@@ -11,12 +11,14 @@ use parking_lot::Mutex;
 
 use crate::constants::{
     ANY_HOST, CANNOT_MANAGE_USERS, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS, NO_USER_ACCOUNTS,
+    PRIMARY_KEY_NOT_DROPPED, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, BrowseRequest, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, Diagram,
-    DiagramTable, Driver, ExportRequest, FilterOperator, FilterRule, NewColumn, NewUser, ResultSet,
-    RowUpdate, RowsExport, SaveResult, TablePage, TableRef, UserList, Values,
+    AccessLevel, BrowseRequest, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser,
+    Diagram, DiagramTable, Driver, ExportRequest, FilterOperator, FilterRule, NewColumn,
+    NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult, TableKeys,
+    TablePage, TableRef, UserList, Values,
 };
 use crate::repository::{
     DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, not_saved,
@@ -24,9 +26,6 @@ use crate::repository::{
 
 /// The bound values of one statement.
 type Params = Vec<Option<String>>;
-
-/// The `kind` of a `TableRef` that is a view.
-const VIEW: &str = "view";
 
 /// One open connection. Each tab of the app owns one.
 #[derive(Clone)]
@@ -92,6 +91,14 @@ impl ConnectionService {
     /// Runs SQL typed by the user.
     pub async fn run_query(&self, id: &str, sql: &str) -> AppResult<Vec<ResultSet>> {
         self.repository(id)?.query(sql).await
+    }
+
+    /// Stops the query that runs now in tab `id`.
+    ///
+    /// The lock on the connection list is held only to copy the repository out.
+    /// So this never waits for the running query.
+    pub async fn cancel_query(&self, id: &str) -> AppResult<()> {
+        self.repository(id)?.cancel().await
     }
 
     /// The tables of the current database with their columns, and the foreign keys
@@ -425,6 +432,92 @@ impl ConnectionService {
         Ok(())
     }
 
+    /// The indexes and foreign keys of a table.
+    pub async fn table_keys(&self, id: &str, table: &TableRef) -> AppResult<TableKeys> {
+        let repository = self.repository(id)?;
+        Ok(TableKeys {
+            indexes: repository.indexes(table).await?,
+            foreign_keys: repository.foreign_keys(table).await?,
+        })
+    }
+
+    /// Creates an index on columns of the table. All three databases share this syntax.
+    pub async fn add_index(&self, id: &str, table: &TableRef, index: &NewIndex) -> AppResult<()> {
+        let name = Self::key_name("index", &index.name)?;
+        let repository = self.repository(id)?;
+        let columns = repository.columns(table).await?;
+        let sql = format!(
+            "CREATE {}INDEX {} ON {} ({})",
+            if index.unique { "UNIQUE " } else { "" },
+            repository.quote(name),
+            repository.table_name(table),
+            Self::column_list(repository.as_ref(), &columns, &index.columns)?
+        );
+        repository.query(&sql).await?;
+        Ok(())
+    }
+
+    /// Drops an index of the table. The primary key is refused.
+    pub async fn drop_index(&self, id: &str, table: &TableRef, name: &str) -> AppResult<()> {
+        let repository = self.repository(id)?;
+        let indexes = repository.indexes(table).await?;
+        let Some(index) = indexes.iter().find(|index| index.name == name) else {
+            return Err(AppError::Message(format!("Unknown index: {name}")));
+        };
+        if index.primary {
+            return Err(PRIMARY_KEY_NOT_DROPPED.into());
+        }
+        repository
+            .query(&repository.drop_index_sql(table, &index.name))
+            .await?;
+        Ok(())
+    }
+
+    /// Adds a foreign key to the table. Not on `SQLite`.
+    pub async fn add_foreign_key(
+        &self,
+        id: &str,
+        table: &TableRef,
+        key: &NewForeignKey,
+    ) -> AppResult<()> {
+        let name = Self::key_name("foreign key", &key.name)?;
+        let repository = self.repository(id)?;
+        repository.check_foreign_key_change()?;
+        if key.columns.len() != key.ref_columns.len() {
+            return Err("Pick as many referenced columns as columns".into());
+        }
+        let columns = repository.columns(table).await?;
+        let ref_table = Self::known_table(repository.as_ref(), &key.ref_table).await?;
+        let ref_columns = repository.columns(&ref_table).await?;
+        let sql = format!(
+            "ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}) \
+            ON DELETE {} ON UPDATE {}",
+            repository.table_name(table),
+            repository.quote(name),
+            Self::column_list(repository.as_ref(), &columns, &key.columns)?,
+            repository.table_name(&ref_table),
+            Self::column_list(repository.as_ref(), &ref_columns, &key.ref_columns)?,
+            key.on_delete.sql(),
+            key.on_update.sql()
+        );
+        repository.query(&sql).await?;
+        Ok(())
+    }
+
+    /// Drops a foreign key of the table. Not on `SQLite`.
+    pub async fn drop_foreign_key(&self, id: &str, table: &TableRef, name: &str) -> AppResult<()> {
+        let repository = self.repository(id)?;
+        repository.check_foreign_key_change()?;
+        let keys = repository.foreign_keys(table).await?;
+        if !keys.iter().any(|key| key.name == name) {
+            return Err(AppError::Message(format!("Unknown foreign key: {name}")));
+        }
+        let sql =
+            repository.drop_foreign_key_sql(&repository.table_name(table), &repository.quote(name));
+        repository.query(&sql).await?;
+        Ok(())
+    }
+
     /// Removes a table and all its data, or a view.
     // No CASCADE on purpose. When other objects need the table, the database says no.
     pub async fn drop_table(&self, id: &str, table: &TableRef) -> AppResult<()> {
@@ -433,6 +526,40 @@ impl ConnectionService {
         let keyword = if table.kind == VIEW { "VIEW" } else { "TABLE" };
         let sql = format!("DROP {keyword} {}", repository.table_name(&table));
         repository.query(&sql).await?;
+        Ok(())
+    }
+
+    /// The triggers and routines of the current database.
+    pub async fn objects(&self, id: &str) -> AppResult<Vec<DbObject>> {
+        self.repository(id)?.objects().await
+    }
+
+    /// The `CREATE` statement of a view, trigger or routine.
+    pub async fn object_definition(&self, id: &str, object: &DbObject) -> AppResult<String> {
+        let repository = self.repository(id)?;
+        if object.kind == VIEW {
+            let view = TableRef {
+                schema: object.schema.clone(),
+                name: object.name.clone(),
+                kind: VIEW.to_owned(),
+            };
+            let view = Self::known_table(repository.as_ref(), &view).await?;
+            return repository
+                .create_sql(&view)
+                .await?
+                .ok_or_else(|| AppError::Message(format!("No definition for {}", view.name)));
+        }
+        let object = Self::known_object(repository.as_ref(), object).await?;
+        repository.object_sql(&object).await
+    }
+
+    /// Removes a trigger or routine. A view is dropped with `drop_table`.
+    pub async fn drop_object(&self, id: &str, object: &DbObject) -> AppResult<()> {
+        let repository = self.repository(id)?;
+        let object = Self::known_object(repository.as_ref(), object).await?;
+        repository
+            .query(&repository.drop_object_sql(&object))
+            .await?;
         Ok(())
     }
 
@@ -612,11 +739,50 @@ impl ConnectionService {
         Err(AppError::Message(format!("Unknown table: {}", table.name)))
     }
 
+    /// The trigger or routine as the catalog has it. Its kind and argument types go
+    /// into the SQL, so they must come from the database, never from the caller.
+    async fn known_object(repository: &dyn Repository, object: &DbObject) -> AppResult<DbObject> {
+        for known in repository.objects().await? {
+            if known == *object {
+                return Ok(known);
+            }
+        }
+        Err(AppError::Message(format!(
+            "Unknown object: {}",
+            object.name
+        )))
+    }
+
     fn check_table_name(name: &str) -> AppResult<()> {
         if name.trim().is_empty() {
             return Err("The table needs a name".into());
         }
         Ok(())
+    }
+
+    /// The trimmed name of a new index or foreign key. Fails when it is empty.
+    fn key_name<'name>(what: &str, name: &'name str) -> AppResult<&'name str> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError::Message(format!("The {what} needs a name")));
+        }
+        Ok(name)
+    }
+
+    /// The quoted names of `names`, joined with commas. Each must be a column of the table.
+    fn column_list(
+        repository: &dyn Repository,
+        columns: &[ColumnInfo],
+        names: &[String],
+    ) -> AppResult<String> {
+        if names.is_empty() {
+            return Err("Pick at least one column".into());
+        }
+        let mut quoted = Vec::with_capacity(names.len());
+        for name in names {
+            quoted.push(repository.quote(&Self::column(columns, name)?.name));
+        }
+        Ok(quoted.join(", "))
     }
 
     /// One column as `ADD COLUMN` and `CREATE TABLE` write it: name, type, null rule, default.

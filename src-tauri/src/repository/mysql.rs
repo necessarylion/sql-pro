@@ -1,22 +1,25 @@
 //! `MySQL` and `MariaDB` access.
 
 use async_trait::async_trait;
-use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlQueryResult, MySqlRow};
+use sqlx::mysql::{MySqlConnectOptions, MySqlConnection, MySqlPool, MySqlQueryResult, MySqlRow};
 use sqlx::{AssertSqlSafe, MySql, Row as _};
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::{
-    Repository, Statement, bytes_to_text, cell, collect, default_sql, execute, execute_all,
-    first_column, kind, password_safe, pool_options, relations, run_script, single,
+    Repository, ServerId, Statement, bytes_to_text, cell, collect, default_sql, definition,
+    execute, execute_all, first_column, foreign_keys, indexes, keyword, kind, objects,
+    password_safe, pool_options, relations, run_on_new_connection, run_script, single,
 };
 use crate::constants::{
     ANY_HOST, MYSQL_DATABASE_PRIVILEGES, MYSQL_HOST_MAX, MYSQL_SYSTEM_USERS, MYSQL_USER_NAME_MAX,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, Relation, ResultSet, TableRef,
-    UserList,
+    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser, ForeignKey, IndexInfo,
+    Relation, ResultSet, TableRef, UserList,
 };
 
 /// The right that is no right. `MySQL` lists it for an account that has nothing.
@@ -37,6 +40,15 @@ const UNIQUE_SQL: &str = "SELECT NULL, TABLE_NAME, INDEX_NAME, COLUMN_NAME \
     FROM information_schema.STATISTICS \
     WHERE TABLE_SCHEMA = DATABASE() AND NON_UNIQUE = 0";
 
+/// The triggers, then the procedures and functions, in the shape `objects` reads.
+/// Two statements and not one UNION: the columns of the two tables can have
+/// different collations, and `MySQL` refuses a UNION of those.
+const OBJECTS_SQL: &str = "SELECT 'trigger', NULL, TRIGGER_NAME, EVENT_OBJECT_TABLE, NULL \
+    FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = DATABASE() ORDER BY TRIGGER_NAME; \
+    SELECT LOWER(ROUTINE_TYPE), NULL, ROUTINE_NAME, NULL, NULL \
+    FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE() \
+    ORDER BY ROUTINE_TYPE, ROUTINE_NAME";
+
 /// One grant inside the current database: on the whole database, or on one table.
 struct Grant {
     /// The account, as `information_schema` writes it: `'name'@'host'`.
@@ -52,6 +64,9 @@ struct Grant {
 pub struct MysqlRepository {
     pool: MySqlPool,
     has_database: bool,
+    /// The settings of the pool. Cancel opens its own connection with them.
+    options: MySqlConnectOptions,
+    server_id: ServerId,
 }
 
 impl MysqlRepository {
@@ -70,8 +85,27 @@ impl MysqlRepository {
         if has_database {
             options = options.database(&config.database);
         }
-        let pool = pool_options().connect_with(options).await?;
-        Ok(Self { pool, has_database })
+        let server_id = ServerId::default();
+        let seen = Arc::clone(&server_id);
+        let pool = pool_options()
+            .after_connect(move |connection, _| {
+                let seen = Arc::clone(&seen);
+                Box::pin(async move {
+                    let id: i64 = sqlx::query_scalar("SELECT CAST(CONNECTION_ID() AS SIGNED)")
+                        .fetch_one(connection)
+                        .await?;
+                    seen.store(id, Ordering::Relaxed);
+                    Ok(())
+                })
+            })
+            .connect_with(options.clone())
+            .await?;
+        Ok(Self {
+            pool,
+            has_database,
+            options,
+            server_id,
+        })
     }
 
     /// The definition of a column as `SHOW CREATE TABLE` prints it, without the name.
@@ -381,6 +415,19 @@ impl Repository for MysqlRepository {
         "AUTO_INCREMENT"
     }
 
+    fn drop_index_sql(&self, table: &TableRef, name: &str) -> String {
+        format!(
+            "DROP INDEX {} ON {}",
+            self.quote(name),
+            self.table_name(table)
+        )
+    }
+
+    /// `MariaDB` has no `DROP CONSTRAINT` for foreign keys.
+    fn drop_foreign_key_sql(&self, table: &str, name: &str) -> String {
+        format!("ALTER TABLE {table} DROP FOREIGN KEY {name}")
+    }
+
     async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>> {
         let stream = sqlx::raw_sql(AssertSqlSafe(sql.to_owned())).fetch_many(&self.pool);
         collect::<MySql>(stream, Self::read, MySqlQueryResult::rows_affected).await
@@ -444,11 +491,59 @@ impl Repository for MysqlRepository {
         Ok(relations(&keys, &unique))
     }
 
+    /// A part of an index on an expression has no column name. It shows as empty text.
+    async fn indexes(&self, table: &TableRef) -> AppResult<Vec<IndexInfo>> {
+        let sql = format!(
+            "SELECT INDEX_NAME, COLUMN_NAME, CASE WHEN NON_UNIQUE = 0 THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN INDEX_NAME = 'PRIMARY' THEN 'YES' ELSE 'NO' END \
+            FROM information_schema.STATISTICS \
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {} \
+            ORDER BY INDEX_NAME <> 'PRIMARY', INDEX_NAME, SEQ_IN_INDEX",
+            self.literal(&table.name)
+        );
+        Ok(indexes(&single(self.query(&sql).await?)))
+    }
+
+    async fn foreign_keys(&self, table: &TableRef) -> AppResult<Vec<ForeignKey>> {
+        let sql = format!(
+            "SELECT k.CONSTRAINT_NAME, k.CONSTRAINT_NAME, k.COLUMN_NAME, \
+                CASE WHEN k.REFERENCED_TABLE_SCHEMA <> DATABASE() THEN k.REFERENCED_TABLE_SCHEMA END, \
+                k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.DELETE_RULE, r.UPDATE_RULE \
+            FROM information_schema.KEY_COLUMN_USAGE k \
+            JOIN information_schema.REFERENTIAL_CONSTRAINTS r \
+                ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA \
+                AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND r.TABLE_NAME = k.TABLE_NAME \
+            WHERE k.TABLE_SCHEMA = DATABASE() AND k.TABLE_NAME = {} \
+                AND k.REFERENCED_TABLE_NAME IS NOT NULL \
+            ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION",
+            self.literal(&table.name)
+        );
+        Ok(foreign_keys(&single(self.query(&sql).await?)))
+    }
+
     /// Also works for a view. Then it gives the `CREATE VIEW` statement.
     async fn create_sql(&self, table: &TableRef) -> AppResult<Option<String>> {
         let sql = format!("SHOW CREATE TABLE {}", self.table_name(table));
         let set = single(self.query(&sql).await?);
         Ok(set.rows.first().map(|row| cell(row, 1)))
+    }
+
+    async fn objects(&self) -> AppResult<Vec<DbObject>> {
+        let mut list = Vec::new();
+        for set in self.query(OBJECTS_SQL).await? {
+            list.extend(objects(&set));
+        }
+        Ok(list)
+    }
+
+    /// `SHOW CREATE TRIGGER`, `PROCEDURE` and `FUNCTION` all give the statement in the third column.
+    async fn object_sql(&self, object: &DbObject) -> AppResult<String> {
+        let sql = format!(
+            "SHOW CREATE {} {}",
+            keyword(object),
+            self.object_name(object)
+        );
+        definition(&single(self.query(&sql).await?), 2, &object.name)
     }
 
     async fn modify_column_sql(
@@ -611,5 +706,14 @@ impl Repository for MysqlRepository {
 
     async fn close(&self) {
         self.pool.close().await;
+    }
+
+    async fn cancel(&self) -> AppResult<()> {
+        let id = self.server_id.load(Ordering::Relaxed);
+        if id == 0 {
+            return Ok(());
+        }
+        // The id is a number from the server, never text from the user.
+        run_on_new_connection::<MySqlConnection>(&self.options, format!("KILL QUERY {id}")).await
     }
 }

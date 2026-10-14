@@ -67,7 +67,26 @@ class FakeApi {
     return { updated: updates.length, inserted: inserts.length, deleted: deletes.length }
   }
 
+  cancels = 0
+  /** A cancelled query ends with rows, not an error. MySQL does this for SLEEP. */
+  cancelEndsOk = false
+  /** The query named 'slow'. It runs until it is cancelled. */
+  private slow: PromiseWithResolvers<ResultSet[]> | null = null
+
+  async cancelQuery(): Promise<void> {
+    this.cancels += 1
+    if (this.cancelEndsOk) {
+      this.slow?.resolve([{ columns: ['x'], rows: [['1']], affected: 0, truncated: false }])
+    } else {
+      this.slow?.reject('Query cancelled')
+    }
+  }
+
   async runQuery(_id: string, sql: string): Promise<ResultSet[]> {
+    if (sql === 'slow') {
+      this.slow = Promise.withResolvers<ResultSet[]>()
+      return this.slow.promise
+    }
     if (sql === 'bad') {
       throw 'syntax error'
     }
@@ -315,6 +334,47 @@ test('runQuery keeps the last set with columns and reports the rest', async func
   expect(await session.run(session.runQuery('bad'))).toBe(false)
   expect(session.error).toBe('syntax error')
   expect(session.busy).toBe(false)
+})
+
+test('cancel stops a running query and shows a short status, not an error', async function () {
+  const { api, session } = await openUsers()
+  const run = session.run(session.runQuery('slow'))
+  expect(session.busy).toBe(true)
+  expect(session.cancellable).toBe(true)
+  const cancel = session.cancel()
+  expect(session.cancelling).toBe(true)
+  // A second press while the first cancel is on its way sends nothing more.
+  await session.cancel()
+  await cancel
+  expect(await run).toBe(false)
+  expect(api.cancels).toBe(1)
+  expect(session.error).toBe('')
+  expect(session.status).toBe('Query cancelled')
+  expect(session.busy).toBe(false)
+  expect(session.cancellable).toBe(false)
+  expect(session.cancelling).toBe(false)
+})
+
+test('a cancelled query that still ends with rows also shows the short status', async function () {
+  const { api, session } = await openUsers()
+  api.cancelEndsOk = true
+  const run = session.run(session.runQuery('slow'))
+  await session.cancel()
+  expect(await run).toBe(false)
+  expect(session.status).toBe('Query cancelled')
+  expect(session.error).toBe('')
+})
+
+test('cancel does nothing when no query runs', async function () {
+  const { api, session } = await openUsers()
+  await session.cancel()
+  expect(api.cancels).toBe(0)
+  // A finished query is no longer cancellable, and the next run shows its normal status.
+  expect(await session.run(session.runQuery('select 1'))).toBe(true)
+  expect(session.cancellable).toBe(false)
+  await session.cancel()
+  expect(api.cancels).toBe(0)
+  expect(session.status).toMatch(/^2 rows/)
 })
 
 test('only ticked and complete filter rows are sent, raw rows go to filter', async function () {

@@ -6,12 +6,19 @@ import DbBadge from './components/DbBadge.vue'
 import EnvBadge from './components/EnvBadge.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import Workspace from './components/Workspace.vue'
-import { SESSION_MANAGER, SHORTCUTS, ZOOM_SERVICE, injectRequired } from './services/keys'
+import {
+  LAYOUT_SERVICE,
+  SESSION_MANAGER,
+  SHORTCUTS,
+  ZOOM_SERVICE,
+  injectRequired,
+} from './services/keys'
 import type { Session } from './services/Session'
 
 const manager = injectRequired(SESSION_MANAGER)
 const shortcuts = injectRequired(SHORTCUTS)
 const zoomService = injectRequired(ZOOM_SERVICE)
+const layout = injectRequired(LAYOUT_SERVICE)
 const settings = useTemplateRef<InstanceType<typeof SettingsDialog>>('settings')
 
 /** The dim text of a tab: the open table. Without one, the database. */
@@ -24,7 +31,7 @@ function detail(session: Session): string {
 }
 
 /**
- * The one place for the save, refresh, export and zoom keys. Only the active tab saves, refreshes or exports.
+ * The one place for the save, refresh, export, detail panel and zoom keys. Only the active tab saves, refreshes or exports.
  * The default is always stopped. It would save or reload the whole page of the app.
  */
 function onKey(event: KeyboardEvent): void {
@@ -38,18 +45,32 @@ function onKey(event: KeyboardEvent): void {
     }
     return
   }
+  // Escape or Cmd+. stops a running query. Otherwise Escape keeps its normal job.
+  if (shortcuts.cancels(event) && manager.active?.cancellable) {
+    event.preventDefault()
+    void manager.active.cancel()
+    return
+  }
   const action = shortcuts.action(event)
   if (!action) {
     return
   }
   event.preventDefault()
   const session = manager.active
+  // The row detail panel can open and close also while a query runs.
+  if (action === 'detail') {
+    if (session?.config && session.view === 'content') {
+      layout.toggleDetail()
+    }
+    return
+  }
   if (!session?.config || session.busy) {
     return
   }
-  // An open cell editor is a textarea. Leaving it keeps its edit as a pending change.
-  if (document.activeElement instanceof HTMLTextAreaElement) {
-    document.activeElement.blur()
+  // An open cell editor or a field of the row detail panel keeps its edit as a pending change when it is left.
+  const focused = document.activeElement
+  if (focused instanceof HTMLTextAreaElement || focused instanceof HTMLInputElement) {
+    focused.blur()
   }
   if (action === 'export') {
     // The workspace of the tab sees this and opens the export dialog.

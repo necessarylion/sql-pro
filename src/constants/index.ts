@@ -1,13 +1,30 @@
-import type { ConnectionConfig, Driver, SessionView, SshConfig } from '../types'
+import type { ConnectionConfig, DbObjectKind, Driver, SessionView, SshConfig } from '../types'
+
+/** The word for each kind of database object, as the UI shows it. */
+export const OBJECT_KIND_LABELS: Record<DbObjectKind, string> = {
+  view: 'View',
+  trigger: 'Trigger',
+  procedure: 'Procedure',
+  function: 'Function',
+}
 
 /** Rows loaded per page in the content view. */
 export const PAGE_SIZE = 500
+
+/** The status of a tab after the user cancelled its query. */
+export const QUERY_CANCELLED_STATUS = 'Query cancelled'
 
 /** The table and file name for exported query result rows, which have no table. */
 export const QUERY_RESULT_NAME = 'query_result'
 
 /** Longer cell text is cut in the grid. The full value is still used for editing. */
 export const CELL_PREVIEW_LENGTH = 200
+
+/** In the row detail panel, a longer value (or one with a line break) gets a multi-line box. */
+export const DETAIL_LINE_LENGTH = 80
+
+/** The spaces of one indent level when the row detail panel formats JSON. */
+export const JSON_INDENT = 2
 
 /** The type of the `id` column that a new table starts with. All three databases know it. */
 export const ID_COLUMN_TYPE = 'INTEGER'

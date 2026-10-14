@@ -1,19 +1,23 @@
 //! `PostgreSQL` access.
 
 use async_trait::async_trait;
-use sqlx::postgres::{PgConnectOptions, PgPool, PgQueryResult, PgRow};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, PgQueryResult, PgRow};
 use sqlx::{AssertSqlSafe, Postgres, Row as _};
 
 use super::{
-    Repository, Statement, cell, collect, default_sql, double_quote, execute, execute_all,
-    first_column, kind, literal, password_safe, pool_options, relations, run_script, single,
+    Repository, ServerId, Statement, cell, collect, default_sql, definition, double_quote, execute,
+    execute_all, first_column, foreign_keys, indexes, keyword, kind, literal, objects,
+    password_safe, pool_options, relations, run_on_new_connection, run_script, single,
     standard_columns,
 };
-use crate::constants::POSTGRES_ROLE_NAME_MAX;
+use crate::constants::{POSTGRES_ROLE_NAME_MAX, TRIGGER};
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, Relation, ResultSet, TableRef,
-    UserList,
+    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser, ForeignKey, IndexInfo,
+    Relation, ResultSet, TableRef, UserList,
 };
 
 const DATABASES_SQL: &str =
@@ -53,6 +57,26 @@ const UNIQUE_SQL: &str = "SELECT n.nspname, c.relname, i.indexrelid, a.attname \
     LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.col \
     WHERE i.indisunique AND i.indpred IS NULL AND k.position <= i.indnkeyatts \
         AND n.nspname NOT IN ('pg_catalog', 'information_schema')";
+
+/// The triggers, procedures and functions of the user schemas, in the shape `objects` reads.
+/// Triggers that the server makes for foreign keys are left out. So are the
+/// functions of extensions, and aggregate and window functions.
+const OBJECTS_SQL: &str = "SELECT 'trigger', n.nspname, t.tgname, c.relname, NULL \
+    FROM pg_trigger t \
+    JOIN pg_class c ON c.oid = t.tgrelid \
+    JOIN pg_namespace n ON n.oid = c.relnamespace \
+    WHERE NOT t.tgisinternal \
+        AND n.nspname <> 'information_schema' AND left(n.nspname, 3) <> 'pg_' \
+    UNION ALL \
+    SELECT CASE p.prokind WHEN 'p' THEN 'procedure' ELSE 'function' END, n.nspname, p.proname, \
+        NULL, pg_get_function_identity_arguments(p.oid) \
+    FROM pg_proc p \
+    JOIN pg_namespace n ON n.oid = p.pronamespace \
+    WHERE p.prokind IN ('f', 'p') \
+        AND n.nspname <> 'information_schema' AND left(n.nspname, 3) <> 'pg_' \
+        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass \
+            AND d.objid = p.oid AND d.deptype = 'e') \
+    ORDER BY 1 DESC, 2, 3, 5";
 
 /// The schemas that hold user data. Names that start with `pg_` belong to the system.
 const USER_SCHEMAS_SQL: &str = "SELECT nspname FROM pg_namespace n \
@@ -117,6 +141,9 @@ const USERS_SQL: &str = "SELECT r.rolname, \
 
 pub struct PostgresRepository {
     pool: PgPool,
+    /// The settings of the pool. Cancel opens its own connection with them.
+    options: PgConnectOptions,
+    server_id: ServerId,
 }
 
 impl PostgresRepository {
@@ -129,8 +156,26 @@ impl PostgresRepository {
         if !config.database.is_empty() {
             options = options.database(&config.database);
         }
-        let pool = pool_options().connect_with(options).await?;
-        Ok(Self { pool })
+        let server_id = ServerId::default();
+        let seen = Arc::clone(&server_id);
+        let pool = pool_options()
+            .after_connect(move |connection, _| {
+                let seen = Arc::clone(&seen);
+                Box::pin(async move {
+                    let id: i64 = sqlx::query_scalar("SELECT pg_backend_pid()::int8")
+                        .fetch_one(connection)
+                        .await?;
+                    seen.store(id, Ordering::Relaxed);
+                    Ok(())
+                })
+            })
+            .connect_with(options.clone())
+            .await?;
+        Ok(Self {
+            pool,
+            options,
+            server_id,
+        })
     }
 
     /// Writes a text value as an escape string: `E'value'`.
@@ -217,6 +262,23 @@ impl PostgresRepository {
         match self.query(sql).await {
             Ok(_) => Ok(()),
             Err(error) => Err(password_safe(error, password)),
+        }
+    }
+
+    /// SQL that turns the one letter code of a foreign key rule into its words.
+    fn rule(column: &str) -> String {
+        format!(
+            "CASE {column} WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT' \
+                WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL' WHEN 'd' THEN 'SET DEFAULT' END"
+        )
+    }
+
+    /// The table of a trigger, in the schema of the trigger.
+    fn trigger_table(object: &DbObject) -> TableRef {
+        TableRef {
+            schema: object.schema.clone(),
+            name: object.table.clone().unwrap_or_default(),
+            kind: String::new(),
         }
     }
 
@@ -317,6 +379,105 @@ impl Repository for PostgresRepository {
         let keys = single(self.query(FOREIGN_KEYS_SQL).await?);
         let unique = single(self.query(UNIQUE_SQL).await?);
         Ok(relations(&keys, &unique))
+    }
+
+    /// A part of an index on an expression shows the expression.
+    async fn indexes(&self, table: &TableRef) -> AppResult<Vec<IndexInfo>> {
+        let sql = format!(
+            "SELECT ic.relname, \
+                coalesce(a.attname, pg_get_indexdef(i.indexrelid, k.position::int, true)), \
+                CASE WHEN i.indisunique THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN i.indisprimary THEN 'YES' ELSE 'NO' END \
+            FROM pg_index i \
+            JOIN pg_class ic ON ic.oid = i.indexrelid \
+            CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(col, position) \
+            LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.col AND k.col > 0 \
+            WHERE i.indrelid = {}::regclass AND k.position <= i.indnkeyatts \
+            ORDER BY NOT i.indisprimary, ic.relname, k.position",
+            literal(&self.table_name(table))
+        );
+        Ok(indexes(&single(self.query(&sql).await?)))
+    }
+
+    async fn foreign_keys(&self, table: &TableRef) -> AppResult<Vec<ForeignKey>> {
+        let sql = format!(
+            "SELECT con.oid, con.conname, a.attname, \
+                CASE WHEN rn.nspname <> {schema} THEN rn.nspname END, rc.relname, ra.attname, \
+                {on_delete}, {on_update} \
+            FROM pg_constraint con \
+            JOIN pg_class rc ON rc.oid = con.confrelid \
+            JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
+            CROSS JOIN LATERAL unnest(con.conkey, con.confkey) \
+                WITH ORDINALITY AS k(col, ref_col, position) \
+            JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.col \
+            JOIN pg_attribute ra ON ra.attrelid = con.confrelid AND ra.attnum = k.ref_col \
+            WHERE con.contype = 'f' AND con.conrelid = {table}::regclass \
+            ORDER BY con.conname, con.oid, k.position",
+            schema = literal(table.schema.as_deref().unwrap_or_default()),
+            on_delete = Self::rule("con.confdeltype"),
+            on_update = Self::rule("con.confupdtype"),
+            table = literal(&self.table_name(table)),
+        );
+        Ok(foreign_keys(&single(self.query(&sql).await?)))
+    }
+
+    /// A view gives `CREATE VIEW`. A table gives `None`, so the caller builds it from the columns.
+    async fn create_sql(&self, table: &TableRef) -> AppResult<Option<String>> {
+        let sql = format!(
+            "SELECT pg_get_viewdef(c.oid, true) FROM pg_class c \
+            WHERE c.oid = {}::regclass AND c.relkind = 'v'",
+            literal(&self.table_name(table))
+        );
+        let set = single(self.query(&sql).await?);
+        let Some(body) = set
+            .rows
+            .first()
+            .and_then(|row| row.first().cloned().flatten())
+        else {
+            return Ok(None);
+        };
+        let body = body.trim_end().trim_end_matches(';');
+        Ok(Some(format!(
+            "CREATE VIEW {} AS\n{body}",
+            self.table_name(table)
+        )))
+    }
+
+    async fn objects(&self) -> AppResult<Vec<DbObject>> {
+        Ok(objects(&single(self.query(OBJECTS_SQL).await?)))
+    }
+
+    async fn object_sql(&self, object: &DbObject) -> AppResult<String> {
+        let schema = literal(object.schema.as_deref().unwrap_or_default());
+        let name = literal(&object.name);
+        let sql = if object.kind == TRIGGER {
+            format!(
+                "SELECT pg_get_triggerdef(t.oid, true) FROM pg_trigger t \
+                WHERE t.tgname = {name} AND t.tgrelid = {}::regclass",
+                literal(&self.table_name(&Self::trigger_table(object)))
+            )
+        } else {
+            format!(
+                "SELECT pg_get_functiondef(p.oid) FROM pg_proc p \
+                JOIN pg_namespace n ON n.oid = p.pronamespace \
+                WHERE n.nspname = {schema} AND p.proname = {name} \
+                    AND pg_get_function_identity_arguments(p.oid) = {}",
+                literal(object.args.as_deref().unwrap_or_default())
+            )
+        };
+        definition(&single(self.query(&sql).await?), 0, &object.name)
+    }
+
+    /// A trigger is dropped on its table. A routine is dropped with its argument types,
+    /// because two routines may have the same name. The types come from the catalog.
+    fn drop_object_sql(&self, object: &DbObject) -> String {
+        let name = self.object_name(object);
+        if object.kind == TRIGGER {
+            let table = self.table_name(&Self::trigger_table(object));
+            return format!("DROP TRIGGER {} ON {table}", self.quote(&object.name));
+        }
+        let args = object.args.as_deref().unwrap_or_default();
+        format!("DROP {} {name}({args})", keyword(object))
     }
 
     async fn modify_column_sql(
@@ -441,5 +602,15 @@ impl Repository for PostgresRepository {
 
     async fn close(&self) {
         self.pool.close().await;
+    }
+
+    async fn cancel(&self) -> AppResult<()> {
+        let id = self.server_id.load(Ordering::Relaxed);
+        if id == 0 {
+            return Ok(());
+        }
+        // The id is a number from the server, never text from the user.
+        let sql = format!("SELECT pg_cancel_backend({id})");
+        run_on_new_connection::<PgConnection>(&self.options, sql).await
     }
 }

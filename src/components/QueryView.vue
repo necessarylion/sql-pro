@@ -191,7 +191,17 @@ watch(sessionResult, clearSelection)
         <CircleAlertIcon class="error" :size="13" />
         <span class="message error" :title="session.error">{{ session.error }}</span>
       </template>
-      <span v-else-if="session.busy" class="dim">Working…</span>
+      <template v-else-if="session.busy">
+        <span class="dim">Working…</span>
+        <button
+          v-if="session.cancellable"
+          title="Stop the running query (Esc)"
+          :disabled="session.cancelling"
+          @click="session.cancel()"
+        >
+          {{ session.cancelling ? 'Cancelling…' : 'Cancel' }}
+        </button>
+      </template>
       <template v-else-if="session.status">
         <CircleCheckIcon class="ok" :size="13" />
         <span class="message">{{ session.status }}</span>

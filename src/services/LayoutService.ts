@@ -1,5 +1,8 @@
 import {
+  DETAIL_DEFAULT_WIDTH,
+  DETAIL_OPEN_STORAGE_KEY,
   EDITOR_DEFAULT_HEIGHT,
+  KEYS_DEFAULT_HEIGHT,
   LAYOUT_SIZES,
   SIDEBAR_DEFAULT_WIDTH,
   type LayoutSize,
@@ -10,6 +13,10 @@ import type { ProfileStorage } from './ProfileStorage'
 export class LayoutService {
   sidebarWidth = SIDEBAR_DEFAULT_WIDTH
   editorHeight = EDITOR_DEFAULT_HEIGHT
+  detailWidth = DETAIL_DEFAULT_WIDTH
+  keysHeight = KEYS_DEFAULT_HEIGHT
+  /** True when the row detail panel of the Content view is open. One setting for all tabs. */
+  detailOpen = false
   private storage: ProfileStorage
   private root: HTMLElement
 
@@ -23,6 +30,13 @@ export class LayoutService {
       const usable = saved >= rule.min && saved <= rule.max
       this.resize(usable ? saved : rule.fallback, name)
     }
+    this.detailOpen = storage.getItem(DETAIL_OPEN_STORAGE_KEY) === '1'
+  }
+
+  /** Opens or closes the row detail panel, and saves that. */
+  toggleDetail(): void {
+    this.detailOpen = !this.detailOpen
+    this.storage.setItem(DETAIL_OPEN_STORAGE_KEY, this.detailOpen ? '1' : '0')
   }
 
   /** Sets one size, kept inside its limits. Does not save it. */

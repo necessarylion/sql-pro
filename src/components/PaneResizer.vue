@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref } from 'vue'
-import type { LayoutSize } from '../constants/layout'
+import { HEIGHT_SIZES, LEFT_EDGE_SIZES, TOP_EDGE_SIZES, type LayoutSize } from '../constants/layout'
 import { LAYOUT_SERVICE, injectRequired } from '../services/keys'
 
 // The drag handle on the edge of a pane. It lies on the right edge for the sidebar
-// width and on the bottom edge for the editor height. The pane is the parent
+// width, on the bottom edge for the editor height and on the left edge for the
+// width of the row detail panel and on the top edge for the keys area height. The pane is the parent
 // element. It must have `position: relative`.
 const props = defineProps<{ size: LayoutSize }>()
 
 const layout = injectRequired(LAYOUT_SERVICE)
 const dragging = ref(false)
 /** True when the handle is a horizontal line that moves up and down. */
-const rows = props.size === 'editorHeight'
+const rows = HEIGHT_SIZES.includes(props.size)
+/** True when the handle lies on the left edge. The pane then grows to the left. */
+const left = LEFT_EDGE_SIZES.includes(props.size)
+/** True when the handle lies on the top edge. The pane then grows upward. */
+const top = TOP_EDGE_SIZES.includes(props.size)
 
 /** The classes on the root keep the resize cursor and stop text selection. See style.css. */
 function setDragging(on: boolean): void {
@@ -26,12 +31,21 @@ function start(event: PointerEvent): void {
   setDragging(true)
 }
 
-/** The new size is the way from the start of the pane to the mouse. */
+/** The new size is the way from the start of the pane to the mouse. A left handle measures from the right end. A top handle measures from the bottom. */
 function move(event: PointerEvent): void {
   const pane = (event.currentTarget as HTMLElement).parentElement
-  if (dragging.value && pane) {
-    const box = pane.getBoundingClientRect()
-    layout.resize(rows ? event.clientY - box.top : event.clientX - box.left, props.size)
+  if (!dragging.value || !pane) {
+    return
+  }
+  const box = pane.getBoundingClientRect()
+  if (top) {
+    layout.resize(box.bottom - event.clientY, props.size)
+  } else if (rows) {
+    layout.resize(event.clientY - box.top, props.size)
+  } else if (left) {
+    layout.resize(box.right - event.clientX, props.size)
+  } else {
+    layout.resize(event.clientX - box.left, props.size)
   }
 }
 
@@ -49,7 +63,7 @@ onBeforeUnmount(stop)
 <template>
   <div
     class="resizer"
-    :class="{ dragging, rows }"
+    :class="{ dragging, rows, left, top }"
     role="separator"
     :aria-orientation="rows ? 'horizontal' : 'vertical'"
     title="Drag to resize. Double click to reset."
@@ -73,6 +87,11 @@ onBeforeUnmount(stop)
   cursor: col-resize;
 }
 
+.resizer.left {
+  right: auto;
+  left: -2px;
+}
+
 .resizer.rows {
   top: auto;
   right: 0;
@@ -81,6 +100,11 @@ onBeforeUnmount(stop)
   width: auto;
   height: 5px;
   cursor: row-resize;
+}
+
+.resizer.rows.top {
+  top: -2px;
+  bottom: auto;
 }
 
 /* The accent line covers the border. */

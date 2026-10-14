@@ -6,16 +6,20 @@ import type {
   ConnectionConfig,
   CsvImport,
   CsvPreview,
+  DbObject,
   DbUser,
   Diagram,
   ExportRequest,
   NewColumn,
+  NewForeignKey,
+  NewIndex,
   GrantableAccess,
   NewUser,
   ResultSet,
   RowUpdate,
   RowsExport,
   SaveResult,
+  TableKeys,
   TablePage,
   TableRef,
   UserList,
@@ -51,6 +55,11 @@ export class DatabaseApi {
 
   listTables(id: string): Promise<TableRef[]> {
     return invoke('list_tables', { id })
+  }
+
+  /** Stops the query that runs now on connection `id`. It runs while that query still runs. */
+  cancelQuery(id: string): Promise<void> {
+    return invoke('cancel_query', { id })
   }
 
   browse(id: string, request: BrowseRequest): Promise<TablePage> {
@@ -89,6 +98,29 @@ export class DatabaseApi {
     return invoke('alter_column', { id, table, name, column })
   }
 
+  /** The indexes and foreign keys of a table. */
+  tableKeys(id: string, table: TableRef): Promise<TableKeys> {
+    return invoke('table_keys', { id, table })
+  }
+
+  addIndex(id: string, table: TableRef, index: NewIndex): Promise<void> {
+    return invoke('add_index', { id, table, index })
+  }
+
+  dropIndex(id: string, table: TableRef, name: string): Promise<void> {
+    return invoke('drop_index', { id, table, name })
+  }
+
+  /** Not on SQLite. It cannot change the foreign keys of an existing table. */
+  addForeignKey(id: string, table: TableRef, key: NewForeignKey): Promise<void> {
+    return invoke('add_foreign_key', { id, table, key })
+  }
+
+  /** Not on SQLite. */
+  dropForeignKey(id: string, table: TableRef, name: string): Promise<void> {
+    return invoke('drop_foreign_key', { id, table, name })
+  }
+
   createTable(id: string, name: string, columns: NewColumn[]): Promise<void> {
     return invoke('create_table', { id, name, columns })
   }
@@ -100,6 +132,21 @@ export class DatabaseApi {
 
   dropTable(id: string, table: TableRef): Promise<void> {
     return invoke('drop_table', { id, table })
+  }
+
+  /** The triggers and routines of the current database. Views come with `listTables`. */
+  listObjects(id: string): Promise<DbObject[]> {
+    return invoke('list_objects', { id })
+  }
+
+  /** The CREATE statement of a view, trigger or routine. */
+  objectDefinition(id: string, object: DbObject): Promise<string> {
+    return invoke('object_definition', { id, object })
+  }
+
+  /** Drops a trigger or routine. A view is dropped with `dropTable`. */
+  dropObject(id: string, object: DbObject): Promise<void> {
+    return invoke('drop_object', { id, object })
   }
 
   truncateTable(id: string, table: TableRef): Promise<void> {

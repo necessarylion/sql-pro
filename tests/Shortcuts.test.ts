@@ -8,6 +8,7 @@ test('macOS uses Cmd and ignores Ctrl', function () {
   const shortcuts = new Shortcuts('MacIntel')
   expect(shortcuts.action({ ...NONE, key: 's', metaKey: true })).toBe('save')
   expect(shortcuts.action({ ...NONE, key: 'R', metaKey: true })).toBe('refresh')
+  expect(shortcuts.action({ ...NONE, key: 'i', metaKey: true })).toBe('detail')
   expect(shortcuts.action({ ...NONE, key: 'r', ctrlKey: true })).toBeNull()
   expect(shortcuts.action({ ...NONE, key: 's', metaKey: true, shiftKey: true })).toBeNull()
   expect(shortcuts.action({ ...NONE, key: 'x', metaKey: true })).toBeNull()
@@ -26,6 +27,22 @@ test('Windows and Linux use Ctrl and ignore the other modifiers', function () {
     // A click with Ctrl opens a table in a new tab.
     expect(shortcuts.hasModifier({ metaKey: false, ctrlKey: true })).toBe(true)
   }
+})
+
+test('Escape alone and the main modifier with a dot cancel a query', function () {
+  const mac = new Shortcuts('MacIntel')
+  expect(mac.cancels({ ...NONE, key: 'Escape' })).toBe(true)
+  expect(mac.cancels({ ...NONE, key: 'Escape', metaKey: true })).toBe(false)
+  expect(mac.cancels({ ...NONE, key: '.', metaKey: true })).toBe(true)
+  expect(mac.cancels({ ...NONE, key: '.', ctrlKey: true })).toBe(false)
+  expect(mac.cancels({ ...NONE, key: '.' })).toBe(false)
+  // Cancel is not one of the save, refresh or export actions.
+  expect(mac.action({ ...NONE, key: '.', metaKey: true })).toBeNull()
+
+  const windows = new Shortcuts('Win32')
+  expect(windows.cancels({ ...NONE, key: '.', ctrlKey: true })).toBe(true)
+  expect(windows.cancels({ ...NONE, key: '.', metaKey: true })).toBe(false)
+  expect(windows.cancels({ ...NONE, key: 'Escape', shiftKey: true })).toBe(false)
 })
 
 test('Shift with the main modifier gives the export action', function () {
