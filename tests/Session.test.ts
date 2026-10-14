@@ -5,12 +5,14 @@ import { Session } from '../src/services/Session'
 import { RAW_FILTER_COLUMN } from '../src/constants/filters'
 import type {
   BrowseRequest,
+  ConnectionConfig,
   ResultSet,
   Row,
   RowUpdate,
   SaveResult,
   TablePage,
   TableRef,
+  UserList,
   Values,
 } from '../src/types'
 import { FakePrompt } from './FakePrompt'
@@ -430,4 +432,78 @@ test('a page turn sends the known total, other loads do not', async function () 
   await session.reload()
   expect(api.requests[api.requests.length - 1].total).toBeUndefined()
   expect(api.requests.length).toBe(6)
+})
+
+const CONFIG: ConnectionConfig = {
+  driver: 'mysql',
+  host: 'db',
+  port: 3306,
+  user: 'root',
+  password: 'secret',
+  database: 'shop',
+  ssh: null,
+}
+
+/** A backend for `connect`. It notes if the config was set while it loaded. */
+class ConnectApi {
+  session: Session | null = null
+  configSeen: (ConnectionConfig | null)[] = []
+  disconnects = 0
+  failTables = false
+
+  async connect(): Promise<void> {}
+
+  async disconnect(): Promise<void> {
+    this.disconnects += 1
+  }
+
+  async listDatabases(): Promise<string[]> {
+    this.configSeen.push(this.session?.config ?? null)
+    return ['shop']
+  }
+
+  async listTables(): Promise<TableRef[]> {
+    this.configSeen.push(this.session?.config ?? null)
+    if (this.failTables) {
+      throw 'timeout'
+    }
+    return [USERS]
+  }
+
+  async listObjects(): Promise<[]> {
+    return []
+  }
+
+  async listUsers(): Promise<UserList> {
+    this.configSeen.push(this.session?.config ?? null)
+    return { canManage: false, users: [] }
+  }
+}
+
+function connectSession(api: ConnectApi): Session {
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
+  api.session = session
+  return session
+}
+
+test('connect sets the config only after everything is loaded', async function () {
+  const api = new ConnectApi()
+  const session = connectSession(api)
+  await session.connect(CONFIG, 'Shop')
+  // The form with its spinner stays while the lists load.
+  expect(api.configSeen).toEqual([null, null, null])
+  expect(session.config?.database).toBe('shop')
+  expect(session.config?.password).toBe('')
+  expect(session.title).toBe('Shop')
+  expect(session.tables).toEqual([USERS])
+  expect(api.disconnects).toBe(0)
+})
+
+test('connect closes the connection when loading fails', async function () {
+  const api = new ConnectApi()
+  api.failTables = true
+  const session = connectSession(api)
+  await expect(session.connect(CONFIG, 'Shop')).rejects.toBe('timeout')
+  expect(session.config).toBeNull()
+  expect(api.disconnects).toBe(1)
 })

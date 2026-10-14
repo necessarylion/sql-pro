@@ -446,5 +446,17 @@ button.icon {
   flex: 1;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   color: var(--text-3);
+}
+
+/* A turning loading icon. */
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

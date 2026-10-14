@@ -83,6 +83,9 @@ const resizing = ref('')
 // A drag can end with a click on the header. That click must not sort.
 let skipSort = false
 const columnStyles = computed(stylesOfColumns)
+// Sets, so each row finds out in one step if it is selected or deleted.
+const selectedSet = computed(setOfSelected)
+const deletedSet = computed(setOfDeleted)
 
 // Another table or another query result starts with automatic widths.
 watch(columnNames, resetWidths)
@@ -153,7 +156,35 @@ function isNew(rowIndex: number): boolean {
 }
 
 function isDeleted(rowIndex: number): boolean {
-  return props.deleted?.includes(rowIndex) ?? false
+  return deletedSet.value.has(rowIndex)
+}
+
+function setOfSelected(): Set<number> {
+  return new Set(selected.value)
+}
+
+function setOfDeleted(): Set<number> {
+  return new Set(props.deleted)
+}
+
+/**
+ * All values one row is drawn from. `v-memo` draws the row again only when one of them changes.
+ * So a selection change draws only the rows that change, not the whole table.
+ * The cell values go in one by one: an edit of a new row changes its array in place.
+ */
+function rowMemo(row: Row, rowIndex: number): unknown[] {
+  const edited = editing.value?.row === rowIndex
+  return [
+    ...row,
+    isSelected(rowIndex),
+    isNew(rowIndex),
+    isDeleted(rowIndex),
+    props.changed?.[rowIndex],
+    edited ? editing.value?.column : -1,
+    edited ? text.value : '',
+    props.columns,
+    columnStyles.value,
+  ]
 }
 
 function preview(value: string): string {
@@ -171,7 +202,7 @@ function sort(column: string): void {
 }
 
 function isSelected(rowIndex: number): boolean {
-  return selected.value?.includes(rowIndex) ?? false
+  return selectedSet.value.has(rowIndex)
 }
 
 /** The row numbers in shown order. */
@@ -379,6 +410,7 @@ function onEnter(event: KeyboardEvent): void {
         <tr
           v-for="(row, rowIndex) in rows"
           :key="rowIndex"
+          v-memo="rowMemo(row, rowIndex)"
           :class="{
             selected: isSelected(rowIndex),
             draft: isNew(rowIndex),

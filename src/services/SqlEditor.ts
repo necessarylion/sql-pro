@@ -49,6 +49,9 @@ const LOOK = EditorView.theme({
   '.cm-gutters': { background: 'var(--bg)', border: '0', color: 'var(--text-3)' },
   '.cm-lineNumbers .cm-gutterElement': { minWidth: '32px', padding: '0 8px 0 10px' },
   '.cm-activeLine': { background: 'var(--stmt-highlight)' },
+  // CodeMirror draws the selection behind the lines. The solid line colour would hide it
+  // on the line with the cursor, so the line colour is off while text is selected.
+  '&.cm-has-selection .cm-activeLine': { background: 'transparent' },
   '.cm-activeLineGutter': { background: 'var(--stmt-highlight)', color: 'var(--accent-text)' },
   '.cm-selectionBackground, &.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground':
     { background: SELECTION },
@@ -68,6 +71,16 @@ const LOOK = EditorView.theme({
     color: 'var(--on-accent)',
   },
 })
+
+/** Adds `cm-has-selection` to the editor while some text is selected. */
+function selectionClass(state: EditorState): Record<string, string> {
+  for (const range of state.selection.ranges) {
+    if (!range.empty) {
+      return { class: 'cm-has-selection' }
+    }
+  }
+  return {}
+}
 
 export interface SqlEditorOptions {
   parent: HTMLElement
@@ -100,6 +113,7 @@ export class SqlEditor {
           highlightActiveLine(),
           highlightActiveLineGutter(),
           drawSelection(),
+          EditorView.editorAttributes.compute(['selection'], selectionClass),
           history(),
           bracketMatching(),
           autocompletion(),

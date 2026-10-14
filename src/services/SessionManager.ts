@@ -38,15 +38,33 @@ export class SessionManager {
 
   /**
    * Opens `table` in a new tab, with its own copy of the connection of `source`.
-   * The tab is added only when the copy is connected. So a failure leaves no tab behind.
+   * The tab shows at once with a loading state, because a far away database is slow to copy.
+   * When the copy fails, the tab goes away and the error shows in `source`.
    */
   async openTable(source: Session, table: TableRef): Promise<void> {
-    const session = new Session(this.api, this.prompt)
-    await session.cloneFrom(source)
-    this.sessions.push(session)
-    this.activeId = session.id
+    this.sessions.push(new Session(this.api, this.prompt))
     // Read the tab back from the list. In the app that is the reactive one, so the page shows.
     const tab = this.sessions[this.sessions.length - 1]
+    tab.title = source.title
+    tab.opening = true
+    this.activeId = tab.id
+    try {
+      await tab.cloneFrom(source)
+    } catch (error) {
+      const showing = this.activeId === tab.id
+      await this.close(tab)
+      if (showing && this.sessions.includes(source)) {
+        this.activeId = source.id
+      }
+      throw error
+    } finally {
+      tab.opening = false
+    }
+    if (!this.sessions.includes(tab)) {
+      // The user closed the tab while it was loading. Close its connection too.
+      await tab.disconnect()
+      return
+    }
     // A table that does not load shows its error in the new tab.
     await tab.run(tab.selectTable(table))
   }

@@ -17,6 +17,7 @@ import {
   DatabaseIcon,
   DownloadIcon,
   EyeIcon,
+  LoaderCircleIcon,
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
@@ -401,7 +402,7 @@ function pick(table: TableRef, event: MouseEvent): void {
   }
 }
 
-/** An error is shown in this tab. A new tab is added only when its connection works. */
+/** The new tab shows at once. When its connection fails, it goes away and the error shows in this tab. */
 function openInNewTab(table: TableRef): void {
   closeMenu()
   props.session.run(manager.openTable(props.session, table))
@@ -678,7 +679,10 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
           <DefinitionView v-else-if="session.definition" :session="session" />
           <div v-else-if="!session.page" class="empty">
             <span v-if="session.error" class="error failure">{{ session.error }}</span>
-            <template v-else-if="session.busy">Working…</template>
+            <template v-else-if="session.busy">
+              <LoaderCircleIcon :size="13" class="spin" />
+              Loading…
+            </template>
             <template v-else-if="session.status">{{ session.status }}</template>
             <template v-else-if="!session.table">Select a table</template>
           </div>

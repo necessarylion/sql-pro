@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, useTemplateRef } from 'vue'
-import { PlugIcon, PlusIcon, SettingsIcon, XIcon } from 'lucide-vue-next'
+import { LoaderCircleIcon, PlugIcon, PlusIcon, SettingsIcon, XIcon } from 'lucide-vue-next'
 import ConnectionForm from './components/ConnectionForm.vue'
 import DbBadge from './components/DbBadge.vue'
 import EnvBadge from './components/EnvBadge.vue'
@@ -141,6 +141,10 @@ onBeforeUnmount(stopListening)
       class="pane"
     >
       <Workspace v-if="session.config" :session="session" />
+      <div v-else-if="session.opening" class="empty">
+        <LoaderCircleIcon :size="13" class="spin" />
+        Connecting…
+      </div>
       <ConnectionForm v-else :session="session" />
     </div>
 

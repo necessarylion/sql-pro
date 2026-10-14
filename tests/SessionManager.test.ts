@@ -21,10 +21,15 @@ class FakeApi {
   clones: { id: string; newId: string }[] = []
   disconnected: string[] = []
   failClone = false
+  /** When set, a copy waits for this, like a slow database far away. */
+  slowClone: Promise<void> | null = null
 
   async connect(): Promise<void> {}
 
   async cloneConnection(id: string, newId: string): Promise<void> {
+    if (this.slowClone) {
+      await this.slowClone
+    }
     if (this.failClone) {
       throw 'Not connected'
     }
@@ -107,6 +112,41 @@ test('a failing copy adds no tab and shows the error in the old tab', async func
   expect(first.error).toBe('Not connected')
   expect(manager.sessions).toEqual([first])
   expect(manager.activeId).toBe(first.id)
+})
+
+test('the new tab shows and loads before the copy is done', async function () {
+  const { api, manager, first } = await connected()
+  const gate = Promise.withResolvers<void>()
+  api.slowClone = gate.promise
+  const opened = first.run(manager.openTable(first, ORDERS))
+
+  expect(manager.sessions.length).toBe(2)
+  const tab = manager.sessions[1]
+  expect(manager.activeId).toBe(tab.id)
+  expect(tab.opening).toBe(true)
+  expect(tab.title).toBe('Shop')
+  expect(tab.config).toBeNull()
+
+  gate.resolve()
+  expect(await opened).toBe(true)
+  expect(tab.opening).toBe(false)
+  expect(tab.config?.database).toBe('shop')
+  expect(tab.table).toBe(ORDERS)
+})
+
+test('a tab closed while it loads closes its connection', async function () {
+  const { api, manager, first } = await connected()
+  const gate = Promise.withResolvers<void>()
+  api.slowClone = gate.promise
+  const opened = first.run(manager.openTable(first, ORDERS))
+  const tab = manager.sessions[1]
+  await manager.close(tab)
+  expect(manager.sessions).toEqual([first])
+
+  gate.resolve()
+  expect(await opened).toBe(true)
+  expect(api.disconnected).toEqual([tab.id])
+  expect(tab.table).toBeNull()
 })
 
 test('closing a tab with unsaved changes asks first', async function () {

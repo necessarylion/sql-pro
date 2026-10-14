@@ -42,6 +42,11 @@ const detailRow = computed(rowOfDetail)
 const detailEditable = computed(detailCanEdit)
 const detailChanged = computed(changedOfDetail)
 const detailTag = computed(tagOfDetail)
+// The grid gets cached values. The Session getters build new arrays on every call, and a
+// new array makes the grid draw all rows again. That made a drag selection slow.
+const shownRows = computed(rowsOfSession)
+const changedCells = computed(changedOfSession)
+const deletedRows = computed(deletedOfSession)
 
 // Row numbers mean other rows after a reload. Drop the selection.
 watch(sessionPage, clearSelection)
@@ -52,6 +57,18 @@ function sessionPage(): TablePage | null {
 
 function clearSelection(): void {
   selected.value = []
+}
+
+function rowsOfSession(): Row[] {
+  return props.session.shownRows
+}
+
+function changedOfSession(): Record<number, number[]> {
+  return props.session.changedCells
+}
+
+function deletedOfSession(): number[] {
+  return props.session.deletedRows
 }
 
 function toGridColumns(): GridColumn[] {
@@ -175,13 +192,13 @@ function deleteSelected(): void {
     <DataGrid
       v-model:selected="selected"
       :columns="gridColumns"
-      :rows="session.shownRows"
+      :rows="shownRows"
       :editable="session.editable"
       :order-by="session.orderBy"
       :descending="session.descending"
       :new-from="session.page?.rows.length"
-      :changed="session.changedCells"
-      :deleted="session.deletedRows"
+      :changed="changedCells"
+      :deleted="deletedRows"
       :key-columns="keyColumns"
       @sort="session.run(session.sort($event))"
       @edit="edit"

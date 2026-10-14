@@ -57,6 +57,8 @@ export class Session {
   /** The environment of the open connection, like `dev` or `prod`. '' = none. */
   environment = ''
   busy = false
+  /** True while a new tab copies the connection of another tab. It shows a loading state. */
+  opening = false
   /** True while a query or a page load runs that the user may cancel. */
   cancellable = false
   /** True after the user asked to cancel. The run then ends with a short status, not an error. */
@@ -277,7 +279,18 @@ export class Session {
 
   async connect(config: ConnectionConfig, title: string, environment = ''): Promise<void> {
     await this.api.connect(this.id, config)
-    await this.setUp(config, title, environment)
+    try {
+      await this.setUp(config, title, environment)
+    } catch (error) {
+      // Do not leave a connection open that no tab shows.
+      // The load error is the one to show, so a failed disconnect is ignored.
+      try {
+        await this.api.disconnect(this.id)
+      } catch {
+        // Nothing more to do.
+      }
+      throw error
+    }
   }
 
   /**
@@ -1146,14 +1159,18 @@ export class Session {
     return (name.split(/[\\/]/).pop() ?? '').replace(/\.[^.]*$/, '')
   }
 
-  /** The part of `connect` that runs after the backend is connected. */
+  /**
+   * The part of `connect` that runs after the backend is connected.
+   * The config is set last. The tab shows the workspace as soon as it is set,
+   * so the connection form keeps its spinner until everything is loaded.
+   */
   private async setUp(config: ConnectionConfig, title: string, environment: string): Promise<void> {
-    this.config = { ...config, password: '', ssh: null }
-    this.title = title
-    this.environment = Environment.clean(environment)
     this.databases = await this.api.listDatabases(this.id)
     await this.loadTables()
     await this.loadUsers()
+    this.title = title
+    this.environment = Environment.clean(environment)
+    this.config = { ...config, password: '', ssh: null }
   }
 
   /** Names a loaded row by its primary key values. */

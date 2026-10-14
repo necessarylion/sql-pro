@@ -146,6 +146,17 @@ watch(sessionResult, clearSelection)
   <div class="below">
     <div class="bar tools">
       <button
+        title="Show the SQL that was run before"
+        :class="{ active: showHistory }"
+        :aria-pressed="showHistory"
+        @click="showHistory = !showHistory"
+      >
+        <HistoryIcon :size="11" />
+        History
+      </button>
+      <span class="spacer" />
+      <span class="dim">Select text to run only that part.</span>
+      <button
         class="primary"
         title="Run the selected text, or everything"
         :disabled="session.busy"
@@ -154,17 +165,6 @@ watch(sessionResult, clearSelection)
         <PlayIcon :size="11" />
         Run
         <span class="hint">{{ shortcuts.hint('↵') }}</span>
-      </button>
-      <span class="dim">Select text to run only that part.</span>
-      <span class="spacer" />
-      <button
-        title="Show the SQL that was run before"
-        :class="{ active: showHistory }"
-        :aria-pressed="showHistory"
-        @click="showHistory = !showHistory"
-      >
-        <HistoryIcon :size="11" />
-        History
       </button>
     </div>
     <QueryHistoryList v-if="showHistory" @pick="useHistory" />
@@ -260,6 +260,13 @@ watch(sessionResult, clearSelection)
 /* Stays on the right edge, also when there is no status text. */
 .export {
   margin-left: auto;
+}
+
+/* The hint gives way first in a narrow window, so the Run button stays visible. */
+.tools .dim {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* The History button while the list is open. */
