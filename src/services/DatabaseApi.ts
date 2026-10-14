@@ -197,6 +197,15 @@ export class DatabaseApi {
     return invoke('save_image', { path, data })
   }
 
+  readTextFile(path: string): Promise<string> {
+    return invoke('read_text_file', { path })
+  }
+
+  /** An older file at `path` is replaced. */
+  writeTextFile(path: string, text: string): Promise<void> {
+    return invoke('write_text_file', { path, text })
+  }
+
   listUsers(id: string): Promise<UserList> {
     return invoke('list_users', { id })
   }

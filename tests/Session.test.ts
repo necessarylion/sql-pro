@@ -525,3 +525,15 @@ test('connect closes the connection when loading fails', async function () {
   expect(session.config).toBeNull()
   expect(api.disconnects).toBe(1)
 })
+
+test('the tab stays busy until the last of overlapping runs ends', async function () {
+  const session = connectSession(new ConnectApi())
+  const slow = Promise.withResolvers<void>()
+  // A double click: a short load ends while the connect still runs.
+  const connect = session.run(slow.promise)
+  await session.run(Promise.resolve())
+  expect(session.busy).toBe(true)
+  slow.resolve()
+  await connect
+  expect(session.busy).toBe(false)
+})

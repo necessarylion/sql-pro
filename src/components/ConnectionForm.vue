@@ -3,13 +3,15 @@ import { computed, nextTick, reactive, ref, useTemplateRef } from 'vue'
 import {
   ChevronRightIcon,
   CircleAlertIcon,
+  DownloadIcon,
   FolderPlusIcon,
   LoaderCircleIcon,
   PlusIcon,
   SearchIcon,
+  UploadIcon,
   XIcon,
 } from 'lucide-vue-next'
-import { confirm, open } from '@tauri-apps/plugin-dialog'
+import { confirm, open, save } from '@tauri-apps/plugin-dialog'
 import {
   CONNECTION_STRING_EXAMPLE,
   DEFAULT_CONFIGS,
@@ -23,6 +25,7 @@ import {
   ENVIRONMENT_MAX_LENGTH,
 } from '../constants/environment'
 import type { EnvironmentKind } from '../constants/environment'
+import { CONNECTIONS_FILE_FILTERS, CONNECTIONS_FILE_NAME } from '../constants/transfer'
 import { DRAG_START_DISTANCE } from '../constants/folders'
 import {
   KEYCHAIN_DELETE_NOTE,
@@ -30,12 +33,13 @@ import {
   KEYCHAIN_WRITE_NOTE,
 } from '../constants/keychain'
 import { ConnectionString } from '../services/ConnectionString'
+import { ConnectionTransfer } from '../services/ConnectionTransfer'
 import { DriverChange } from '../services/DriverChange'
 import { DropPlan } from '../services/DropPlan'
 import type { Drop } from '../services/DropPlan'
 import { Environment } from '../services/Environment'
 import type { Favorite, FavoriteSection, Folder } from '../services/FavoriteStore'
-import { FAVORITE_STORE, injectRequired } from '../services/keys'
+import { CONNECTION_TRANSFER, FAVORITE_STORE, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
 import type { ConnectionConfig, Driver } from '../types'
 import ConnectionInfo from './ConnectionInfo.vue'
@@ -48,6 +52,7 @@ import PaneResizer from './PaneResizer.vue'
 
 const props = defineProps<{ session: Session }>()
 const store = injectRequired(FAVORITE_STORE)
+const transfer = injectRequired(CONNECTION_TRANSFER)
 const folderDialog = useTemplateRef<InstanceType<typeof FolderDialog>>('folderDialog')
 const connectButton = useTemplateRef<HTMLButtonElement>('connectButton')
 
@@ -145,7 +150,7 @@ function openFolderMenu(event: MouseEvent, folder: Folder): void {
   menu.value = { x: event.clientX, y: event.clientY, folder, favorite: null }
 }
 
-/** Opens the menu of a connection. With no folders it only holds "Duplicate". */
+/** Opens the menu of a connection. */
 function openFavoriteMenu(event: MouseEvent, favorite: Favorite): void {
   menu.value = { x: event.clientX, y: event.clientY, folder: null, favorite }
 }
@@ -471,6 +476,45 @@ async function removeFavorite(favorite: Favorite): Promise<void> {
   }
 }
 
+/** Writes all saved connections to a file the user picks. Passwords are not written. */
+async function exportFavorites(): Promise<void> {
+  const path = await save({ defaultPath: CONNECTIONS_FILE_NAME, filters: CONNECTIONS_FILE_FILTERS })
+  if (path) {
+    const count = await transfer.exportTo(path)
+    showNote(`Exported ${connections(count)}. Passwords are not in the file.`)
+  }
+}
+
+/** Writes one saved connection to a file the user picks. Passwords are not written. */
+async function exportFavorite(favorite: Favorite): Promise<void> {
+  const defaultPath = ConnectionTransfer.fileName(favorite.name)
+  const path = await save({ defaultPath, filters: CONNECTIONS_FILE_FILTERS })
+  if (path) {
+    await transfer.exportTo(path, [favorite])
+    showNote(`Exported ${favorite.name}. Passwords are not in the file.`)
+  }
+}
+
+/** Adds the connections of a file the user picks. Errors show in the form banner. */
+async function importFavorites(): Promise<void> {
+  const path = await open({ multiple: false, directory: false, filters: CONNECTIONS_FILE_FILTERS })
+  if (typeof path === 'string') {
+    const count = await transfer.importFrom(path)
+    showNote(`Imported ${connections(count)}`)
+  }
+}
+
+/** `1 connection`, `3 connections`. */
+function connections(count: number): string {
+  return count === 1 ? '1 connection' : `${count} connections`
+}
+
+/** Shows a short status line in the form banner. */
+function showNote(text: string): void {
+  note.text = text
+  note.detail = ''
+}
+
 async function browse(): Promise<void> {
   const path = await open({ multiple: false, directory: false })
   if (typeof path === 'string') {
@@ -593,11 +637,27 @@ async function browseKey(): Promise<void> {
         </button>
         <button
           type="button"
-          class="sidebar-footer new-folder"
+          class="sidebar-footer"
           title="New folder"
           @click="folderDialog?.open(null)"
         >
           <FolderPlusIcon :size="13" />
+        </button>
+        <button
+          type="button"
+          class="sidebar-footer"
+          title="Import connections"
+          @click="session.run(importFavorites())"
+        >
+          <DownloadIcon :size="13" />
+        </button>
+        <button
+          type="button"
+          class="sidebar-footer"
+          title="Export connections"
+          @click="session.run(exportFavorites())"
+        >
+          <UploadIcon :size="13" />
         </button>
       </div>
       <PaneResizer size="sidebarWidth" />
@@ -851,6 +911,9 @@ async function browseKey(): Promise<void> {
         <button role="menuitem" @click="session.run(duplicateFavorite(menu.favorite))">
           Duplicate
         </button>
+        <button role="menuitem" @click="session.run(exportFavorite(menu.favorite))">
+          Export connection config
+        </button>
         <!-- With folders there is always a "Move" item below. -->
         <span v-if="store.folders.length > 0" class="menu-line" />
         <!-- The folder it is in already is left out. -->
@@ -1031,7 +1094,7 @@ async function browseKey(): Promise<void> {
   white-space: nowrap;
 }
 
-/* The last row of the sidebar: "New connection" and the small "New folder" button. */
+/* The last row of the sidebar: "New connection", then small icon buttons (folder, import, export). */
 .footer {
   display: flex;
   flex: none;
@@ -1048,7 +1111,7 @@ async function browseKey(): Promise<void> {
   text-overflow: ellipsis;
 }
 
-.footer .new-folder {
+.footer .sidebar-footer:not(:first-child) {
   justify-content: center;
   width: 32px;
   padding: 0;

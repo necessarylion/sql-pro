@@ -100,6 +100,13 @@ impl SshTunnel {
         }
     }
 
+    /// True when the local port still takes connections, so ssh still runs.
+    pub async fn is_alive(&self) -> bool {
+        TcpStream::connect((LOCALHOST, self.local_port))
+            .await
+            .is_ok()
+    }
+
     pub fn local_port(&self) -> u16 {
         self.local_port
     }

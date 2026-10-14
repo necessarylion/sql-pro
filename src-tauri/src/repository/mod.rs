@@ -253,16 +253,23 @@ pub struct RepositoryFactory;
 
 impl RepositoryFactory {
     /// Also opens the SSH tunnel when the config asks for one.
+    /// `existing` is a tunnel that is open already for this same server. It is used
+    /// instead of a new one, because starting `ssh` is the slow part of a connect.
     /// The caller must keep the tunnel alive as long as the repository.
     pub async fn create(
         &self,
         config: &ConnectionConfig,
-    ) -> AppResult<(Arc<dyn Repository>, Option<SshTunnel>)> {
+        existing: Option<Arc<SshTunnel>>,
+    ) -> AppResult<(Arc<dyn Repository>, Option<Arc<SshTunnel>>)> {
         let mut tunnel = None;
         let mut tunneled;
         let mut config = config;
         if let (Some(ssh), true) = (&config.ssh, config.driver != Driver::Sqlite) {
-            let opened = SshTunnel::open(ssh, &config.host, config.port).await?;
+            // A tunnel whose ssh died is not used. Then a new one opens.
+            let opened = match existing {
+                Some(open) if open.is_alive().await => open,
+                _ => Arc::new(SshTunnel::open(ssh, &config.host, config.port).await?),
+            };
             tunneled = config.clone();
             LOCALHOST.clone_into(&mut tunneled.host);
             tunneled.port = opened.local_port();

@@ -1,11 +1,13 @@
 import { createApp, reactive } from 'vue'
 import App from './App.vue'
+import { ConnectionTransfer } from './services/ConnectionTransfer'
 import { DatabaseApi } from './services/DatabaseApi'
 import { DiagramLayoutStore } from './services/DiagramLayoutStore'
 import { FavoriteStore } from './services/FavoriteStore'
 import { LIGHT_SCHEME_QUERY } from './constants/theme'
 import { DiscardPrompt } from './services/DiscardPrompt'
 import {
+  CONNECTION_TRANSFER,
   DIAGRAM_LAYOUTS,
   FAVORITE_STORE,
   LAYOUT_SERVICE,
@@ -53,6 +55,7 @@ void zoomService.apply()
 createApp(App)
   .provide(SESSION_MANAGER, sessionManager)
   .provide(FAVORITE_STORE, favoriteStore)
+  .provide(CONNECTION_TRANSFER, new ConnectionTransfer(api, favoriteStore))
   .provide(QUERY_HISTORY, queryHistory)
   .provide(DIAGRAM_LAYOUTS, new DiagramLayoutStore(storage))
   .provide(THEME_SERVICE, themeService)

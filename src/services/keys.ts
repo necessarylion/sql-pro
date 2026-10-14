@@ -1,4 +1,5 @@
 import { inject, type InjectionKey } from 'vue'
+import type { ConnectionTransfer } from './ConnectionTransfer'
 import type { DiagramLayoutStore } from './DiagramLayoutStore'
 import type { FavoriteStore } from './FavoriteStore'
 import type { LayoutService } from './LayoutService'
@@ -11,6 +12,7 @@ import type { ZoomService } from './ZoomService'
 // The keys for provide/inject. The objects are built in main.ts.
 export const SESSION_MANAGER: InjectionKey<SessionManager> = Symbol('SessionManager')
 export const FAVORITE_STORE: InjectionKey<FavoriteStore> = Symbol('FavoriteStore')
+export const CONNECTION_TRANSFER: InjectionKey<ConnectionTransfer> = Symbol('ConnectionTransfer')
 export const THEME_SERVICE: InjectionKey<ThemeService> = Symbol('ThemeService')
 export const LAYOUT_SERVICE: InjectionKey<LayoutService> = Symbol('LayoutService')
 export const ZOOM_SERVICE: InjectionKey<ZoomService> = Symbol('ZoomService')

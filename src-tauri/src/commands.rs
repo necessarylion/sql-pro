@@ -285,6 +285,16 @@ pub async fn save_image(path: PathBuf, data: Vec<u8>) -> AppResult<()> {
 }
 
 #[tauri::command]
+pub async fn read_text_file(path: PathBuf) -> AppResult<String> {
+    ConnectionService::read_text_file(&path)
+}
+
+#[tauri::command]
+pub async fn write_text_file(path: PathBuf, text: String) -> AppResult<()> {
+    ConnectionService::write_text_file(&path, &text)
+}
+
+#[tauri::command]
 pub async fn list_users(service: Service<'_>, id: String) -> AppResult<UserList> {
     service.list_users(&id).await
 }

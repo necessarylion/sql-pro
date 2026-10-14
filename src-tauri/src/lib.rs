@@ -78,6 +78,8 @@ pub fn run() {
             commands::import_sql,
             commands::diagram,
             commands::save_image,
+            commands::read_text_file,
+            commands::write_text_file,
             commands::list_users,
             commands::create_user,
             commands::drop_user,

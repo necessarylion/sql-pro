@@ -52,11 +52,22 @@ impl ConnectionService {
 
     /// Opens a connection under `id`. An older connection with the same id is closed.
     pub async fn connect(&self, id: String, config: ConnectionConfig) -> AppResult<()> {
-        let (repository, tunnel) = self.factory.create(&config).await?;
+        self.open(id, config, None).await
+    }
+
+    /// Like `connect`, but goes through `tunnel` when it is set.
+    /// A shared tunnel stops when the last connection that uses it is closed.
+    async fn open(
+        &self,
+        id: String,
+        config: ConnectionConfig,
+        tunnel: Option<Arc<SshTunnel>>,
+    ) -> AppResult<()> {
+        let (repository, tunnel) = self.factory.create(&config, tunnel).await?;
         let connection = Connection {
             config,
             repository,
-            tunnel: tunnel.map(Arc::new),
+            tunnel,
         };
         let previous = self.connections.lock().insert(id, connection);
         if let Some(previous) = previous {
@@ -75,9 +86,12 @@ impl ConnectionService {
     /// Switches to another database. `PostgreSQL` needs a new connection for this,
     /// so we reconnect for every driver.
     pub async fn use_database(&self, id: &str, database: String) -> AppResult<()> {
-        let mut config = self.connection(id)?.config;
+        let Connection {
+            mut config, tunnel, ..
+        } = self.connection(id)?;
         config.database = database;
-        self.connect(id.to_owned(), config).await
+        // Same server, so the same tunnel.
+        self.open(id.to_owned(), config, tunnel).await
     }
 
     pub async fn databases(&self, id: &str) -> AppResult<Vec<String>> {
@@ -122,6 +136,16 @@ impl ConnectionService {
     /// An older file at `path` is replaced.
     pub fn save_image(path: &Path, data: &[u8]) -> AppResult<()> {
         Ok(std::fs::write(path, data)?)
+    }
+
+    /// Reads a whole text file, like an exported list of saved connections.
+    pub fn read_text_file(path: &Path) -> AppResult<String> {
+        Ok(std::fs::read_to_string(path)?)
+    }
+
+    /// Writes a text file. An older file at `path` is replaced.
+    pub fn write_text_file(path: &Path, text: &str) -> AppResult<()> {
+        Ok(std::fs::write(path, text)?)
     }
 
     /// Writes a full SQL dump of the current database to the file at `path`.
@@ -304,10 +328,11 @@ impl ConnectionService {
     }
 
     /// Opens a second connection under `new_id`, with the settings that `id` uses now.
-    /// It is on its own: it has its own SSH tunnel, and closing one leaves the other open.
+    /// It has its own pool, so `USE` and transactions stay apart. It shares the SSH
+    /// tunnel of `id`. Closing one tab leaves the tunnel open for the other.
     pub async fn clone_connection(&self, id: &str, new_id: String) -> AppResult<()> {
-        let config = self.connection(id)?.config;
-        self.connect(new_id, config).await
+        let Connection { config, tunnel, .. } = self.connection(id)?;
+        self.open(new_id, config, tunnel).await
     }
 
     /// Adds a column to a table.

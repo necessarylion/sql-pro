@@ -58,6 +58,8 @@ export class Session {
   /** The environment of the open connection, like `dev` or `prod`. '' = none. */
   environment = ''
   busy = false
+  /** How many `run` calls are not done yet. */
+  private running = 0
   /** True while a new tab copies the connection of another tab. It shows a loading state. */
   opening = false
   /** True while a query or a page load runs that the user may cancel. */
@@ -231,8 +233,12 @@ export class Session {
   /**
    * The one place that handles busy state and errors.
    * Returns true when the work finished without an error.
+   * Runs can overlap: a double click on a saved connection runs two loads and a connect.
+   * The tab stays busy until the last one ends. Else the first load to end hides the
+   * "Connecting…" spinner and enables the buttons while the connect still runs.
    */
   async run(work: Promise<unknown>): Promise<boolean> {
+    this.running += 1
     this.busy = true
     this.error = ''
     try {
@@ -244,9 +250,12 @@ export class Session {
       }
       return false
     } finally {
-      this.busy = false
-      this.cancellable = false
-      this.cancelling = false
+      this.running -= 1
+      if (this.running === 0) {
+        this.busy = false
+        this.cancellable = false
+        this.cancelling = false
+      }
     }
   }
 
@@ -297,19 +306,20 @@ export class Session {
   /**
    * Connects this new tab as a copy of the connection of `source`.
    * The backend copies the password. The frontend does not have it.
+   * The lists are copied from `source` too. Loading them again is slow on a far away database.
    */
   async cloneFrom(source: Session): Promise<void> {
     if (!source.config) {
       return
     }
     await this.api.cloneConnection(source.id, this.id)
-    try {
-      await this.setUp(source.config, source.title, source.environment)
-    } catch (error) {
-      // Do not leave a connection open that no tab shows.
-      await this.disconnect()
-      throw error
-    }
+    this.databases = [...source.databases]
+    this.tables = [...source.tables]
+    this.objects = [...source.objects]
+    this.setUsers([...source.users], source.canManageUsers)
+    this.title = source.title
+    this.environment = source.environment
+    this.config = { ...source.config }
   }
 
   async disconnect(): Promise<void> {

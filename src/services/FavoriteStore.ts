@@ -100,6 +100,17 @@ export class FavoriteStore {
   }
 
   /**
+   * Adds connections at the end of the list, at the top level. It does not touch the keychain.
+   * The ids must be new. See `ConnectionTransfer`.
+   */
+  addAll(favorites: Favorite[]): void {
+    for (const favorite of favorites) {
+      this.favorites.push({ ...favorite, folderId: '' })
+    }
+    this.write()
+  }
+
+  /**
    * Removes the favorite from the list. This always works.
    * Returns the keychain error when a password entry could not be removed.
    * A password entry that stays behind does no harm.
