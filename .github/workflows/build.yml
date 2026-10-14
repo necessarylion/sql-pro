@@ -4,13 +4,15 @@ name: build
 #
 # - Start it by hand (Actions tab, or `gh workflow run build.yml`):
 #   the installers are kept as workflow artifacts. No release is made.
-# - Push a tag like `v0.1.0`: a DRAFT release is made with all installers attached.
+# - Push a tag like `v0.1.0`: a release is made with all installers attached.
 #   The tag must match the version in `src-tauri/tauri.conf.json`.
+#   The release starts as a draft. The `publish` job publishes it when all builds pass.
+#   If a build fails, the release stays a draft. Fix it, or publish it by hand.
 #
 # Auto update:
 # - The build also makes the update files and `latest.json`, and adds them to the release.
 # - The app reads `releases/latest`. A draft is not the latest release.
-#   So users only get the update after you publish the draft.
+#   So users only get the update after the `publish` job has run.
 # - The app compares its own version with the one in `latest.json`. That one comes
 #   from `tauri.conf.json`, not from the tag. So raise the version there before you tag.
 # - The update files are signed with the updater key. The secret
@@ -92,6 +94,26 @@ jobs:
           # A tag makes a draft release. With no tag name, no release is made.
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: SQL Pro ${{ github.ref_name }}
+          # Keep this a draft on purpose. The six jobs upload their files one by one.
+          # The app reads `latest.json` from the latest release, so it must not see
+          # a release that is only half filled. The `publish` job publishes it at the end.
           releaseDraft: true
           # A run started by hand keeps the installers as workflow artifacts.
           uploadWorkflowArtifacts: ${{ github.ref_type != 'tag' }}
+
+  publish:
+    name: publish the release
+    # Runs only when all six builds passed. If one failed, the release stays a draft.
+    needs: build
+    # A run started by hand makes no release, so there is nothing to publish.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to change the release.
+      contents: write
+    steps:
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

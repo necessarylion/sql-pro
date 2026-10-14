@@ -116,8 +116,10 @@ Tests are in `tests/` (bun test) and cover the service classes with fakes. There
 
 ## Release
 
-`.github/workflows/build.yml` builds macOS, Windows and Linux on a `v*` tag (draft release) or by hand
-(artifacts). Installers are not code signed, but the update files are signed with the updater key.
+`.github/workflows/build.yml` builds macOS, Windows and Linux on a `v*` tag (release) or by hand
+(artifacts). The release starts as a draft. The `publish` job publishes it when all builds pass.
+If a build fails, the release stays a draft.
+Installers are not code signed, but the update files are signed with the updater key.
 `install.sh` and `install.ps1` install from the latest release. `TODO.md` holds work that was put off.
 
 ### Auto update
@@ -125,7 +127,7 @@ Tests are in `tests/` (bun test) and cover the service classes with fakes. There
 - The code is in `src-tauri/src/updater.rs` (Rust only, no frontend code). It checks once when the app starts,
   asks the user, then installs and restarts. Release builds only: a debug build never checks.
 - The app reads `https://github.com/necessarylion/sql-pro/releases/latest/download/latest.json`
-  (`plugins.updater` in `tauri.conf.json`). Users get an update only after the draft release is published.
+  (`plugins.updater` in `tauri.conf.json`). Users get an update only after the workflow has published the release.
 - The tag must match the version in `tauri.conf.json`. Raise the version there before you tag.
 - The workflow signs with the repository secret `TAURI_SIGNING_PRIVATE_KEY` (no password). The private key
   file is `~/.tauri/sql-pro-updater.key` on the owner's machine. Never commit it.
@@ -136,5 +138,8 @@ Tests are in `tests/` (bun test) and cover the service classes with fakes. There
 How to ship an update:
 
 1. Raise the version in `src-tauri/tauri.conf.json`.
-2. Push a tag like `v0.2.0`.
-3. Publish the draft release. Users get the popup only after you publish it.
+2. Commit and push.
+3. Push a tag like `v0.2.0`.
+
+The workflow builds and publishes the release. Users get the popup after that.
+If a build fails, the release stays a draft and users get nothing. Fix the build, or publish the draft by hand.
