@@ -209,11 +209,11 @@ test('the closed state of a folder is saved', async function () {
   expect(shape(newStore().sections(''))).toBe('Work[Shop] | []')
 })
 
-test('folders come first, sorted by name', function () {
+test('folders come first, in their saved order', function () {
   const store = newStore()
   store.saveFolder('', 'Work', 'red', 'server')
   store.saveFolder('', 'Clients', 'blue', 'cloud')
-  expect(shape(store.sections(''))).toBe('Clients[] | Work[] | []')
+  expect(shape(store.sections(''))).toBe('Work[] | Clients[] | []')
 })
 
 test('the search shows matching connections under their folder', async function () {
@@ -233,7 +233,7 @@ test('the search shows matching connections under their folder', async function 
   expect(shape(store.sections('work'))).toBe('Work[Shop,Lab] | []')
   expect(shape(store.sections('zzz'))).toBe('[]')
   // The search does not change the saved state.
-  expect(shape(store.sections(''))).toBe('Clients[Acme] | Work(closed)[Shop,Lab] | [Shop copy]')
+  expect(shape(store.sections(''))).toBe('Work(closed)[Shop,Lab] | Clients[Acme] | [Shop copy]')
 })
 
 test('the dev profile has its own folders', function () {

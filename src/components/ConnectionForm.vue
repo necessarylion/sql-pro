@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, useTemplateRef } from 'vue'
+import { computed, nextTick, reactive, ref, useTemplateRef } from 'vue'
 import {
   ChevronRightIcon,
   CircleAlertIcon,
@@ -30,11 +30,14 @@ import {
 } from '../constants/keychain'
 import { ConnectionString } from '../services/ConnectionString'
 import { DriverChange } from '../services/DriverChange'
+import { DropPlan } from '../services/DropPlan'
+import type { Drop } from '../services/DropPlan'
 import { Environment } from '../services/Environment'
 import type { Favorite, FavoriteSection, Folder } from '../services/FavoriteStore'
 import { FAVORITE_STORE, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
 import type { ConnectionConfig, Driver } from '../types'
+import ConnectionInfo from './ConnectionInfo.vue'
 import ContextMenu from './ContextMenu.vue'
 import DbBadge from './DbBadge.vue'
 import EnvBadge from './EnvBadge.vue'
@@ -45,10 +48,17 @@ import PaneResizer from './PaneResizer.vue'
 const props = defineProps<{ session: Session }>()
 const store = injectRequired(FAVORITE_STORE)
 const folderDialog = useTemplateRef<InstanceType<typeof FolderDialog>>('folderDialog')
+const connectButton = useTemplateRef<HTMLButtonElement>('connectButton')
 
 // `id` is the id of the loaded favorite. '' means a new connection.
 // `folderId` is the folder of the connection. '' means no folder.
 const form = reactive({ id: '', name: '', folderId: '', config: { ...DEFAULT_CONFIGS.mysql } })
+
+/**
+ * True shows the inputs. False shows a saved connection as plain text.
+ * A new connection is always in edit mode.
+ */
+const editing = ref(true)
 
 /** The environment switch. `custom` is the typed name. It counts only for the kind `custom`. */
 const env = reactive({ kind: DEFAULT_ENVIRONMENT as EnvironmentKind, custom: '' })
@@ -63,7 +73,7 @@ const note = reactive({ text: '', detail: '' })
 const pasted = ref('')
 
 const search = ref('')
-const sections = computed(shownSections)
+const rows = computed(shownRows)
 
 /** The right-click menu that is open now. It is for a folder or for a connection. */
 const menu = ref<{ x: number; y: number; folder: Folder | null; favorite: Favorite | null } | null>(
@@ -71,24 +81,58 @@ const menu = ref<{ x: number; y: number; folder: Folder | null; favorite: Favori
 )
 
 /**
- * The connection row under the mouse button. `moved` turns true when the drag starts.
- * `over` is the folder id under the mouse. '' = the top level. null = no drop place.
+ * The row under the mouse button: a connection or a folder. `moved` turns true when
+ * the drag starts. `x` and `y` are where the drag started. `nowX` and `nowY` are where
+ * the mouse is now. `drop` says what a drop here would do. null = no drop place.
  */
 const drag = reactive({
   favorite: null as Favorite | null,
+  folder: null as Folder | null,
   moved: false,
   x: 0,
   y: 0,
-  over: null as string | null,
+  nowX: 0,
+  nowY: 0,
+  drop: null as Drop | null,
 })
 
-function shownSections(): FavoriteSection[] {
-  return store.sections(search.value)
+/** One row of the list. A folder row has no `favorite` and '' as `favoriteId`. */
+interface Row {
+  key: string
+  section: FavoriteSection
+  favorite: Favorite | null
+  /** '' = the top level. */
+  folderId: string
+  favoriteId: string
 }
 
-/** A click opens or closes the folder. Not while searching: then every shown folder is open. */
+/**
+ * The list as flat rows. The slide animation needs every row as a direct child
+ * of the list, each with its own key. A row keeps its key when it changes folder.
+ */
+function shownRows(): Row[] {
+  const list: Row[] = []
+  for (const section of store.sections(search.value)) {
+    const folderId = section.folder?.id ?? ''
+    if (section.folder) {
+      // The prefix keeps a folder key apart from every connection id.
+      list.push({ key: `folder:${folderId}`, section, favorite: null, folderId, favoriteId: '' })
+    }
+    if (section.open) {
+      for (const favorite of section.favorites) {
+        list.push({ key: favorite.id, section, favorite, folderId, favoriteId: favorite.id })
+      }
+    }
+  }
+  return list
+}
+
+/**
+ * A click opens or closes the folder. Not while searching: then every shown folder is open.
+ * The click at the end of a drag does nothing.
+ */
 function toggleFolder(folder: Folder): void {
-  if (!search.value.trim()) {
+  if (!drag.moved && !search.value.trim()) {
     store.toggleFolder(folder.id)
   }
 }
@@ -137,11 +181,13 @@ async function deleteFolder(folder: Folder): Promise<void> {
 }
 
 /**
- * The mouse button goes down on a connection row. The row takes all moves from now on.
+ * The mouse button goes down on a row. The row takes all moves from now on.
+ * One of `favorite` and `folder` is set: the thing that is dragged.
  * This uses pointer events and not HTML drag and drop: the Tauri window takes the
  * HTML drag events for file drops, so they do not reach the page on every platform.
  */
-function startDrag(event: PointerEvent, favorite: Favorite): void {
+function startDrag(event: PointerEvent, favorite: Favorite | null, folder: Folder | null): void {
+  cancelDrag()
   drag.moved = false
   // The delete button keeps its own click.
   if ((event.target as HTMLElement).closest('button')) {
@@ -149,13 +195,14 @@ function startDrag(event: PointerEvent, favorite: Favorite): void {
   }
   ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
   drag.favorite = favorite
+  drag.folder = folder
   drag.x = event.clientX
   drag.y = event.clientY
 }
 
 /** Finds the drop place under the mouse. A small move is still a click. */
 function moveDrag(event: PointerEvent): void {
-  if (!drag.favorite) {
+  if (!drag.favorite && !drag.folder) {
     return
   }
   const distance = Math.hypot(event.clientX - drag.x, event.clientY - drag.y)
@@ -163,33 +210,95 @@ function moveDrag(event: PointerEvent): void {
     return
   }
   drag.moved = true
+  drag.nowX = event.clientX
+  drag.nowY = event.clientY
   // ponytail: the list does not scroll by itself during a drag. The mouse wheel still works.
-  const place = document
-    .elementFromPoint(event.clientX, event.clientY)
-    ?.closest<HTMLElement>('[data-drop]')
-  drag.over = place ? (place.dataset.drop ?? '') : null
+  const under = document.elementFromPoint(event.clientX, event.clientY)
+  if (!under?.closest('[data-drop]')) {
+    drag.drop = null
+    return
+  }
+  // No row under the mouse: the empty part of the list, or the "no folder" box.
+  const element = under.closest<HTMLElement>('[data-row]')
+  let index = -1
+  let upper = false
+  if (element) {
+    const box = element.getBoundingClientRect()
+    index = Number(element.dataset.row)
+    upper = event.clientY < box.top + box.height / 2
+  }
+  drag.drop = DropPlan.decide(rows.value, !!drag.folder, index, upper)
 }
 
-/** The mouse button goes up: the connection moves to the place under the mouse. */
+/** The mouse button goes up: the dragged row moves to the place under the mouse. */
 function endDrag(): void {
   const favorite = drag.favorite
-  const over = drag.over
+  const folder = drag.folder
+  const drop = drag.drop
   cancelDrag()
-  if (favorite && over !== null) {
-    moveTo(favorite, over)
+  if (!drop) {
+    return
+  }
+  // The store wants "before this id". "After" is "before the next one" of the full list.
+  if (favorite) {
+    const group = store.inFolder(drop.folderId)
+    const beforeId = drop.after ? DropPlan.next(group, drop.anchorId) : drop.anchorId
+    store.place(favorite.id, drop.folderId, beforeId)
+    if (form.id === favorite.id) {
+      form.folderId = store.folderOf(favorite)
+    }
+  } else if (folder) {
+    const beforeId = drop.after ? DropPlan.next(store.folders, drop.anchorId) : drop.anchorId
+    store.placeFolder(folder.id, beforeId)
   }
 }
 
+/**
+ * Ends the drag with no drop. It also runs when the row loses the mouse, and when a row
+ * leaves the list in the middle of a drag (the search text changed). So the chip
+ * that follows the mouse can never stay on the screen.
+ */
 function cancelDrag(): void {
   drag.favorite = null
-  drag.over = null
+  drag.folder = null
+  drag.drop = null
+}
+
+/** The class that draws the line where the dragged row would go. '' = no line here. */
+function lineClass(index: number): string {
+  if (drag.drop?.line !== index) {
+    return ''
+  }
+  return drag.drop.lineAfter ? 'line-after' : 'line-before'
 }
 
 /** A click loads the connection. The click at the end of a drag does nothing. */
 function clickRow(favorite: Favorite): void {
   if (!drag.moved) {
-    void props.session.run(load(favorite))
+    void runThenFocus(load(favorite))
   }
+}
+
+/**
+ * Runs the work. Then, in the text view, the focus goes to the Connect button.
+ * The text view has no input, so without this Enter would not connect.
+ */
+async function runThenFocus(work: Promise<unknown>): Promise<void> {
+  await props.session.run(work)
+  await nextTick()
+  if (!editing.value) {
+    connectButton.value?.focus()
+  }
+}
+
+/** The name of the folder in the form. '' when it has none. */
+function folderName(): string {
+  for (const folder of store.folders) {
+    if (folder.id === form.folderId) {
+      return folder.name
+    }
+  }
+  return ''
 }
 
 /** Shows the note when the keychain failed. Clears it when `detail` is ''. */
@@ -219,6 +328,7 @@ function typeCustom(event: Event): void {
 
 function reset(): void {
   setNote('', '')
+  editing.value = true
   form.id = ''
   form.name = ''
   form.folderId = ''
@@ -269,7 +379,10 @@ function title(): string {
   return `${form.config.user}@${form.config.host}`
 }
 
-/** Returns false when the keychain did not give out a saved password. */
+/**
+ * Shows the connection as text. Returns false when the keychain did not give out
+ * a saved password. Then the inputs open, so the user can type the password.
+ */
 async function load(favorite: Favorite): Promise<boolean> {
   const loaded = await store.fullConfig(favorite)
   form.id = favorite.id
@@ -277,6 +390,9 @@ async function load(favorite: Favorite): Promise<boolean> {
   form.folderId = store.folderOf(favorite)
   setEnvironment(favorite.environment)
   form.config = loaded.config
+  // A pasted string can hold a password. It must not wait behind the text view.
+  pasted.value = ''
+  editing.value = !!loaded.keychainError
   setNote(KEYCHAIN_READ_NOTE, loaded.keychainError)
   return !loaded.keychainError
 }
@@ -306,12 +422,25 @@ async function saveFavorite(): Promise<void> {
     config: currentConfig(),
   })
   setNote(KEYCHAIN_WRITE_NOTE, failure)
+  editing.value = false
+}
+
+/** Throws the edits away: loads the saved connection again and shows it as text. */
+async function cancelEdit(): Promise<void> {
+  const saved = store.byId(form.id)
+  if (!saved) {
+    reset()
+    return
+  }
+  await load(saved)
+  editing.value = false
 }
 
 /** Makes a copy and loads it into the form, so the user can rename it right away. */
 async function duplicateFavorite(favorite: Favorite): Promise<void> {
   const made = await store.duplicate(favorite)
   await load(made.favorite)
+  editing.value = true
   // The copy has no saved password then. This note says so.
   if (made.keychainError) {
     setNote(KEYCHAIN_WRITE_NOTE, made.keychainError)
@@ -325,7 +454,12 @@ async function removeFavorite(favorite: Favorite): Promise<void> {
     { title: 'Delete connection', kind: 'warning' },
   )
   if (sure) {
-    setNote(KEYCHAIN_DELETE_NOTE, await store.remove(favorite.id))
+    const failure = await store.remove(favorite.id)
+    // The form must not keep showing a connection that is gone.
+    if (form.id === favorite.id) {
+      reset()
+    }
+    setNote(KEYCHAIN_DELETE_NOTE, failure)
   }
 }
 
@@ -351,62 +485,96 @@ async function browseKey(): Promise<void> {
         <SearchIcon :size="11" />
         <input v-model="search" placeholder="Filter connections" spellcheck="false" />
       </div>
-      <!-- `data-drop` marks a drop place for a dragged connection. '' = the top level. -->
-      <ul class="list" data-drop="">
-        <template v-for="section in sections" :key="section.folder?.id ?? ''">
+      <!--
+        `data-drop` marks the places that take a dragged row. `data-row` is the index of a row.
+        Rows slide to their new place when the list changes.
+      -->
+      <TransitionGroup tag="ul" class="list" name="slide" data-drop @before-leave="cancelDrag">
+        <template v-for="(row, index) in rows" :key="row.key">
           <li
-            v-if="section.folder"
-            class="folder"
-            :class="{ drop: drag.over === section.folder.id }"
-            :data-drop="section.folder.id"
-            :title="section.folder.name"
-            @click="toggleFolder(section.folder)"
-            @contextmenu.prevent="openFolderMenu($event, section.folder)"
+            v-if="row.favorite"
+            :class="[
+              {
+                selected: row.favorite.id === form.id,
+                child: row.section.folder,
+                dragged: drag.moved && drag.favorite === row.favorite,
+              },
+              lineClass(index),
+            ]"
+            :data-row="index"
+            @click="clickRow(row.favorite)"
+            @dblclick="session.run(loadAndConnect(row.favorite))"
+            @contextmenu.prevent="openFavoriteMenu($event, row.favorite)"
+            @pointerdown.left="startDrag($event, row.favorite, null)"
+            @pointermove="moveDrag"
+            @pointerup="endDrag"
+            @pointercancel="cancelDrag"
+            @lostpointercapture="cancelDrag"
           >
-            <ChevronRightIcon class="chevron" :class="{ open: section.open }" :size="10" />
-            <FolderIcon :icon="section.folder.icon" :color="section.folder.color" :size="13" />
-            <span class="name">{{ section.folder.name }}</span>
-            <span class="count">{{ section.favorites.length }}</span>
-          </li>
-          <template v-if="section.open">
-            <li
-              v-for="favorite in section.favorites"
-              :key="favorite.id"
-              :class="{
-                selected: favorite.id === form.id,
-                child: section.folder,
-                dragged: drag.moved && drag.favorite === favorite,
-              }"
-              :data-drop="section.folder?.id ?? ''"
-              @click="clickRow(favorite)"
-              @dblclick="session.run(loadAndConnect(favorite))"
-              @contextmenu.prevent="openFavoriteMenu($event, favorite)"
-              @pointerdown.left="startDrag($event, favorite)"
-              @pointermove="moveDrag"
-              @pointerup="endDrag"
-              @pointercancel="cancelDrag"
+            <DbBadge :driver="row.favorite.config.driver" />
+            <span class="name">{{ row.favorite.name }}</span>
+            <EnvBadge class="env" :name="row.favorite.environment" />
+            <button
+              type="button"
+              class="icon remove"
+              title="Delete connection"
+              @click.stop="session.run(removeFavorite(row.favorite))"
             >
-              <DbBadge :driver="favorite.config.driver" />
-              <span class="name">{{ favorite.name }}</span>
-              <EnvBadge class="env" :name="favorite.environment" />
-              <button
-                type="button"
-                class="icon remove"
-                title="Delete connection"
-                @click.stop="session.run(removeFavorite(favorite))"
-              >
-                <XIcon :size="11" />
-              </button>
-            </li>
-          </template>
+              <XIcon :size="11" />
+            </button>
+          </li>
+          <li
+            v-else-if="row.section.folder"
+            class="folder"
+            :class="[
+              {
+                drop: drag.drop?.into === row.folderId,
+                dragged: drag.moved && drag.folder === row.section.folder,
+              },
+              lineClass(index),
+            ]"
+            :data-row="index"
+            :title="row.section.folder.name"
+            @click="toggleFolder(row.section.folder)"
+            @contextmenu.prevent="openFolderMenu($event, row.section.folder)"
+            @pointerdown.left="startDrag($event, null, row.section.folder)"
+            @pointermove="moveDrag"
+            @pointerup="endDrag"
+            @pointercancel="cancelDrag"
+            @lostpointercapture="cancelDrag"
+          >
+            <ChevronRightIcon class="chevron" :class="{ open: row.section.open }" :size="10" />
+            <FolderIcon
+              :icon="row.section.folder.icon"
+              :color="row.section.folder.color"
+              :size="13"
+            />
+            <span class="name">{{ row.section.folder.name }}</span>
+            <span class="count">{{ row.section.favorites.length }}</span>
+          </li>
         </template>
-      </ul>
+      </TransitionGroup>
+      <!-- The dragged row follows the mouse. It must not take the mouse: see `moveDrag`. -->
+      <div
+        v-if="drag.moved && (drag.favorite || drag.folder)"
+        class="ghost"
+        :style="{ transform: `translate(${drag.nowX + 12}px, ${drag.nowY + 10}px)` }"
+      >
+        <DbBadge v-if="drag.favorite" :driver="drag.favorite.config.driver" />
+        <FolderIcon
+          v-else-if="drag.folder"
+          :icon="drag.folder.icon"
+          :color="drag.folder.color"
+          :size="13"
+        />
+        <span class="name">{{ (drag.favorite ?? drag.folder)?.name }}</span>
+      </div>
       <!-- Shown while a connection of a folder is dragged. -->
       <div
         v-if="drag.moved && drag.favorite && store.folderOf(drag.favorite)"
         class="drop-top"
-        :class="{ drop: drag.over === '' }"
-        data-drop=""
+        :class="{ drop: drag.drop?.into === '' }"
+        data-drop
       >
         Drop here for no folder
       </div>
@@ -429,188 +597,197 @@ async function browseKey(): Promise<void> {
 
     <div class="main">
       <form class="form" @submit.prevent="session.run(connect())">
-        <header>
-          <h1>New connection</h1>
-          <p>Pick a database type, then fill in the details.</p>
-        </header>
+        <ConnectionInfo
+          v-if="!editing"
+          :name="form.name"
+          :environment="environment()"
+          :folder-name="folderName()"
+          :config="form.config"
+        />
+        <template v-else>
+          <header>
+            <h1>{{ form.id ? 'Edit connection' : 'New connection' }}</h1>
+            <p v-if="!form.id">Pick a database type, then fill in the details.</p>
+          </header>
 
-        <!-- Enter here fills the form. It must not submit the form, which would connect. -->
-        <div class="row">
-          <input
-            v-model="pasted"
-            class="mono"
-            :placeholder="`Paste a connection string: ${CONNECTION_STRING_EXAMPLE}`"
-            aria-label="Connection string"
-            autocomplete="off"
-            autocorrect="off"
-            autocapitalize="off"
-            spellcheck="false"
-            @keydown.enter.prevent="fillFromString"
-          />
-          <button type="button" @click="fillFromString">Fill</button>
-        </div>
-
-        <div class="segmented">
-          <button
-            v-for="(label, driver) in DRIVER_LABELS"
-            :key="driver"
-            type="button"
-            :class="{ active: form.config.driver === driver }"
-            @click="setDriver(driver)"
-          >
-            <DbBadge :driver="driver" />
-            {{ label }}
-          </button>
-        </div>
-
-        <div class="fields">
+          <!-- Enter here fills the form. It must not submit the form, which would connect. -->
           <div class="row">
-            <label>Name</label>
-            <input v-model="form.name" placeholder="Optional" />
-          </div>
-          <div class="row">
-            <label>Environment</label>
-            <div class="segmented env-switch">
-              <button
-                v-for="kind in ENVIRONMENT_KINDS"
-                :key="kind"
-                type="button"
-                :class="{ active: env.kind === kind }"
-                @click="env.kind = kind"
-              >
-                {{ kind }}
-              </button>
-            </div>
             <input
-              v-if="env.kind === 'custom'"
-              :value="env.custom"
-              placeholder="name"
-              :title="ENVIRONMENT_HINT"
-              :maxlength="ENVIRONMENT_MAX_LENGTH"
+              v-model="pasted"
+              class="mono"
+              :placeholder="`Paste a connection string: ${CONNECTION_STRING_EXAMPLE}`"
+              aria-label="Connection string"
+              autocomplete="off"
+              autocorrect="off"
               autocapitalize="off"
               spellcheck="false"
-              @input="typeCustom"
+              @keydown.enter.prevent="fillFromString"
             />
+            <button type="button" @click="fillFromString">Fill</button>
           </div>
 
-          <div class="row">
-            <label>Folder</label>
-            <select v-model="form.folderId">
-              <option value="">No folder</option>
-              <option v-for="folder in store.folders" :key="folder.id" :value="folder.id">
-                {{ folder.name }}
-              </option>
-            </select>
+          <div class="segmented">
+            <button
+              v-for="(label, driver) in DRIVER_LABELS"
+              :key="driver"
+              type="button"
+              :class="{ active: form.config.driver === driver }"
+              @click="setDriver(driver)"
+            >
+              <DbBadge :driver="driver" />
+              {{ label }}
+            </button>
           </div>
 
-          <div v-if="form.config.driver === 'sqlite'" class="row">
-            <label>Database file</label>
-            <input
-              v-model="form.config.database"
-              class="mono"
-              placeholder="/path/to/database.sqlite"
-              spellcheck="false"
-            />
-            <button type="button" @click="session.run(browse())">Choose…</button>
-          </div>
-          <template v-else>
+          <div class="fields">
             <div class="row">
-              <label>Host</label>
+              <label>Name</label>
+              <input v-model="form.name" placeholder="Optional" />
+            </div>
+            <div class="row">
+              <label>Environment</label>
+              <div class="segmented env-switch">
+                <button
+                  v-for="kind in ENVIRONMENT_KINDS"
+                  :key="kind"
+                  type="button"
+                  :class="{ active: env.kind === kind }"
+                  @click="env.kind = kind"
+                >
+                  {{ kind }}
+                </button>
+              </div>
               <input
-                v-model="form.config.host"
-                class="mono"
+                v-if="env.kind === 'custom'"
+                :value="env.custom"
+                placeholder="name"
+                :title="ENVIRONMENT_HINT"
+                :maxlength="ENVIRONMENT_MAX_LENGTH"
                 autocapitalize="off"
                 spellcheck="false"
-              />
-              <label class="short">Port</label>
-              <input
-                v-model.number="form.config.port"
-                class="port"
-                type="number"
-                min="0"
-                max="65535"
+                @input="typeCustom"
               />
             </div>
+
             <div class="row">
-              <label>Username</label>
-              <input
-                v-model="form.config.user"
-                class="mono"
-                autocapitalize="off"
-                spellcheck="false"
-              />
+              <label>Folder</label>
+              <select v-model="form.folderId">
+                <option value="">No folder</option>
+                <option v-for="folder in store.folders" :key="folder.id" :value="folder.id">
+                  {{ folder.name }}
+                </option>
+              </select>
             </div>
-            <div class="row">
-              <label>Password</label>
-              <input v-model="form.config.password" type="password" />
-            </div>
-            <div class="row">
-              <label>Database</label>
+
+            <div v-if="form.config.driver === 'sqlite'" class="row">
+              <label>Database file</label>
               <input
                 v-model="form.config.database"
-                autocapitalize="off"
+                class="mono"
+                placeholder="/path/to/database.sqlite"
                 spellcheck="false"
-                :placeholder="
-                  form.config.driver === 'mysql' ? 'Optional. You can pick one later.' : ''
-                "
               />
+              <button type="button" @click="session.run(browse())">Choose…</button>
             </div>
-
-            <div class="row">
-              <label></label>
-              <label class="check">
-                <input type="checkbox" :checked="!!form.config.ssh" @change="toggleSsh" />
-                Connect over SSH
-              </label>
-            </div>
-            <template v-if="form.config.ssh">
+            <template v-else>
               <div class="row">
-                <label>SSH Host</label>
+                <label>Host</label>
                 <input
-                  v-model="form.config.ssh.host"
+                  v-model="form.config.host"
                   class="mono"
                   autocapitalize="off"
                   spellcheck="false"
                 />
                 <label class="short">Port</label>
                 <input
-                  v-model.number="form.config.ssh.port"
+                  v-model.number="form.config.port"
                   class="port"
                   type="number"
-                  min="1"
+                  min="0"
                   max="65535"
                 />
               </div>
               <div class="row">
-                <label>SSH User</label>
+                <label>Username</label>
                 <input
-                  v-model="form.config.ssh.user"
+                  v-model="form.config.user"
                   class="mono"
                   autocapitalize="off"
                   spellcheck="false"
                 />
               </div>
               <div class="row">
-                <label>SSH Password</label>
-                <input
-                  v-model="form.config.ssh.password"
-                  type="password"
-                  placeholder="Or key passphrase. Empty = agent."
-                />
+                <label>Password</label>
+                <input v-model="form.config.password" type="password" />
               </div>
               <div class="row">
-                <label>SSH Key</label>
+                <label>Database</label>
                 <input
-                  v-model="form.config.ssh.keyPath"
-                  class="mono"
-                  placeholder="Optional"
+                  v-model="form.config.database"
+                  autocapitalize="off"
                   spellcheck="false"
+                  :placeholder="
+                    form.config.driver === 'mysql' ? 'Optional. You can pick one later.' : ''
+                  "
                 />
-                <button type="button" @click="session.run(browseKey())">Choose…</button>
               </div>
+
+              <div class="row">
+                <label></label>
+                <label class="check">
+                  <input type="checkbox" :checked="!!form.config.ssh" @change="toggleSsh" />
+                  Connect over SSH
+                </label>
+              </div>
+              <template v-if="form.config.ssh">
+                <div class="row">
+                  <label>SSH Host</label>
+                  <input
+                    v-model="form.config.ssh.host"
+                    class="mono"
+                    autocapitalize="off"
+                    spellcheck="false"
+                  />
+                  <label class="short">Port</label>
+                  <input
+                    v-model.number="form.config.ssh.port"
+                    class="port"
+                    type="number"
+                    min="1"
+                    max="65535"
+                  />
+                </div>
+                <div class="row">
+                  <label>SSH User</label>
+                  <input
+                    v-model="form.config.ssh.user"
+                    class="mono"
+                    autocapitalize="off"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="row">
+                  <label>SSH Password</label>
+                  <input
+                    v-model="form.config.ssh.password"
+                    type="password"
+                    placeholder="Or key passphrase. Empty = agent."
+                  />
+                </div>
+                <div class="row">
+                  <label>SSH Key</label>
+                  <input
+                    v-model="form.config.ssh.keyPath"
+                    class="mono"
+                    placeholder="Optional"
+                    spellcheck="false"
+                  />
+                  <button type="button" @click="session.run(browseKey())">Choose…</button>
+                </div>
+              </template>
             </template>
-          </template>
-        </div>
+          </div>
+        </template>
 
         <div v-if="session.error" class="banner error">
           <CircleAlertIcon :size="13" />
@@ -624,10 +801,23 @@ async function browseKey(): Promise<void> {
 
         <div class="actions">
           <span class="spacer" />
-          <button type="button" :disabled="session.busy" @click="session.run(saveFavorite())">
-            Save connection
+          <template v-if="editing">
+            <button
+              v-if="form.id"
+              type="button"
+              :disabled="session.busy"
+              @click="runThenFocus(cancelEdit())"
+            >
+              Cancel
+            </button>
+            <button type="button" :disabled="session.busy" @click="runThenFocus(saveFavorite())">
+              {{ form.id ? 'Update' : 'Save connection' }}
+            </button>
+          </template>
+          <button v-else type="button" :disabled="session.busy" @click="editing = true">
+            Edit
           </button>
-          <button type="submit" class="primary" :disabled="session.busy">
+          <button ref="connectButton" type="submit" class="primary" :disabled="session.busy">
             {{ form.config.driver === 'sqlite' ? 'Open' : 'Connect' }}
             <span class="hint">↵</span>
           </button>
@@ -734,6 +924,76 @@ async function browseKey(): Promise<void> {
   color: var(--text-3);
   font-size: 10px;
   font-weight: 400;
+}
+
+/* The copy of the dragged row that follows the mouse. */
+.ghost {
+  display: flex;
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 100;
+  gap: 7px;
+  align-items: center;
+  max-width: 220px;
+  height: 24px;
+  padding: 0 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: 0 6px 20px #00000040;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.ghost .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The drop highlight fades in. */
+.list li.folder,
+.drop-top {
+  transition:
+    background-color 0.15s,
+    box-shadow 0.15s;
+}
+
+/* A row that changes place slides there. A new row fades in. A removed row just goes. */
+.list li.slide-move {
+  transition:
+    transform 0.15s,
+    background-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.list li.slide-enter-active {
+  transition: opacity 0.1s;
+}
+
+.list li.slide-enter-from {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .list li,
+  .drop-top,
+  .chevron {
+    transition: none !important;
+  }
+}
+
+/* The line where the dragged row would go. On the selected row it needs another colour. */
+.list li.line-before {
+  box-shadow: inset 0 2px 0 var(--line, var(--accent));
+}
+
+.list li.line-after {
+  box-shadow: inset 0 -2px 0 var(--line, var(--accent));
+}
+
+.list li.selected {
+  --line: var(--on-accent);
 }
 
 /* The place a dragged connection would go to. */
@@ -862,7 +1122,6 @@ header p {
   flex: none;
   width: 92px;
   color: var(--text-2);
-  text-align: right;
 }
 
 .row label.short {

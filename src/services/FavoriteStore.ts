@@ -206,13 +206,65 @@ export class FavoriteStore {
     }
   }
 
-  /** Puts a connection into a folder. '' or an unknown folder id = the top level. */
+  /** Puts a connection at the end of a folder. '' or an unknown folder id = the top level. */
   move(favoriteId: string, folderId: string): void {
-    const favorite = this.favorites[this.indexOf(favoriteId)]
-    if (favorite) {
-      favorite.folderId = this.folder(folderId) ? folderId : ''
-      this.write()
+    this.place(favoriteId, folderId, '')
+  }
+
+  /**
+   * Puts a connection into a folder, just before the connection `beforeId`.
+   * '' or an unknown `beforeId` = at the end of that folder.
+   * The order of the list is the order of the saved array. There is no position field.
+   * Nothing is saved when the connection is at that place already.
+   */
+  place(favoriteId: string, folderId: string, beforeId: string): void {
+    const favorite = this.byId(favoriteId)
+    if (!favorite) {
+      return
     }
+    const target = this.folder(folderId) ? folderId : ''
+    // The other connections of the folder, in their order.
+    const group = this.inFolder(target)
+    const was = group.indexOf(favorite)
+    if (was >= 0) {
+      group.splice(was, 1)
+    }
+    const at = FavoriteStore.spot(group, beforeId)
+    // "Before itself" is the place it has now.
+    if (was >= 0 && (was === at || beforeId === favoriteId)) {
+      return
+    }
+    this.favorites.splice(this.indexOf(favoriteId), 1)
+    favorite.folderId = target
+    const next = group[at]
+    this.favorites.splice(next ? this.indexOf(next.id) : this.favorites.length, 0, favorite)
+    this.write()
+  }
+
+  /**
+   * Puts a folder just before the folder `beforeId`. '' or an unknown id = at the end.
+   * Nothing is saved when the folder is at that place already.
+   */
+  placeFolder(folderId: string, beforeId: string): void {
+    const folder = this.folder(folderId)
+    if (!folder) {
+      return
+    }
+    const rest = [...this.folders]
+    const was = rest.indexOf(folder)
+    rest.splice(was, 1)
+    const at = FavoriteStore.spot(rest, beforeId)
+    if (was === at || beforeId === folderId) {
+      return
+    }
+    rest.splice(at, 0, folder)
+    this.folders = rest
+    this.writeFolders()
+  }
+
+  /** The saved connection with this id. undefined when there is none. */
+  byId(id: string): Favorite | undefined {
+    return this.favorites[this.indexOf(id)]
   }
 
   /** The id of the folder of a connection. '' when it has none, or the folder is gone. */
@@ -232,7 +284,7 @@ export class FavoriteStore {
   }
 
   /**
-   * The list to show: the folders by name, then the top level.
+   * The list to show: the folders in their saved order, then the top level.
    * With a search text, only connections with a matching name are listed.
    * A folder with a matching name shows all its connections.
    * A folder with no match is left out. The folders that stay are shown open.
@@ -240,7 +292,7 @@ export class FavoriteStore {
   sections(search: string): FavoriteSection[] {
     const needle = search.trim().toLowerCase()
     const sections: FavoriteSection[] = []
-    for (const folder of [...this.folders].sort(FavoriteStore.byName)) {
+    for (const folder of this.folders) {
       const all = this.inFolder(folder.id)
       // With no search text every folder name matches.
       const whole = folder.name.toLowerCase().includes(needle)
@@ -254,8 +306,14 @@ export class FavoriteStore {
     return sections
   }
 
-  private static byName(first: Folder, second: Folder): number {
-    return first.name.localeCompare(second.name)
+  /** The index of the item with this id. The length of the list when there is none. */
+  private static spot(list: { id: string }[], id: string): number {
+    for (const [index, item] of list.entries()) {
+      if (item.id === id) {
+        return index
+      }
+    }
+    return list.length
   }
 
   private static matching(favorites: Favorite[], needle: string): Favorite[] {

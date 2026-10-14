@@ -183,3 +183,115 @@ test('duplicate with a failing keychain still makes the copy and reports it', as
   expect(store.favorites.length).toBe(2)
   expect(api.secrets[made.favorite.id]).toBeUndefined()
 })
+
+test('byId finds a saved connection and gives undefined for an unknown id', async function () {
+  const store = storeOf(new FakeApi())
+  await store.save(favorite())
+
+  expect(store.byId('a')?.name).toBe('Shop')
+  expect(store.byId('missing')).toBeUndefined()
+  expect(store.byId('')).toBeUndefined()
+})
+
+/** The list as a short text, like `Work[Shop,Lab] | [Home]`. */
+function order(store: FavoriteStore): string {
+  const parts: string[] = []
+  for (const section of store.sections('')) {
+    const names: string[] = []
+    for (const item of section.favorites) {
+      names.push(item.name)
+    }
+    parts.push(`${section.folder?.name ?? ''}[${names.join(',')}]`)
+  }
+  return parts.join(' | ')
+}
+
+/** A store with the folders Work (Shop, Lab, Blog) and Home (Pi), and Notes at the top level. */
+async function sortedStore(api: FakeApi): Promise<FavoriteStore> {
+  const store = storeOf(api)
+  store.saveFolder('', 'Work', '', '')
+  store.saveFolder('', 'Home', '', '')
+  const work = store.folders[0].id
+  await store.save({ ...favorite(), id: 'shop', name: 'Shop', folderId: work })
+  await store.save({ ...favorite(), id: 'notes', name: 'Notes' })
+  await store.save({ ...favorite(), id: 'lab', name: 'Lab', folderId: work })
+  await store.save({ ...favorite(), id: 'pi', name: 'Pi', folderId: store.folders[1].id })
+  await store.save({ ...favorite(), id: 'blog', name: 'Blog', folderId: work })
+  return store
+}
+
+test('place reorders a connection inside its folder', async function () {
+  const store = await sortedStore(new FakeApi())
+  const work = store.folders[0].id
+  expect(order(store)).toBe('Work[Shop,Lab,Blog] | Home[Pi] | [Notes]')
+
+  store.place('blog', work, 'shop')
+  expect(order(store)).toBe('Work[Blog,Shop,Lab] | Home[Pi] | [Notes]')
+  store.place('blog', work, 'lab')
+  expect(order(store)).toBe('Work[Shop,Blog,Lab] | Home[Pi] | [Notes]')
+  // '' and an unknown id mean the end of the folder.
+  store.place('shop', work, '')
+  expect(order(store)).toBe('Work[Blog,Lab,Shop] | Home[Pi] | [Notes]')
+  store.place('blog', work, 'missing')
+  expect(order(store)).toBe('Work[Lab,Shop,Blog] | Home[Pi] | [Notes]')
+})
+
+test('place moves a connection to another folder at a position', async function () {
+  const store = await sortedStore(new FakeApi())
+  const work = store.folders[0].id
+  const home = store.folders[1].id
+
+  store.place('lab', home, 'pi')
+  expect(order(store)).toBe('Work[Shop,Blog] | Home[Lab,Pi] | [Notes]')
+  store.place('notes', work, 'blog')
+  expect(order(store)).toBe('Work[Shop,Notes,Blog] | Home[Lab,Pi] | []')
+  // To the top level, at the end. An unknown folder is the top level too.
+  store.place('shop', '', '')
+  store.place('pi', 'missing', '')
+  expect(order(store)).toBe('Work[Notes,Blog] | Home[Lab] | [Shop,Pi]')
+  // The old `move` puts it at the end of the folder.
+  store.move('shop', home)
+  expect(order(store)).toBe('Work[Notes,Blog] | Home[Lab,Shop] | [Pi]')
+})
+
+test('placeFolder reorders the folders', async function () {
+  const store = await sortedStore(new FakeApi())
+  store.saveFolder('', 'Clients', '', '')
+  const [work, home, clients] = [store.folders[0].id, store.folders[1].id, store.folders[2].id]
+
+  store.placeFolder(clients, work)
+  expect(order(store)).toBe('Clients[] | Work[Shop,Lab,Blog] | Home[Pi] | [Notes]')
+  store.placeFolder(clients, home)
+  expect(order(store)).toBe('Work[Shop,Lab,Blog] | Clients[] | Home[Pi] | [Notes]')
+  store.placeFolder(work, '')
+  expect(order(store)).toBe('Clients[] | Home[Pi] | Work[Shop,Lab,Blog] | [Notes]')
+})
+
+test('the order survives a reload from the storage', async function () {
+  const api = new FakeApi()
+  const store = await sortedStore(api)
+  store.place('blog', store.folders[0].id, 'shop')
+  store.placeFolder(store.folders[1].id, store.folders[0].id)
+
+  expect(order(storeOf(api))).toBe('Home[Pi] | Work[Blog,Shop,Lab] | [Notes]')
+})
+
+test('a drop on its own place and unknown ids change nothing and save nothing', async function () {
+  const store = await sortedStore(new FakeApi())
+  const work = store.folders[0].id
+  const home = store.folders[1].id
+  const saved = JSON.stringify((localStorage as unknown as FakeStorage).items)
+
+  // Before itself, before the row after it, and the last one to the end.
+  store.place('lab', work, 'lab')
+  store.place('lab', work, 'blog')
+  store.place('blog', work, '')
+  store.place('missing', work, 'shop')
+  store.placeFolder(work, work)
+  store.placeFolder(work, home)
+  store.placeFolder(home, '')
+  store.placeFolder('missing', work)
+
+  expect(order(store)).toBe('Work[Shop,Lab,Blog] | Home[Pi] | [Notes]')
+  expect(JSON.stringify((localStorage as unknown as FakeStorage).items)).toBe(saved)
+})
