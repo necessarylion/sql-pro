@@ -5,9 +5,18 @@ name: build
 # - Start it by hand (Actions tab, or `gh workflow run build.yml`):
 #   the installers are kept as workflow artifacts. No release is made.
 # - Push a tag like `v0.1.0`: a DRAFT release is made with all installers attached.
-#   The tag should match the version in `src-tauri/tauri.conf.json`.
+#   The tag must match the version in `src-tauri/tauri.conf.json`.
 #
-# The builds are NOT signed. macOS shows a Gatekeeper warning and Windows shows
+# Auto update:
+# - The build also makes the update files and `latest.json`, and adds them to the release.
+# - The app reads `releases/latest`. A draft is not the latest release.
+#   So users only get the update after you publish the draft.
+# - The app compares its own version with the one in `latest.json`. That one comes
+#   from `tauri.conf.json`, not from the tag. So raise the version there before you tag.
+# - The update files are signed with the updater key. The secret
+#   TAURI_SIGNING_PRIVATE_KEY must be set in the repository, or the build fails.
+#
+# The installers are NOT code signed. macOS shows a Gatekeeper warning and Windows shows
 # a SmartScreen warning. To sign, add the secrets to the repository and pass them
 # in the `env` of the "Build the installers" step:
 # - macOS: APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
@@ -75,6 +84,9 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the update files. The key has no password.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
           args: --target ${{ matrix.target }}
           # A tag makes a draft release. With no tag name, no release is made.

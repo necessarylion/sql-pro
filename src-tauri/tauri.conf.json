@@ -31,6 +31,7 @@
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -38,5 +39,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/necessarylion/sql-pro/releases/latest/download/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM5QzQ4OTM1Qjg2MTQwMzQKUldRMFFHRzROWW5FT1daYlM3eUw0S0F6MjdEM2RIc2pXZ3JoYmN5dCttLytCQUJFWWhPbXB3a2QK"
+    }
   }
 }

@@ -43,6 +43,7 @@ keyring = { version = "3", features = [
 ] }
 # Runs the system ssh program for tunnels.
 tokio = { version = "1", features = ["process", "net", "time", "io-util"] }
+tauri-plugin-updater = "2"
 
 # Windows and Linux have no Dock. There the tray icon brings a hidden window back,
 # and a second start of the app shows the window of the first one.

@@ -6,6 +6,7 @@ pub mod error;
 pub mod model;
 pub mod repository;
 pub mod service;
+mod updater;
 
 use std::sync::Arc;
 
@@ -32,11 +33,11 @@ pub fn run() {
     }));
     #[cfg(target_os = "macos")]
     let builder = builder.menu(app_menu);
-    #[cfg(not(target_os = "macos"))]
-    let builder = builder.setup(add_tray);
     let app = builder
+        .setup(setup)
         .on_window_event(hide_instead_of_close)
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(profile_plugin())
         .manage(ConnectionService::new(RepositoryFactory))
         .manage(PasswordRepository::new(Arc::new(OsKeychain)))
@@ -127,17 +128,25 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
 #[allow(clippy::needless_pass_by_value)] // Tauri hands the event over by value.
 fn on_run_event(_app: &tauri::AppHandle, _event: tauri::RunEvent) {}
 
+/// Runs once when the app starts. Tauri keeps only one `setup` function,
+/// so all start work goes in here.
+#[allow(clippy::unnecessary_wraps)] // Tauri wants this return type for `setup`.
+fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(target_os = "macos"))]
+    add_tray(app);
+    updater::start(app.handle());
+    Ok(())
+}
+
 /// Adds the tray icon with its menu: show the window, or quit for real.
 ///
 /// A tray that cannot be made does not stop the app. Closing the window then
 /// quits the app, as it did before.
 #[cfg(not(target_os = "macos"))]
-#[allow(clippy::unnecessary_wraps)] // Tauri wants this return type for `setup`.
-fn add_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+fn add_tray(app: &tauri::App) {
     if let Err(error) = build_tray(app) {
         eprintln!("SQL Pro: no tray icon: {error}");
     }
-    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]

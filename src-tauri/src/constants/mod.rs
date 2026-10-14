@@ -140,6 +140,16 @@ pub const TRAY_SHOW_TEXT: &str = "Show SQL Pro";
 pub const TRAY_QUIT_ID: &str = "quit";
 pub const TRAY_QUIT_TEXT: &str = "Quit";
 
+/// The title of the popup that offers a new version.
+pub const UPDATE_TITLE: &str = "Update available";
+
+/// The two buttons of that popup.
+pub const UPDATE_INSTALL_TEXT: &str = "Install and restart";
+pub const UPDATE_LATER_TEXT: &str = "Later";
+
+/// The title of the popup that says the update could not be installed.
+pub const UPDATE_ERROR_TITLE: &str = "Update failed";
+
 #[cfg(test)]
 mod tests {
     use super::{KEYCHAIN_SERVICE, PROFILE};
