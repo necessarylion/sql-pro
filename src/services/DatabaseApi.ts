@@ -4,6 +4,7 @@ import type {
   ColumnSpec,
   ConnectionConfig,
   DbUser,
+  Diagram,
   NewColumn,
   GrantableAccess,
   NewUser,
@@ -103,6 +104,16 @@ export class DatabaseApi {
   /** Writes a SQL dump of the current database to the file at `path`. */
   dumpDatabase(id: string, path: string): Promise<void> {
     return invoke('dump_database', { id, path })
+  }
+
+  /** The tables of the current database with their columns and foreign keys. */
+  diagram(id: string): Promise<Diagram> {
+    return invoke('diagram', { id })
+  }
+
+  /** Writes the bytes of a PNG image to the file at `path`. */
+  saveImage(path: string, data: number[]): Promise<void> {
+    return invoke('save_image', { path, data })
   }
 
   listUsers(id: string): Promise<UserList> {

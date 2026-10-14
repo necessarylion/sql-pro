@@ -7,6 +7,7 @@ mod postgres;
 mod sqlite;
 mod tunnel;
 
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
@@ -26,8 +27,8 @@ use crate::constants::{
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, Driver, ResultSet, Row, TableRef,
-    UserList,
+    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, Driver, Relation, ResultSet, Row,
+    TableRef, UserList,
 };
 
 /// Stops the console window that Windows opens for every tool a window app starts.
@@ -77,6 +78,9 @@ pub trait Repository: Send + Sync {
     async fn tables(&self) -> AppResult<Vec<TableRef>>;
 
     async fn columns(&self, table: &TableRef) -> AppResult<Vec<ColumnInfo>>;
+
+    /// All foreign keys of the current database.
+    async fn relations(&self) -> AppResult<Vec<Relation>>;
 
     async fn close(&self);
 
@@ -339,6 +343,52 @@ fn standard_columns(set: &ResultSet) -> Vec<ColumnInfo> {
         });
     }
     columns
+}
+
+/// Builds foreign keys from two result sets.
+///
+/// `keys` has one row per column of a foreign key: schema, table, key id, constraint
+/// name, column, parent schema, parent table, parent column. The rows of one key
+/// must follow each other, in column order.
+/// `unique` has one row per column of a unique index: schema, table, index, column.
+fn relations(keys: &ResultSet, unique: &ResultSet) -> Vec<Relation> {
+    let mut indexes: HashMap<[String; 3], BTreeSet<String>> = HashMap::new();
+    for row in &unique.rows {
+        let index = [cell(row, 0), cell(row, 1), cell(row, 2)];
+        indexes.entry(index).or_default().insert(cell(row, 3));
+    }
+    let mut relations: Vec<Relation> = Vec::new();
+    let mut current = None;
+    for row in &keys.rows {
+        let key = [cell(row, 0), cell(row, 1), cell(row, 2)];
+        if current.as_ref() != Some(&key) {
+            current = Some(key);
+            relations.push(Relation {
+                name: cell(row, 3),
+                schema: row.first().cloned().flatten(),
+                table: cell(row, 1),
+                columns: Vec::new(),
+                ref_schema: row.get(5).cloned().flatten(),
+                ref_table: cell(row, 6),
+                ref_columns: Vec::new(),
+                unique: false,
+            });
+        }
+        if let Some(relation) = relations.last_mut() {
+            relation.columns.push(cell(row, 4));
+            relation.ref_columns.push(cell(row, 7));
+        }
+    }
+    for relation in &mut relations {
+        let schema = relation.schema.clone().unwrap_or_default();
+        let columns: BTreeSet<String> = relation.columns.iter().cloned().collect();
+        for (index, indexed) in &indexes {
+            if index[0] == schema && index[1] == relation.table && *indexed == columns {
+                relation.unique = true;
+            }
+        }
+    }
+    relations
 }
 
 /// Is this table type a view?

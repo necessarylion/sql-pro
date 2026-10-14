@@ -127,7 +127,7 @@ export interface SaveResult {
   deleted: number
 }
 
-export type SessionView = 'structure' | 'content' | 'query' | 'users'
+export type SessionView = 'structure' | 'content' | 'query' | 'users' | 'diagram'
 
 /**
  * What a user may do on the current database.
@@ -167,4 +167,30 @@ export interface GridColumn {
   nullable?: boolean
   /** Cells of this column cannot be edited, even in an editable grid. */
   readOnly?: boolean
+}
+
+/** One table box of the diagram. */
+export interface DiagramTable {
+  table: TableRef
+  columns: ColumnInfo[]
+}
+
+/** One foreign key. `table` holds the key columns. `refTable` is the table they point at. */
+export interface Relation {
+  name: string
+  /** The schema of `table`. Set only for postgres. */
+  schema: string | null
+  table: string
+  columns: string[]
+  refSchema: string | null
+  refTable: string
+  refColumns: string[]
+  /** True when the key columns are exactly a primary key or a unique index of `table`. */
+  unique: boolean
+}
+
+/** All tables of the current database and their foreign keys. Views are left out. */
+export interface Diagram {
+  tables: DiagramTable[]
+  relations: Relation[]
 }

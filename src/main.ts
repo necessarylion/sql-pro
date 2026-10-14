@@ -1,10 +1,12 @@
 import { createApp, reactive } from 'vue'
 import App from './App.vue'
 import { DatabaseApi } from './services/DatabaseApi'
+import { DiagramLayoutStore } from './services/DiagramLayoutStore'
 import { FavoriteStore } from './services/FavoriteStore'
 import { LIGHT_SCHEME_QUERY } from './constants/theme'
 import { DiscardPrompt } from './services/DiscardPrompt'
 import {
+  DIAGRAM_LAYOUTS,
   FAVORITE_STORE,
   LAYOUT_SERVICE,
   QUERY_HISTORY,
@@ -52,6 +54,7 @@ createApp(App)
   .provide(SESSION_MANAGER, sessionManager)
   .provide(FAVORITE_STORE, favoriteStore)
   .provide(QUERY_HISTORY, queryHistory)
+  .provide(DIAGRAM_LAYOUTS, new DiagramLayoutStore(storage))
   .provide(THEME_SERVICE, themeService)
   .provide(LAYOUT_SERVICE, layoutService)
   .provide(ZOOM_SERVICE, zoomService)

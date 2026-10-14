@@ -6,14 +6,43 @@ use sqlx::{Row as _, Sqlite, TypeInfo as _, ValueRef as _};
 
 use super::{
     Repository, Statement, bytes_to_text, cell, collect, double_quote, execute_all, kind, literal,
-    pool_options, single, standard_columns,
+    pool_options, relations, single, standard_columns,
 };
 use crate::error::AppResult;
-use crate::model::{ColumnInfo, ColumnSpec, ConnectionConfig, ResultSet, TableRef};
+use crate::model::{ColumnInfo, ColumnSpec, ConnectionConfig, Relation, ResultSet, TableRef};
 
 const TABLES_SQL: &str = "SELECT name, type FROM sqlite_master \
     WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' \
     ORDER BY name";
+
+/// One row per foreign key column, in the shape `relations` reads.
+///
+/// `SQLite` stores the names as the `REFERENCES` clause wrote them. So we look up
+/// the real names: they can differ in upper and lower case. A key without parent
+/// columns points at the primary key of the parent.
+const FOREIGN_KEYS_SQL: &str = "SELECT NULL, m.name, f.id, '', coalesce(c.name, f.\"from\"), \
+        NULL, coalesce(p.name, f.\"table\"), coalesce(pc.name, f.\"to\") \
+    FROM sqlite_master m \
+    JOIN pragma_foreign_key_list(m.name) f \
+    LEFT JOIN pragma_table_info(m.name) c ON c.name = f.\"from\" COLLATE NOCASE \
+    LEFT JOIN sqlite_master p ON p.type = 'table' AND p.name = f.\"table\" COLLATE NOCASE \
+    LEFT JOIN pragma_table_info(p.name) pc \
+        ON pc.name = f.\"to\" COLLATE NOCASE OR (f.\"to\" IS NULL AND pc.pk = f.seq + 1) \
+    WHERE m.type = 'table' \
+    ORDER BY m.name, f.id, f.seq";
+
+/// One row per column of every unique index and of every primary key.
+/// A primary key on the row id has no index, so it comes from the table info.
+const UNIQUE_SQL: &str = "SELECT NULL, m.name, i.name, c.name \
+    FROM sqlite_master m \
+    JOIN pragma_index_list(m.name) i \
+    JOIN pragma_index_info(i.name) c \
+    WHERE m.type = 'table' AND i.\"unique\" AND NOT i.partial \
+    UNION ALL \
+    SELECT NULL, m.name, '', c.name \
+    FROM sqlite_master m \
+    JOIN pragma_table_info(m.name) c \
+    WHERE m.type = 'table' AND c.pk > 0";
 
 pub struct SqliteRepository {
     pool: SqlitePool,
@@ -113,6 +142,12 @@ impl Repository for SqliteRepository {
             literal(&table.name)
         );
         Ok(standard_columns(&single(self.query(&sql).await?)))
+    }
+
+    async fn relations(&self) -> AppResult<Vec<Relation>> {
+        let keys = single(self.query(FOREIGN_KEYS_SQL).await?);
+        let unique = single(self.query(UNIQUE_SQL).await?);
+        Ok(relations(&keys, &unique))
     }
 
     /// `SQLite` can only rename, add and drop columns. Other changes need a table rebuild.

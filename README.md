@@ -69,10 +69,3 @@ src-tauri/         the Rust backend
 ```
 
 The flow is: component -> `Session` -> `DatabaseApi` -> Rust command.
-
-## Code rules
-
-- No arrow functions. Use classes, class methods and named functions. ESLint checks this.
-- Classes get what they need in the constructor.
-- `Session` methods throw on failure. Components wrap them in `session.run(...)`.
-  `run` sets `busy` and stores the error text in `error`.

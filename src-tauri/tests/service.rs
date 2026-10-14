@@ -6,8 +6,9 @@
 //! Add `SQLPRO_TEST_SSH=host:port:user:password` to run both through an SSH tunnel.
 
 use sql_pro_lib::model::{
-    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, DbUser, Driver, FilterOperator,
-    FilterRule, NewColumn, NewUser, RowUpdate, SaveResult, SshConfig, TableRef, Values,
+    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, DbUser, Diagram, Driver,
+    FilterOperator, FilterRule, NewColumn, NewUser, Relation, RowUpdate, SaveResult, SshConfig,
+    TableRef, Values,
 };
 use sql_pro_lib::repository::RepositoryFactory;
 use sql_pro_lib::service::ConnectionService;
@@ -422,6 +423,138 @@ async fn dump(service: &ConnectionService, driver: Driver) {
     assert!(service.dump_database(ID, &missing).await.is_err());
     assert!(!missing.exists());
     assert!(!folder.join("sqlpro-no-such-folder").exists());
+}
+
+/// The one foreign key that `table` holds.
+fn relation<'found>(diagram: &'found Diagram, table: &str) -> &'found Relation {
+    let mut found = diagram.relations.iter().filter(|key| key.table == table);
+    let relation = found.next().expect("the table has a foreign key");
+    assert!(found.next().is_none(), "{table} has more than one key");
+    relation
+}
+
+/// Loads the diagram of a small schema: plain, unique and composite foreign keys, and a view.
+async fn diagram(service: &ConnectionService, driver: Driver) {
+    let drop = "DROP VIEW IF EXISTS sqlpro_d_view; DROP TABLE IF EXISTS sqlpro_d_short; \
+        DROP TABLE IF EXISTS sqlpro_d_page; DROP TABLE IF EXISTS sqlpro_d_edition; \
+        DROP TABLE IF EXISTS sqlpro_d_profile; DROP TABLE IF EXISTS sqlpro_d_book; \
+        DROP TABLE IF EXISTS sqlpro_d_author";
+    // The page key lists its columns in another order than the table does.
+    let setup = format!(
+        "{drop}; \
+        CREATE TABLE sqlpro_d_author (id INTEGER PRIMARY KEY, name VARCHAR(20)); \
+        CREATE TABLE sqlpro_d_book (id INTEGER PRIMARY KEY, author_id INTEGER, \
+            CONSTRAINT sqlpro_d_book_author FOREIGN KEY (author_id) REFERENCES sqlpro_d_author (id)); \
+        CREATE TABLE sqlpro_d_profile (id INTEGER PRIMARY KEY, author_id INTEGER UNIQUE, \
+            FOREIGN KEY (author_id) REFERENCES sqlpro_d_author (id)); \
+        CREATE TABLE sqlpro_d_edition (book_id INTEGER, number INTEGER, \
+            PRIMARY KEY (book_id, number), \
+            FOREIGN KEY (book_id) REFERENCES sqlpro_d_book (id)); \
+        CREATE TABLE sqlpro_d_page (id INTEGER PRIMARY KEY, number INTEGER, book_id INTEGER, \
+            FOREIGN KEY (book_id, number) REFERENCES sqlpro_d_edition (book_id, number)); \
+        CREATE VIEW sqlpro_d_view AS SELECT id FROM sqlpro_d_book"
+    );
+    service.run_query(ID, &setup).await.expect("diagram tables");
+    if driver == Driver::Sqlite {
+        // No parent column, and the parent name in other letters.
+        let short = "CREATE TABLE sqlpro_d_short (id INTEGER PRIMARY KEY, \
+            Author_Id INTEGER REFERENCES SQLPRO_D_AUTHOR, FOREIGN KEY (AUTHOR_ID) REFERENCES sqlpro_d_author (ID))";
+        service.run_query(ID, short).await.expect("short key");
+    }
+
+    let diagram = service.diagram(ID).await.expect("diagram");
+    let book = diagram
+        .tables
+        .iter()
+        .find(|one| one.table.name == "sqlpro_d_book");
+    let book = book.expect("the book table is in the diagram");
+    let mut names = Vec::new();
+    for column in &book.columns {
+        names.push(column.name.as_str());
+    }
+    assert_eq!(names, ["id", "author_id"]);
+    assert!(book.columns[0].primary_key);
+    // Views are left out.
+    assert!(diagram.tables.iter().all(|one| one.table.kind == "table"));
+    assert!(
+        diagram
+            .tables
+            .iter()
+            .all(|one| one.table.name != "sqlpro_d_view")
+    );
+
+    let plain = relation(&diagram, "sqlpro_d_book");
+    let name = if driver == Driver::Sqlite {
+        ""
+    } else {
+        "sqlpro_d_book_author"
+    };
+    assert_eq!(plain.name, name);
+    assert_eq!(plain.schema, book.table.schema);
+    assert_eq!(plain.ref_schema, book.table.schema);
+    assert_eq!(plain.columns, ["author_id"]);
+    assert_eq!(plain.ref_table, "sqlpro_d_author");
+    assert_eq!(plain.ref_columns, ["id"]);
+    assert!(!plain.unique);
+
+    let unique = relation(&diagram, "sqlpro_d_profile");
+    assert_eq!(unique.columns, ["author_id"]);
+    assert_eq!(unique.ref_table, "sqlpro_d_author");
+    assert!(unique.unique);
+
+    // One column of a primary key with two columns is not unique alone.
+    assert!(!relation(&diagram, "sqlpro_d_edition").unique);
+
+    let composite = relation(&diagram, "sqlpro_d_page");
+    assert_eq!(composite.columns, ["book_id", "number"]);
+    assert_eq!(composite.ref_table, "sqlpro_d_edition");
+    assert_eq!(composite.ref_columns, ["book_id", "number"]);
+    assert!(!composite.unique);
+
+    if driver == Driver::Sqlite {
+        // Both keys come back with the real names of the tables and columns.
+        let short: Vec<&Relation> = diagram
+            .relations
+            .iter()
+            .filter(|key| key.table == "sqlpro_d_short")
+            .collect();
+        assert_eq!(short.len(), 2);
+        for key in short {
+            assert_eq!(key.columns, ["Author_Id"]);
+            assert_eq!(key.ref_table, "sqlpro_d_author");
+            assert_eq!(key.ref_columns, ["id"]);
+        }
+    }
+
+    // The frontend reads these names.
+    let json = serde_json::to_value(plain).expect("json");
+    for field in [
+        "name",
+        "schema",
+        "table",
+        "columns",
+        "refSchema",
+        "refTable",
+        "refColumns",
+        "unique",
+    ] {
+        assert!(json.get(field).is_some(), "no {field} in the JSON");
+    }
+    service
+        .run_query(ID, drop)
+        .await
+        .expect("drop diagram tables");
+}
+
+/// Writes a file, and fails for a folder that does not exist.
+fn save_image() {
+    let folder = std::env::temp_dir();
+    let path = folder.join(format!("sqlpro-image-{}.png", std::process::id()));
+    ConnectionService::save_image(&path, &[1, 2, 3]).expect("save image");
+    assert_eq!(std::fs::read(&path).expect("image file"), [1, 2, 3]);
+    std::fs::remove_file(&path).expect("remove image");
+    let missing = folder.join("sqlpro-no-such-folder").join("image.png");
+    assert!(ConnectionService::save_image(&missing, &[1]).is_err());
 }
 
 fn new_user(name: &str, password: &str, access: AccessLevel) -> NewUser {
@@ -1010,6 +1143,8 @@ async fn exercise(config: ConnectionConfig) {
     schema_changes(&service, &table, driver).await;
     drop_and_truncate(&service).await;
     create_and_rename(&service).await;
+    diagram(&service, driver).await;
+    save_image();
 
     // Custom SQL with two statements gives two result sets.
     let sets = service

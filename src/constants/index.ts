@@ -63,6 +63,7 @@ export const VIEW_LABELS: Record<SessionView, string> = {
   content: 'Content',
   query: 'Query',
   users: 'Users',
+  diagram: 'Diagram',
 }
 
 /** Binary values arrive as hex text. Editing them would corrupt them. */

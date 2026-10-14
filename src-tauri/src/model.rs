@@ -60,6 +60,40 @@ pub struct ColumnInfo {
     pub extra: String,
 }
 
+/// One foreign key: `columns` of `table` point at `ref_columns` of `ref_table`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Relation {
+    /// The name of the constraint. Empty when the database gives none.
+    pub name: String,
+    /// Only `PostgreSQL` fills the two schemas, like in `TableRef`.
+    pub schema: Option<String>,
+    /// The table that holds the foreign key.
+    pub table: String,
+    pub columns: Vec<String>,
+    pub ref_schema: Option<String>,
+    pub ref_table: String,
+    /// In the same order as `columns`.
+    pub ref_columns: Vec<String>,
+    /// True when `columns` are exactly the primary key or one unique index of `table`.
+    /// Then one row of `ref_table` has at most one row here.
+    pub unique: bool,
+}
+
+/// One table of the diagram.
+#[derive(Debug, Serialize)]
+pub struct DiagramTable {
+    pub table: TableRef,
+    pub columns: Vec<ColumnInfo>,
+}
+
+/// The tables of a database and the foreign keys between them.
+#[derive(Debug, Serialize)]
+pub struct Diagram {
+    pub tables: Vec<DiagramTable>,
+    pub relations: Vec<Relation>,
+}
+
 /// What a new or changed column should look like.
 /// `data_type` and `default` are raw SQL, typed by the user.
 #[derive(Deserialize)]

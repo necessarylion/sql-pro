@@ -14,12 +14,14 @@ import {
   TerminalIcon,
   UnplugIcon,
   UsersIcon,
+  WorkflowIcon,
 } from 'lucide-vue-next'
 import { VIEW_LABELS } from '../constants'
 import { SESSION_MANAGER, SHORTCUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
 import type { SessionView, TableRef } from '../types'
 import ContentView from './ContentView.vue'
+import DiagramView from './DiagramView.vue'
 import EnvBadge from './EnvBadge.vue'
 import PaneResizer from './PaneResizer.vue'
 import QueryView from './QueryView.vue'
@@ -36,6 +38,7 @@ const VIEW_ICONS: Record<SessionView, Component> = {
   content: TableIcon,
   query: TerminalIcon,
   users: UsersIcon,
+  diagram: WorkflowIcon,
 }
 
 // The size of the table menu. It keeps the menu inside the window.
@@ -318,6 +321,8 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
         <template v-if="session.view !== 'query'">
           <!-- The Users view needs no table. It has its own bottom bar for errors. -->
           <UsersView v-if="session.view === 'users'" :session="session" />
+          <!-- The diagram shows all tables. It has its own bottom bar too. -->
+          <DiagramView v-else-if="session.view === 'diagram'" :session="session" />
           <!-- No table is open, so no view with a bottom bar. Show the error or the status here. -->
           <div v-else-if="!session.page" class="empty">
             <span v-if="session.error" class="error failure">{{ session.error }}</span>

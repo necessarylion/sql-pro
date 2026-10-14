@@ -1,10 +1,12 @@
 import { DELETE_ROWS_TITLE, PAGE_SIZE } from '../constants'
+import { DIAGRAM_SAVED_STATUS_MS } from '../constants/diagram'
 import { RAW_FILTER_COLUMN, VALUELESS_OPERATORS } from '../constants/filters'
 import { ACCESS_LABELS } from '../constants/users'
 import type {
   ColumnSpec,
   ConnectionConfig,
   DbUser,
+  Diagram,
   GrantableAccess,
   NewUser,
   FilterRow,
@@ -71,6 +73,10 @@ export class Session {
   users: DbUser[] = []
   /** True when the logged-in account may manage users. The Users view needs it. */
   canManageUsers = false
+  /** What the Diagram view shows. null = not loaded. */
+  diagram: Diagram | null = null
+  /** The timer that removes the "Diagram saved" status. */
+  private statusTimer: ReturnType<typeof setTimeout> | undefined
   private api: DatabaseApi
   private prompt: DiscardPrompt
 
@@ -245,6 +251,7 @@ export class Session {
       this.tables = []
       this.result = null
       this.status = ''
+      this.diagram = null
       this.clearTable()
       this.setUsers([], false)
     }
@@ -262,6 +269,11 @@ export class Session {
     await this.loadTables()
     // Access is per database, so the list is different now.
     await this.loadUsers()
+    // The old diagram is of the other database.
+    this.diagram = null
+    if (this.view === 'diagram') {
+      await this.loadDiagram()
+    }
   }
 
   async loadTables(): Promise<void> {
@@ -274,7 +286,7 @@ export class Session {
     }
     this.clearTable()
     this.table = table
-    if (this.view === 'query' || this.view === 'users') {
+    if (this.view === 'query' || this.view === 'users' || this.view === 'diagram') {
       this.view = 'content'
     }
     await this.loadPage()
@@ -291,6 +303,8 @@ export class Session {
   async refresh(): Promise<void> {
     if (this.view === 'users') {
       await this.loadUsers()
+    } else if (this.view === 'diagram') {
+      await this.loadDiagram()
     } else if (this.view !== 'query') {
       await this.reload()
     }
@@ -680,13 +694,41 @@ export class Session {
     this.status = `Password of "${user.name}" changed`
   }
 
+  /** Loads the tables and foreign keys for the Diagram view. */
+  async loadDiagram(): Promise<void> {
+    try {
+      this.diagram = await this.api.diagram(this.id)
+    } catch (error) {
+      // Do not keep showing a diagram that may be of another database.
+      this.diagram = null
+      throw error
+    }
+  }
+
+  /** The file name we offer for a picture of the diagram, like `shop-diagram.png`. */
+  diagramName(): string {
+    return `${this.databaseName() || 'database'}-diagram.png`
+  }
+
+  /** Writes the PNG picture of the diagram to the file at `path`. The status goes away after a few seconds. */
+  async saveImage(path: string, data: number[]): Promise<void> {
+    await this.api.saveImage(path, data)
+    this.status = `Diagram saved to ${path}`
+    // A second export starts the time again.
+    clearTimeout(this.statusTimer)
+    this.statusTimer = setTimeout(this.clearStatus.bind(this), DIAGRAM_SAVED_STATUS_MS, this.status)
+  }
+
+  /** Removes the status when it still shows `text`. A newer status stays. */
+  private clearStatus(text: string): void {
+    if (this.status === text) {
+      this.status = ''
+    }
+  }
+
   /** The file name we offer for a backup made at `now`, like `shop-2026-01-31-0905.sql`. */
   backupName(now: Date): string {
-    let name = this.config?.database ?? ''
-    if (this.config?.driver === 'sqlite') {
-      // The file name without its folder and its ending.
-      name = (name.split(/[\\/]/).pop() ?? '').replace(/\.[^.]*$/, '')
-    }
+    const name = this.databaseName()
     const day = `${now.getFullYear()}-${this.two(now.getMonth() + 1)}-${this.two(now.getDate())}`
     const time = `${this.two(now.getHours())}${this.two(now.getMinutes())}`
     return `${name || 'backup'}-${day}-${time}.sql`
@@ -738,6 +780,15 @@ export class Session {
     }
     // The query may have created or dropped tables.
     await this.loadTables()
+  }
+
+  /** The database name. For SQLite the file name without its folder and its ending. */
+  private databaseName(): string {
+    const name = this.config?.database ?? ''
+    if (this.config?.driver !== 'sqlite') {
+      return name
+    }
+    return (name.split(/[\\/]/).pop() ?? '').replace(/\.[^.]*$/, '')
   }
 
   /** The part of `connect` that runs after the backend is connected. */

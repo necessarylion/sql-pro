@@ -1,4 +1,5 @@
 import { inject, type InjectionKey } from 'vue'
+import type { DiagramLayoutStore } from './DiagramLayoutStore'
 import type { FavoriteStore } from './FavoriteStore'
 import type { LayoutService } from './LayoutService'
 import type { QueryHistory } from './QueryHistory'
@@ -15,6 +16,7 @@ export const LAYOUT_SERVICE: InjectionKey<LayoutService> = Symbol('LayoutService
 export const ZOOM_SERVICE: InjectionKey<ZoomService> = Symbol('ZoomService')
 export const SHORTCUTS: InjectionKey<Shortcuts> = Symbol('Shortcuts')
 export const QUERY_HISTORY: InjectionKey<QueryHistory> = Symbol('QueryHistory')
+export const DIAGRAM_LAYOUTS: InjectionKey<DiagramLayoutStore> = Symbol('DiagramLayoutStore')
 
 /** Like `inject`, but fails loudly when main.ts did not provide the object. */
 export function injectRequired<T>(key: InjectionKey<T>): T {

@@ -11,9 +11,9 @@ use crate::constants::{
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, BrowseRequest, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, Driver,
-    FilterOperator, FilterRule, NewColumn, NewUser, ResultSet, RowUpdate, SaveResult, TablePage,
-    TableRef, UserList, Values,
+    AccessLevel, BrowseRequest, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, Diagram,
+    DiagramTable, Driver, FilterOperator, FilterRule, NewColumn, NewUser, ResultSet, RowUpdate,
+    SaveResult, TablePage, TableRef, UserList, Values,
 };
 use crate::repository::{
     DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, not_saved,
@@ -89,6 +89,29 @@ impl ConnectionService {
     /// Runs SQL typed by the user.
     pub async fn run_query(&self, id: &str, sql: &str) -> AppResult<Vec<ResultSet>> {
         self.repository(id)?.query(sql).await
+    }
+
+    /// The tables of the current database with their columns, and the foreign keys
+    /// between them. Views are left out.
+    // ponytail: one columns query per table. Load all columns in one query per
+    // driver if a database with very many tables opens too slowly.
+    pub async fn diagram(&self, id: &str) -> AppResult<Diagram> {
+        let repository = self.repository(id)?;
+        let mut tables = Vec::new();
+        for table in repository.tables().await? {
+            if table.kind != VIEW {
+                let columns = repository.columns(&table).await?;
+                tables.push(DiagramTable { table, columns });
+            }
+        }
+        let relations = repository.relations().await?;
+        Ok(Diagram { tables, relations })
+    }
+
+    /// Writes a picture of the diagram to the file at `path`.
+    /// An older file at `path` is replaced.
+    pub fn save_image(path: &Path, data: &[u8]) -> AppResult<()> {
+        Ok(std::fs::write(path, data)?)
     }
 
     /// Writes a full SQL dump of the current database to the file at `path`.

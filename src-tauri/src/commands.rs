@@ -9,8 +9,8 @@ use tauri::State;
 
 use crate::error::AppResult;
 use crate::model::{
-    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, NewColumn, NewUser, ResultSet,
-    RowUpdate, SaveResult, TablePage, TableRef, UserList, Values,
+    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, Diagram, NewColumn, NewUser,
+    ResultSet, RowUpdate, SaveResult, TablePage, TableRef, UserList, Values,
 };
 use crate::repository::PasswordRepository;
 use crate::service::ConnectionService;
@@ -162,6 +162,16 @@ pub async fn truncate_table(service: Service<'_>, id: String, table: TableRef) -
 #[tauri::command]
 pub async fn dump_database(service: Service<'_>, id: String, path: PathBuf) -> AppResult<()> {
     service.dump_database(&id, &path).await
+}
+
+#[tauri::command]
+pub async fn diagram(service: Service<'_>, id: String) -> AppResult<Diagram> {
+    service.diagram(&id).await
+}
+
+#[tauri::command]
+pub async fn save_image(path: PathBuf, data: Vec<u8>) -> AppResult<()> {
+    ConnectionService::save_image(&path, &data)
 }
 
 #[tauri::command]

@@ -61,6 +61,8 @@ pub fn run() {
             commands::drop_table,
             commands::truncate_table,
             commands::dump_database,
+            commands::diagram,
+            commands::save_image,
             commands::list_users,
             commands::create_user,
             commands::drop_user,

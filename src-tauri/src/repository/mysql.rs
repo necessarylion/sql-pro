@@ -8,18 +8,34 @@ use std::collections::{BTreeSet, HashMap};
 
 use super::{
     Repository, Statement, bytes_to_text, cell, collect, default_sql, execute_all, first_column,
-    kind, password_safe, pool_options, single,
+    kind, password_safe, pool_options, relations, single,
 };
 use crate::constants::{
     ANY_HOST, MYSQL_DATABASE_PRIVILEGES, MYSQL_HOST_MAX, MYSQL_SYSTEM_USERS, MYSQL_USER_NAME_MAX,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, ResultSet, TableRef, UserList,
+    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, Relation, ResultSet, TableRef,
+    UserList,
 };
 
 /// The right that is no right. `MySQL` lists it for an account that has nothing.
 const USAGE: &str = "USAGE";
+
+/// One row per foreign key column, in the shape `relations` reads.
+// ponytail: a key that points into another database is left out. The diagram
+// shows one database. Fill `ref_schema` here if such keys must show up.
+const FOREIGN_KEYS_SQL: &str = "SELECT NULL, TABLE_NAME, CONSTRAINT_NAME, CONSTRAINT_NAME, \
+        COLUMN_NAME, NULL, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME \
+    FROM information_schema.KEY_COLUMN_USAGE \
+    WHERE TABLE_SCHEMA = DATABASE() AND REFERENCED_TABLE_NAME IS NOT NULL \
+        AND REFERENCED_TABLE_SCHEMA = DATABASE() \
+    ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION";
+
+/// One row per column of every unique index. The primary key is one of them.
+const UNIQUE_SQL: &str = "SELECT NULL, TABLE_NAME, INDEX_NAME, COLUMN_NAME \
+    FROM information_schema.STATISTICS \
+    WHERE TABLE_SCHEMA = DATABASE() AND NON_UNIQUE = 0";
 
 /// One grant inside the current database: on the whole database, or on one table.
 struct Grant {
@@ -422,6 +438,12 @@ impl Repository for MysqlRepository {
             });
         }
         Ok(columns)
+    }
+
+    async fn relations(&self) -> AppResult<Vec<Relation>> {
+        let keys = single(self.query(FOREIGN_KEYS_SQL).await?);
+        let unique = single(self.query(UNIQUE_SQL).await?);
+        Ok(relations(&keys, &unique))
     }
 
     async fn modify_column_sql(

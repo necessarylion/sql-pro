@@ -6,12 +6,13 @@ use sqlx::{Postgres, Row as _};
 
 use super::{
     Repository, Statement, cell, collect, default_sql, double_quote, execute_all, first_column,
-    kind, literal, password_safe, pool_options, single, standard_columns,
+    kind, literal, password_safe, pool_options, relations, single, standard_columns,
 };
 use crate::constants::POSTGRES_ROLE_NAME_MAX;
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, ResultSet, TableRef, UserList,
+    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, Relation, ResultSet, TableRef,
+    UserList,
 };
 
 const DATABASES_SQL: &str =
@@ -21,6 +22,36 @@ const TABLES_SQL: &str = "SELECT table_schema, table_name, table_type \
     FROM information_schema.tables \
     WHERE table_schema NOT IN ('pg_catalog', 'information_schema') \
     ORDER BY table_schema, table_name";
+
+/// One row per foreign key column, in the shape `relations` reads.
+///
+/// A key on or to a partitioned table has a copy for every partition. Those
+/// copies have a parent and are left out.
+// ponytail: `conparentid` and `indnkeyatts` need PostgreSQL 11.
+const FOREIGN_KEYS_SQL: &str = "SELECT n.nspname, c.relname, con.oid, con.conname, a.attname, \
+        rn.nspname, rc.relname, ra.attname \
+    FROM pg_constraint con \
+    JOIN pg_class c ON c.oid = con.conrelid \
+    JOIN pg_namespace n ON n.oid = c.relnamespace \
+    JOIN pg_class rc ON rc.oid = con.confrelid \
+    JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
+    CROSS JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS k(col, ref_col, position) \
+    JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.col \
+    JOIN pg_attribute ra ON ra.attrelid = con.confrelid AND ra.attnum = k.ref_col \
+    WHERE con.contype = 'f' AND con.conparentid = 0 \
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
+    ORDER BY n.nspname, c.relname, con.conname, k.position";
+
+/// One row per key column of every unique index. The primary key is one of them.
+/// An index on an expression gives an empty column name, so it matches no foreign key.
+const UNIQUE_SQL: &str = "SELECT n.nspname, c.relname, i.indexrelid, a.attname \
+    FROM pg_index i \
+    JOIN pg_class c ON c.oid = i.indrelid \
+    JOIN pg_namespace n ON n.oid = c.relnamespace \
+    CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(col, position) \
+    LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.col \
+    WHERE i.indisunique AND i.indpred IS NULL AND k.position <= i.indnkeyatts \
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')";
 
 /// The schemas that hold user data. Names that start with `pg_` belong to the system.
 const USER_SCHEMAS_SQL: &str = "SELECT nspname FROM pg_namespace n \
@@ -279,6 +310,12 @@ impl Repository for PostgresRepository {
             literal(&self.table_name(table))
         );
         Ok(standard_columns(&single(self.query(&sql).await?)))
+    }
+
+    async fn relations(&self) -> AppResult<Vec<Relation>> {
+        let keys = single(self.query(FOREIGN_KEYS_SQL).await?);
+        let unique = single(self.query(UNIQUE_SQL).await?);
+        Ok(relations(&keys, &unique))
     }
 
     async fn modify_column_sql(
