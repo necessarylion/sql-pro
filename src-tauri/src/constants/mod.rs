@@ -6,8 +6,28 @@ pub const MAX_QUERY_ROWS: usize = 2000;
 /// How long we wait for a connection before we give up.
 pub const CONNECT_TIMEOUT_SECONDS: u64 = 10;
 
+/// Which build this is: `dev` for a debug build (`tauri dev` and `tauri build --debug`),
+/// empty for a release build. The two builds must never share saved data.
+pub const PROFILE: &str = if cfg!(debug_assertions) { "dev" } else { "" };
+
+/// The name of the plugin that tells the frontend the profile.
+pub const PROFILE_PLUGIN: &str = "profile";
+
+/// The frontend reads the profile from this global: `window.__SQL_PRO_PROFILE__`.
+pub const PROFILE_GLOBAL: &str = "__SQL_PRO_PROFILE__";
+
 /// The name under which passwords are stored in the OS keychain.
-pub const KEYCHAIN_SERVICE: &str = "SQL Pro";
+/// A debug build has its own name, so it can never read, change or delete
+/// the passwords of the release app. The same holds the other way round.
+pub const KEYCHAIN_SERVICE: &str = if cfg!(debug_assertions) {
+    "SQL Pro (dev)"
+} else {
+    "SQL Pro"
+};
+
+/// The account name of the one keychain item that holds all passwords.
+/// One item means one permission prompt. No password id may have this name.
+pub const KEYCHAIN_VAULT_ACCOUNT: &str = "sql-pro-vault";
 
 /// How long we wait for an SSH tunnel to come up.
 pub const SSH_TIMEOUT_SECONDS: u64 = 20;
@@ -50,3 +70,73 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// What we add to the path of a dump while it is being written.
 pub const PARTIAL_DUMP_SUFFIX: &str = ".part";
+
+/// The `MySQL` account host that means "from any host".
+pub const ANY_HOST: &str = "%";
+
+/// The longest `MySQL` user name, in characters.
+pub const MYSQL_USER_NAME_MAX: usize = 32;
+
+/// The longest `MySQL` account host, in characters.
+pub const MYSQL_HOST_MAX: usize = 255;
+
+/// The longest `PostgreSQL` role name, in bytes. The server cuts longer names silently.
+pub const POSTGRES_ROLE_NAME_MAX: usize = 63;
+
+/// Accounts that `MySQL` and `MariaDB` create for their own use.
+pub const MYSQL_SYSTEM_USERS: [&str; 4] = [
+    "mysql.sys",
+    "mysql.session",
+    "mysql.infoschema",
+    "mariadb.sys",
+];
+
+/// Every right that `GRANT ALL` on one `MySQL` database gives.
+/// An account that holds all of them can do everything in that database.
+pub const MYSQL_DATABASE_PRIVILEGES: [&str; 18] = [
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "CREATE",
+    "DROP",
+    "REFERENCES",
+    "INDEX",
+    "ALTER",
+    "CREATE TEMPORARY TABLES",
+    "LOCK TABLES",
+    "EXECUTE",
+    "CREATE VIEW",
+    "SHOW VIEW",
+    "CREATE ROUTINE",
+    "ALTER ROUTINE",
+    "EVENT",
+    "TRIGGER",
+];
+
+/// The error for an account that may not create, change or drop users.
+pub const CANNOT_MANAGE_USERS: &str = "Your account is not allowed to manage users";
+
+/// The error for a database kind that has no accounts.
+pub const NO_USER_ACCOUNTS: &str = "SQLite has no user accounts";
+
+/// Shown in place of a database message that could hold a password.
+pub const PASSWORD_ERROR_HIDDEN: &str = "The database refused the statement. The details are hidden because they could show the password.";
+
+/// The file name the program runs under in dev on macOS. The Dock shows it.
+pub const DEV_APP_NAME: &str = "SQL Pro";
+
+#[cfg(test)]
+mod tests {
+    use super::{KEYCHAIN_SERVICE, PROFILE};
+
+    /// Run with and without `--release` to check both builds.
+    #[test]
+    fn debug_and_release_keep_their_data_apart() {
+        let debug = cfg!(debug_assertions);
+        assert_eq!(PROFILE == "dev", debug);
+        assert_eq!(PROFILE.is_empty(), !debug);
+        assert_eq!(KEYCHAIN_SERVICE == "SQL Pro (dev)", debug);
+        assert_eq!(KEYCHAIN_SERVICE == "SQL Pro", !debug);
+    }
+}

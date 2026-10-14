@@ -64,6 +64,13 @@ export interface ColumnSpec {
   default: string | null
 }
 
+/** One column of a table that is created. */
+export interface NewColumn extends ColumnSpec {
+  primaryKey: boolean
+  /** The database numbers the rows itself. Only for a column that is the whole primary key. */
+  autoIncrement: boolean
+}
+
 export type FilterOperator =
   | 'eq'
   | 'neq'
@@ -108,7 +115,50 @@ export interface BrowseRequest {
 /** Column name -> value. */
 export type Values = Record<string, string | null>
 
-export type SessionView = 'structure' | 'content' | 'query'
+/** The pending edits of one row. `key` holds the primary key values as they were loaded. */
+export interface RowUpdate {
+  key: Values
+  changes: Values
+}
+
+export interface SaveResult {
+  updated: number
+  inserted: number
+  deleted: number
+}
+
+export type SessionView = 'structure' | 'content' | 'query' | 'users'
+
+/**
+ * What a user may do on the current database.
+ * `admin` = all rights. `custom` = some other mix of rights.
+ */
+export type AccessLevel = 'none' | 'read' | 'write' | 'admin' | 'custom'
+
+/** The levels that can be given to a user here. */
+export type GrantableAccess = 'none' | 'read' | 'write'
+
+export interface DbUser {
+  name: string
+  /** The account host of MySQL. null for PostgreSQL. */
+  host: string | null
+  access: AccessLevel
+  /** True for the account this connection is logged in as. */
+  current: boolean
+}
+
+/** `canManage` is false when the logged-in account may not manage users. */
+export interface UserList {
+  canManage: boolean
+  users: DbUser[]
+}
+
+export interface NewUser {
+  name: string
+  host: string | null
+  password: string
+  access: GrantableAccess
+}
 
 /** One column of the DataGrid component. */
 export interface GridColumn {

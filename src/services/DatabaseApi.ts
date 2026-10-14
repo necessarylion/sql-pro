@@ -3,9 +3,16 @@ import type {
   BrowseRequest,
   ColumnSpec,
   ConnectionConfig,
+  DbUser,
+  NewColumn,
+  GrantableAccess,
+  NewUser,
   ResultSet,
+  RowUpdate,
+  SaveResult,
   TablePage,
   TableRef,
+  UserList,
   Values,
 } from '../types'
 
@@ -17,6 +24,11 @@ import type {
 export class DatabaseApi {
   connect(id: string, config: ConnectionConfig): Promise<void> {
     return invoke('connect', { id, config })
+  }
+
+  /** Opens a new connection `newId` with the same settings as connection `id` uses now. */
+  cloneConnection(id: string, newId: string): Promise<void> {
+    return invoke('clone_connection', { id, newId })
   }
 
   disconnect(id: string): Promise<void> {
@@ -43,16 +55,19 @@ export class DatabaseApi {
     return invoke('run_query', { id, sql })
   }
 
-  updateRow(id: string, table: TableRef, key: Values, changes: Values): Promise<number> {
-    return invoke('update_row', { id, table, key, changes })
-  }
-
-  insertRow(id: string, table: TableRef, values: Values): Promise<number> {
-    return invoke('insert_row', { id, table, values })
-  }
-
-  deleteRows(id: string, table: TableRef, keys: Values[]): Promise<number> {
-    return invoke('delete_rows', { id, table, keys })
+  /**
+   * Saves all changes of a table in one transaction: the deletes, the updates, the inserts.
+   * `deletes` holds the primary keys of the rows to delete.
+   * When one change fails, nothing is saved.
+   */
+  saveChanges(
+    id: string,
+    table: TableRef,
+    updates: RowUpdate[],
+    inserts: Values[],
+    deletes: Values[],
+  ): Promise<SaveResult> {
+    return invoke('save_changes', { id, table, updates, inserts, deletes })
   }
 
   addColumn(id: string, table: TableRef, column: ColumnSpec): Promise<void> {
@@ -68,6 +83,15 @@ export class DatabaseApi {
     return invoke('alter_column', { id, table, name, column })
   }
 
+  createTable(id: string, name: string, columns: NewColumn[]): Promise<void> {
+    return invoke('create_table', { id, name, columns })
+  }
+
+  /** `name` is the new name. The table stays in its schema. */
+  renameTable(id: string, table: TableRef, name: string): Promise<void> {
+    return invoke('rename_table', { id, table, name })
+  }
+
   dropTable(id: string, table: TableRef): Promise<void> {
     return invoke('drop_table', { id, table })
   }
@@ -79,6 +103,27 @@ export class DatabaseApi {
   /** Writes a SQL dump of the current database to the file at `path`. */
   dumpDatabase(id: string, path: string): Promise<void> {
     return invoke('dump_database', { id, path })
+  }
+
+  listUsers(id: string): Promise<UserList> {
+    return invoke('list_users', { id })
+  }
+
+  createUser(id: string, user: NewUser): Promise<void> {
+    return invoke('create_user', { id, user })
+  }
+
+  dropUser(id: string, user: DbUser): Promise<void> {
+    return invoke('drop_user', { id, name: user.name, host: user.host })
+  }
+
+  /** Sets what the user may do on the current database. */
+  setUserAccess(id: string, user: DbUser, access: GrantableAccess): Promise<void> {
+    return invoke('set_user_access', { id, name: user.name, host: user.host, access })
+  }
+
+  setUserPassword(id: string, user: DbUser, password: string): Promise<void> {
+    return invoke('set_user_password', { id, name: user.name, host: user.host, password })
   }
 
   savePassword(id: string, password: string): Promise<void> {

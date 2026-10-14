@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { LockIcon, MinusIcon, TableIcon } from 'lucide-vue-next'
 import type { Session } from '../services/Session'
+import { TableDraft } from '../services/TableDraft'
 import type { ColumnSpec, GridColumn, Row, TablePage } from '../types'
 import BottomBar from './BottomBar.vue'
 import DataGrid from './DataGrid.vue'
@@ -124,12 +125,14 @@ function addColumn(): void {
 
 /** The form is cleared only when the column was added. */
 async function sendNewColumn(): Promise<void> {
-  await props.session.addColumn({
-    name: newName.value.trim(),
-    dataType: newType.value.trim(),
-    nullable: newNullable.value,
-    default: newDefault.value.trim() === '' ? null : newDefault.value,
-  })
+  await props.session.addColumn(
+    TableDraft.spec({
+      name: newName.value,
+      dataType: newType.value,
+      nullable: newNullable.value,
+      default: newDefault.value,
+    }),
+  )
   newName.value = ''
   newType.value = ''
   newNullable.value = true

@@ -72,11 +72,41 @@ pub struct ColumnSpec {
     pub default: Option<String>,
 }
 
+/// One column of a table that is created.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewColumn {
+    #[serde(flatten)]
+    pub spec: ColumnSpec,
+    pub primary_key: bool,
+    /// The database numbers the rows itself: 1, 2, 3.
+    /// Only for a column that is the whole primary key.
+    pub auto_increment: bool,
+}
+
 /// One row. Every value is text, or `None` for NULL.
 pub type Row = Vec<Option<String>>;
 
 /// Column name to value. Used for keys, changes and new rows.
 pub type Values = BTreeMap<String, Option<String>>;
+
+/// A change of one row. `key` is the primary key of the row, with its values
+/// from before the change.
+#[derive(Deserialize)]
+pub struct RowUpdate {
+    pub key: Values,
+    pub changes: Values,
+}
+
+/// What a saved batch of changes did.
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub struct SaveResult {
+    /// The updates that changed a row.
+    pub updated: usize,
+    pub inserted: usize,
+    /// The deletes that removed a row.
+    pub deleted: usize,
+}
 
 /// The outcome of one SQL statement.
 #[derive(Debug, Default, Serialize)]
@@ -138,4 +168,49 @@ pub enum FilterOperator {
     In,
     IsNull,
     IsNotNull,
+}
+
+/// What an account may do in the database the tab is connected to.
+/// `Admin` and `Custom` are only reported. They cannot be set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccessLevel {
+    /// No rights here.
+    None,
+    /// Can read all tables.
+    Read,
+    /// Can read all tables and change their rows.
+    Write,
+    /// Can do everything here.
+    Admin,
+    /// Anything else, like rights on single tables.
+    Custom,
+}
+
+/// One login account of the database server.
+#[derive(Clone, Debug, Serialize)]
+pub struct DbUser {
+    pub name: String,
+    /// The host part of a `MySQL` account. `None` for `PostgreSQL`.
+    pub host: Option<String>,
+    pub access: AccessLevel,
+    /// True for the account this connection is logged in as.
+    pub current: bool,
+}
+
+/// The accounts of a server, and whether the logged-in account may manage them.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserList {
+    pub can_manage: bool,
+    pub users: Vec<DbUser>,
+}
+
+/// An account to create. No `Debug` on purpose: it holds a password.
+#[derive(Deserialize)]
+pub struct NewUser {
+    pub name: String,
+    pub host: Option<String>,
+    pub password: String,
+    pub access: AccessLevel,
 }

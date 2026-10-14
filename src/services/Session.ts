@@ -1,18 +1,27 @@
-import { PAGE_SIZE } from '../constants'
+import { DELETE_ROWS_TITLE, PAGE_SIZE } from '../constants'
 import { RAW_FILTER_COLUMN, VALUELESS_OPERATORS } from '../constants/filters'
+import { ACCESS_LABELS } from '../constants/users'
 import type {
   ColumnSpec,
   ConnectionConfig,
+  DbUser,
+  GrantableAccess,
+  NewUser,
   FilterRow,
   FilterRule,
   ResultSet,
   Row,
+  RowUpdate,
   SessionView,
   TablePage,
   TableRef,
   Values,
 } from '../types'
 import type { DatabaseApi } from './DatabaseApi'
+import type { DiscardPrompt } from './DiscardPrompt'
+import { Environment } from './Environment'
+import { TableDraft } from './TableDraft'
+import type { ColumnDraft } from './TableDraft'
 
 const NEW_TITLE = 'New connection'
 
@@ -25,6 +34,8 @@ export class Session {
   title = NEW_TITLE
   /** null = not connected. The password is never kept here. */
   config: ConnectionConfig | null = null
+  /** The environment of the open connection, like `dev` or `prod`. '' = none. */
+  environment = ''
   busy = false
   error = ''
   databases: string[] = []
@@ -41,15 +52,31 @@ export class Session {
   filterRows: FilterRow[] = [this.emptyFilterRow()]
   orderBy = ''
   descending = false
-  /** A new row that is not saved yet. It is shown after the last page row. */
-  draft: Row | null = null
+  /**
+   * Cell edits that are not saved yet. One entry per changed row.
+   * The name of an entry is the primary key of the row as it was loaded.
+   */
+  edits: Record<string, RowUpdate> = {}
+  /** New rows that are not saved yet. They are shown after the last page row. */
+  newRows: Row[] = []
+  /**
+   * Loaded rows that are marked as deleted. They are deleted on save.
+   * The name of an entry is the primary key of the row. The value is that key.
+   */
+  deletes: Record<string, Values> = {}
   sql = ''
   result: ResultSet | null = null
   status = ''
+  /** The accounts of the server, with their access on the current database. */
+  users: DbUser[] = []
+  /** True when the logged-in account may manage users. The Users view needs it. */
+  canManageUsers = false
   private api: DatabaseApi
+  private prompt: DiscardPrompt
 
-  constructor(api: DatabaseApi) {
+  constructor(api: DatabaseApi, prompt: DiscardPrompt) {
     this.api = api
+    this.prompt = prompt
   }
 
   /** True when rows of the open table can be changed. */
@@ -70,6 +97,98 @@ export class Session {
     return this.filter !== '' || this.filters.length > 0
   }
 
+  /** The number of changed cells, plus the new rows, plus the rows marked as deleted. */
+  get pendingCount(): number {
+    let count = this.newRows.length + Object.keys(this.deletes).length
+    for (const update of Object.values(this.edits)) {
+      count += Object.keys(update.changes).length
+    }
+    return count
+  }
+
+  /** Like "4 unsaved changes". */
+  get unsavedText(): string {
+    return this.plural(this.pendingCount, 'unsaved change')
+  }
+
+  /** The rows the grid shows: the page rows with their pending edits, then the new rows. */
+  get shownRows(): Row[] {
+    if (!this.page) {
+      return []
+    }
+    const rows: Row[] = []
+    const noEdits = Object.keys(this.edits).length === 0
+    for (const row of this.page.rows) {
+      const changes = noEdits ? undefined : this.edits[this.rowId(row)]?.changes
+      if (!changes) {
+        rows.push(row)
+        continue
+      }
+      const shown = [...row]
+      for (const [index, column] of this.page.columns.entries()) {
+        if (column.name in changes) {
+          shown[index] = changes[column.name]
+        }
+      }
+      rows.push(shown)
+    }
+    return [...rows, ...this.newRows]
+  }
+
+  /** The cells with a pending edit: row number on the page -> column numbers. */
+  get changedCells(): Record<number, number[]> {
+    const cells: Record<number, number[]> = {}
+    if (!this.page || Object.keys(this.edits).length === 0) {
+      return cells
+    }
+    for (const [rowIndex, row] of this.page.rows.entries()) {
+      const changes = this.edits[this.rowId(row)]?.changes
+      if (!changes) {
+        continue
+      }
+      cells[rowIndex] = []
+      for (const [index, column] of this.page.columns.entries()) {
+        if (column.name in changes) {
+          cells[rowIndex].push(index)
+        }
+      }
+    }
+    return cells
+  }
+
+  /** The page rows that are marked as deleted, as row numbers on the page. */
+  get deletedRows(): number[] {
+    const rows: number[] = []
+    if (!this.page || Object.keys(this.deletes).length === 0) {
+      return rows
+    }
+    for (const [index, row] of this.page.rows.entries()) {
+      if (this.rowId(row) in this.deletes) {
+        rows.push(index)
+      }
+    }
+    return rows
+  }
+
+  /**
+   * The one place that asks before unsaved changes are lost.
+   * Every method that loads or removes the page calls this first.
+   * Returns true when the page may go. The unsaved changes are dropped then.
+   */
+  async mayDiscard(): Promise<boolean> {
+    const count = this.pendingCount
+    if (count === 0) {
+      return true
+    }
+    const sure = await this.prompt.ask(
+      `You have ${this.unsavedText} in "${this.table?.name}". Discard ${count === 1 ? 'it' : 'them'}?`,
+    )
+    if (sure) {
+      this.discardChanges()
+    }
+    return sure
+  }
+
   /**
    * The one place that handles busy state and errors.
    * Returns true when the work finished without an error.
@@ -88,36 +207,61 @@ export class Session {
     }
   }
 
-  async connect(config: ConnectionConfig, title: string): Promise<void> {
+  async connect(config: ConnectionConfig, title: string, environment = ''): Promise<void> {
     await this.api.connect(this.id, config)
-    this.config = { ...config, password: '', ssh: null }
-    this.title = title
-    this.databases = await this.api.listDatabases(this.id)
-    await this.loadTables()
+    await this.setUp(config, title, environment)
+  }
+
+  /**
+   * Connects this new tab as a copy of the connection of `source`.
+   * The backend copies the password. The frontend does not have it.
+   */
+  async cloneFrom(source: Session): Promise<void> {
+    if (!source.config) {
+      return
+    }
+    await this.api.cloneConnection(source.id, this.id)
+    try {
+      await this.setUp(source.config, source.title, source.environment)
+    } catch (error) {
+      // Do not leave a connection open that no tab shows.
+      await this.disconnect()
+      throw error
+    }
   }
 
   async disconnect(): Promise<void> {
+    if (!(await this.mayDiscard())) {
+      return
+    }
     try {
       await this.api.disconnect(this.id)
     } finally {
       // Go back to the connection form even when the backend fails.
       this.config = null
       this.title = NEW_TITLE
+      this.environment = ''
       this.databases = []
       this.tables = []
       this.result = null
       this.status = ''
       this.clearTable()
+      this.setUsers([], false)
     }
   }
 
   async useDatabase(name: string): Promise<void> {
+    if (!(await this.mayDiscard())) {
+      return
+    }
     await this.api.useDatabase(this.id, name)
     if (this.config) {
       this.config.database = name
     }
     this.clearTable()
     await this.loadTables()
+    // Access is per database, so the list is different now.
+    await this.loadUsers()
   }
 
   async loadTables(): Promise<void> {
@@ -125,15 +269,35 @@ export class Session {
   }
 
   async selectTable(table: TableRef): Promise<void> {
+    if (!(await this.mayDiscard())) {
+      return
+    }
     this.clearTable()
     this.table = table
-    if (this.view === 'query') {
+    if (this.view === 'query' || this.view === 'users') {
       this.view = 'content'
     }
     await this.loadPage()
   }
 
-  async loadPage(): Promise<void> {
+  /** Loads the rows again. */
+  async reload(): Promise<void> {
+    if (await this.mayDiscard()) {
+      await this.loadPage()
+    }
+  }
+
+  /** Loads again what the current view shows. The Query view has nothing to load. */
+  async refresh(): Promise<void> {
+    if (this.view === 'users') {
+      await this.loadUsers()
+    } else if (this.view !== 'query') {
+      await this.reload()
+    }
+  }
+
+  /** Does not ask about unsaved changes. Callers from outside use `reload`. */
+  private async loadPage(): Promise<void> {
     const table = this.table
     if (!table) {
       return
@@ -150,6 +314,7 @@ export class Session {
     // The user may have picked another table while this one was loading.
     if (this.table === table) {
       this.page = page
+      this.dropLostEdits()
       // A filter row made before the columns were known gets the first column now.
       for (const row of this.filterRows) {
         if (row.column === '') {
@@ -160,6 +325,9 @@ export class Session {
   }
 
   async sort(column: string): Promise<void> {
+    if (!(await this.mayDiscard())) {
+      return
+    }
     this.descending = this.orderBy === column && !this.descending
     this.orderBy = column
     this.offset = 0
@@ -171,6 +339,9 @@ export class Session {
    * Normal rows go to `filters`. Raw SQL rows are joined with AND into `filter`.
    */
   async applyFilters(): Promise<void> {
+    if (!(await this.mayDiscard())) {
+      return
+    }
     const filters: FilterRule[] = []
     const raw: string[] = []
     for (const row of this.filterRows) {
@@ -203,6 +374,9 @@ export class Session {
 
   /** Removes a filter row and applies the rest. There is always at least one row. */
   async removeFilterRow(index: number): Promise<void> {
+    if (!(await this.mayDiscard())) {
+      return
+    }
     this.filterRows.splice(index, 1)
     if (this.filterRows.length === 0) {
       this.filterRows.push(this.emptyFilterRow())
@@ -212,82 +386,153 @@ export class Session {
 
   async turnPage(direction: 1 | -1): Promise<void> {
     const next = this.offset + direction * PAGE_SIZE
-    if (!this.page || next < 0 || next >= this.page.total) {
+    if (!this.page || next < 0 || next >= this.page.total || !(await this.mayDiscard())) {
       return
     }
     this.offset = next
     await this.loadPage()
   }
 
-  async updateCell(rowIndex: number, columnIndex: number, value: string | null): Promise<void> {
-    if (!this.page || !this.table) {
+  /**
+   * Keeps a cell edit as a pending change. Nothing is sent before `saveChanges`.
+   * Setting a cell back to its loaded value removes the pending change.
+   */
+  updateCell(rowIndex: number, columnIndex: number, value: string | null): void {
+    if (!this.page) {
       return
     }
-    if (this.draft && rowIndex === this.page.rows.length) {
-      this.draft[columnIndex] = value
+    const row = this.page.rows[rowIndex]
+    if (!row) {
+      const newRow = this.newRows[rowIndex - this.page.rows.length]
+      if (newRow) {
+        newRow[columnIndex] = value
+      }
       return
     }
-    const changes: Values = { [this.page.columns[columnIndex].name]: value }
-    const count = await this.api.updateRow(
-      this.id,
-      this.table,
-      this.keyOf(this.page.rows[rowIndex]),
-      changes,
-    )
-    this.status = `${this.plural(count, 'row')} updated`
-    await this.loadPage()
-  }
-
-  addDraft(): void {
-    if (this.page && !this.draft) {
-      this.draft = new Array<string | null>(this.page.columns.length).fill(null)
-    }
-  }
-
-  discardDraft(): void {
-    this.draft = null
-  }
-
-  /** Sends only the columns the user set. The database fills in the rest. */
-  async saveDraft(): Promise<void> {
-    if (!this.page || !this.table || !this.draft) {
+    const id = this.rowId(row)
+    // A row that is marked as deleted cannot be edited.
+    if (id in this.deletes) {
       return
     }
-    const values: Values = {}
-    for (const [index, column] of this.page.columns.entries()) {
-      if (this.draft[index] !== null) {
-        values[column.name] = this.draft[index]
+    const name = this.page.columns[columnIndex].name
+    const update = this.edits[id] ?? { key: this.keyOf(row), changes: {} }
+    if (value === row[columnIndex]) {
+      delete update.changes[name]
+    } else {
+      update.changes[name] = value
+    }
+    if (Object.keys(update.changes).length > 0) {
+      this.edits[id] = update
+    } else {
+      delete this.edits[id]
+    }
+  }
+
+  /** Adds an empty new row below the last row. */
+  addRow(): void {
+    if (this.page) {
+      this.newRows.push(new Array<string | null>(this.page.columns.length).fill(null))
+    }
+  }
+
+  /** Drops all pending edits, all new rows and all delete marks. */
+  discardChanges(): void {
+    this.edits = {}
+    this.newRows = []
+    this.deletes = {}
+  }
+
+  /**
+   * Sends all pending edits, new rows and deletes in one transaction.
+   * Asks first when rows will be deleted. On "no" nothing is sent.
+   * On an error nothing is saved and the pending changes stay.
+   * A new row sends only the columns the user set. The database fills in the rest.
+   */
+  async saveChanges(): Promise<void> {
+    if (!this.page || !this.table || this.pendingCount === 0) {
+      return
+    }
+    const deletes = Object.values(this.deletes)
+    if (deletes.length > 0) {
+      const rows = this.plural(deletes.length, 'row')
+      const question = `Saving will delete ${rows} from "${this.table.name}". This cannot be undone. Continue?`
+      if (!(await this.prompt.ask(question, DELETE_ROWS_TITLE))) {
+        return
       }
     }
-    const count = await this.api.insertRow(this.id, this.table, values)
-    this.draft = null
-    this.status = `${this.plural(count, 'row')} added`
+    const inserts: Values[] = []
+    for (const row of this.newRows) {
+      const values: Values = {}
+      for (const [index, column] of this.page.columns.entries()) {
+        if (row[index] !== null) {
+          values[column.name] = row[index]
+        }
+      }
+      inserts.push(values)
+    }
+    const updates = Object.values(this.edits)
+    const result = await this.api.saveChanges(this.id, this.table, updates, inserts, deletes)
+    this.discardChanges()
+    const parts: string[] = []
+    if (updates.length > 0) {
+      parts.push(`${this.plural(result.updated, 'row')} updated`)
+    }
+    if (inserts.length > 0) {
+      parts.push(`${this.plural(result.inserted, 'row')} added`)
+    }
+    if (deletes.length > 0) {
+      parts.push(`${this.plural(result.deleted, 'row')} deleted`)
+    }
+    this.status = parts.join(', ')
     await this.loadPage()
   }
 
-  async deleteRows(indexes: number[]): Promise<void> {
-    if (!this.page || !this.table) {
-      return
-    }
-    const keys: Values[] = []
+  /** True when `deleteRows` would restore these rows: all of them are marked as deleted. */
+  restores(indexes: number[]): boolean {
+    const marked = this.deletedRows
     for (const index of indexes) {
-      if (index < this.page.rows.length) {
-        keys.push(this.keyOf(this.page.rows[index]))
-      } else {
-        // The draft row is not in the database yet.
-        this.draft = null
+      if (!marked.includes(index)) {
+        return false
       }
     }
-    if (keys.length === 0) {
+    return indexes.length > 0
+  }
+
+  /**
+   * Marks loaded rows as deleted. Nothing is sent before `saveChanges`.
+   * A marked row loses its pending edits. A new row is only removed from the list.
+   * When all the rows are marked already, the marks are removed again.
+   */
+  deleteRows(indexes: number[]): void {
+    if (!this.page) {
       return
     }
-    const count = await this.api.deleteRows(this.id, this.table, keys)
-    this.status = `${this.plural(count, 'row')} deleted`
-    await this.loadPage()
+    const restore = this.restores(indexes)
+    const loaded = this.page.rows.length
+    const kept: Row[] = []
+    for (const [index, row] of this.newRows.entries()) {
+      if (!indexes.includes(loaded + index)) {
+        kept.push(row)
+      }
+    }
+    this.newRows = kept
+    for (const index of indexes) {
+      const row = this.page.rows[index]
+      if (!row) {
+        continue
+      }
+      const id = this.rowId(row)
+      delete this.edits[id]
+      if (restore) {
+        delete this.deletes[id]
+      } else {
+        this.deletes[id] = this.keyOf(row)
+      }
+    }
   }
 
   async addColumn(spec: ColumnSpec): Promise<void> {
-    if (!this.table) {
+    if (!this.table || !(await this.mayDiscard())) {
       return
     }
     await this.api.addColumn(this.id, this.table, spec)
@@ -296,7 +541,7 @@ export class Session {
   }
 
   async dropColumn(name: string): Promise<void> {
-    if (!this.table) {
+    if (!this.table || !(await this.mayDiscard())) {
       return
     }
     await this.api.dropColumn(this.id, this.table, name)
@@ -309,7 +554,7 @@ export class Session {
 
   /** `name` is the current name of the column. `spec` is how it should look after. */
   async alterColumn(name: string, spec: ColumnSpec): Promise<void> {
-    if (!this.table) {
+    if (!this.table || !(await this.mayDiscard())) {
       return
     }
     try {
@@ -324,8 +569,59 @@ export class Session {
     }
   }
 
+  /**
+   * Creates a table, reloads the list and opens the new table on the Structure view.
+   * Bad input is refused here. Nothing is sent then.
+   */
+  async createTable(name: string, columns: ColumnDraft[]): Promise<void> {
+    const problem = TableDraft.problem(name, columns)
+    if (problem) {
+      throw problem
+    }
+    const newName = name.trim()
+    const before = this.tables
+    await this.api.createTable(this.id, newName, TableDraft.columns(columns))
+    this.status = `Table "${newName}" created`
+    await this.loadTables()
+    // PostgreSQL can have the same name in two schemas. Take the one that is new.
+    for (const table of this.tables) {
+      if (table.name === newName && !this.lists(before, table)) {
+        // The user may keep unsaved changes. Then the new table is not opened.
+        await this.selectTable(table)
+        if (this.isOpen(table)) {
+          this.view = 'structure'
+        }
+        return
+      }
+    }
+  }
+
+  /**
+   * Gives a table a new name and reloads the list.
+   * The open table stays open under its new name, with its filters and sort order.
+   */
+  async renameTable(table: TableRef, name: string): Promise<void> {
+    const newName = name.trim()
+    if (newName === '') {
+      throw 'The table needs a name'
+    }
+    const open = this.isOpen(table)
+    if (newName === table.name || (open && !(await this.mayDiscard()))) {
+      return
+    }
+    await this.api.renameTable(this.id, table, newName)
+    if (open) {
+      this.table = { ...table, name: newName }
+    }
+    this.status = `Table "${table.name}" renamed to "${newName}"`
+    await this.loadTables()
+  }
+
   /** Removes a table or a view. The backend picks DROP TABLE or DROP VIEW. */
   async dropTable(table: TableRef): Promise<void> {
+    if (this.isOpen(table) && !(await this.mayDiscard())) {
+      return
+    }
     await this.api.dropTable(this.id, table)
     if (this.isOpen(table)) {
       this.clearTable()
@@ -336,12 +632,52 @@ export class Session {
 
   /** Deletes all rows of a table. */
   async truncateTable(table: TableRef): Promise<void> {
+    if (this.isOpen(table) && !(await this.mayDiscard())) {
+      return
+    }
     await this.api.truncateTable(this.id, table)
     this.status = `Table "${table.name}" truncated`
     if (this.isOpen(table)) {
       this.offset = 0
       await this.loadPage()
     }
+  }
+
+  /**
+   * Loads the user list. It never throws.
+   * A failure means only that users cannot be managed here.
+   */
+  async loadUsers(): Promise<void> {
+    try {
+      const list = await this.api.listUsers(this.id)
+      this.setUsers(list.users, list.canManage)
+    } catch {
+      this.setUsers([], false)
+    }
+  }
+
+  async createUser(user: NewUser): Promise<void> {
+    await this.api.createUser(this.id, user)
+    this.status = `User "${user.name}" added`
+    await this.loadUsers()
+  }
+
+  async dropUser(user: DbUser): Promise<void> {
+    await this.api.dropUser(this.id, user)
+    this.status = `User "${user.name}" removed`
+    await this.loadUsers()
+  }
+
+  async setUserAccess(user: DbUser, access: GrantableAccess): Promise<void> {
+    await this.api.setUserAccess(this.id, user, access)
+    this.status = `Access of "${user.name}" set to ${ACCESS_LABELS[access]}`
+    await this.loadUsers()
+  }
+
+  /** The password is never put in the status. */
+  async setUserPassword(user: DbUser, password: string): Promise<void> {
+    await this.api.setUserPassword(this.id, user, password)
+    this.status = `Password of "${user.name}" changed`
   }
 
   /** The file name we offer for a backup made at `now`, like `shop-2026-01-31-0905.sql`. */
@@ -365,6 +701,16 @@ export class Session {
   /** The table list is replaced on refresh, so compare by name and not by object. */
   isOpen(table: TableRef): boolean {
     return this.table?.name === table.name && this.table.schema === table.schema
+  }
+
+  /** True when `table` is in `tables`. */
+  private lists(tables: TableRef[], table: TableRef): boolean {
+    for (const known of tables) {
+      if (known.name === table.name && known.schema === table.schema) {
+        return true
+      }
+    }
+    return false
   }
 
   /** Shows the last result that has columns. Adds up the affected rows of the rest. */
@@ -394,7 +740,40 @@ export class Session {
     await this.loadTables()
   }
 
-  /** The primary key columns of a row, with their current values. */
+  /** The part of `connect` that runs after the backend is connected. */
+  private async setUp(config: ConnectionConfig, title: string, environment: string): Promise<void> {
+    this.config = { ...config, password: '', ssh: null }
+    this.title = title
+    this.environment = Environment.clean(environment)
+    this.databases = await this.api.listDatabases(this.id)
+    await this.loadTables()
+    await this.loadUsers()
+  }
+
+  /** Names a loaded row by its primary key values. */
+  private rowId(row: Row): string {
+    return JSON.stringify(this.keyOf(row))
+  }
+
+  /** Rows that are not on the page any more lose their pending edits and delete marks. */
+  private dropLostEdits(): void {
+    if (!this.page || Object.keys(this.edits).length + Object.keys(this.deletes).length === 0) {
+      return
+    }
+    const onPage = new Set<string>()
+    for (const row of this.page.rows) {
+      onPage.add(this.rowId(row))
+    }
+    for (const pending of [this.edits, this.deletes]) {
+      for (const id of Object.keys(pending)) {
+        if (!onPage.has(id)) {
+          delete pending[id]
+        }
+      }
+    }
+  }
+
+  /** The primary key columns of a loaded row, with the values as they were loaded. */
   private keyOf(row: Row): Values {
     const key: Values = {}
     for (const [index, column] of (this.page?.columns ?? []).entries()) {
@@ -405,10 +784,19 @@ export class Session {
     return key
   }
 
+  /** Leaves the Users view when it is not allowed any more. */
+  private setUsers(users: DbUser[], canManage: boolean): void {
+    this.users = users
+    this.canManageUsers = canManage
+    if (!canManage && this.view === 'users') {
+      this.view = 'content'
+    }
+  }
+
   private clearTable(): void {
     this.table = null
     this.page = null
-    this.draft = null
+    this.discardChanges()
     this.offset = 0
     this.filter = ''
     this.filters = []

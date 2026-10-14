@@ -5,16 +5,17 @@ import {
   type Theme,
   type ThemeChoice,
 } from '../constants/theme'
+import type { ProfileStorage } from './ProfileStorage'
 import type { WindowTheme } from './WindowTheme'
 
 /** Keeps the chosen theme and puts it on the page and on the native window. */
 export class ThemeService {
   choice: ThemeChoice = DEFAULT_THEME
-  private storage: Storage
+  private storage: ProfileStorage
   private windowTheme: WindowTheme
   private media: MediaQueryList
 
-  constructor(storage: Storage, windowTheme: WindowTheme, media: MediaQueryList) {
+  constructor(storage: ProfileStorage, windowTheme: WindowTheme, media: MediaQueryList) {
     this.storage = storage
     this.windowTheme = windowTheme
     this.media = media

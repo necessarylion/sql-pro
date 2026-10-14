@@ -2,6 +2,7 @@
 import { expect, test } from 'bun:test'
 import type { DatabaseApi } from '../src/services/DatabaseApi'
 import { Session } from '../src/services/Session'
+import { FakePrompt } from './FakePrompt'
 import type { ConnectionConfig } from '../src/types'
 
 class FakeApi {
@@ -21,7 +22,7 @@ function config(driver: ConnectionConfig['driver'], database: string): Connectio
 
 test('backup sends the tab id and the path, then reports where the file is', async function () {
   const api = new FakeApi()
-  const session = new Session(api as unknown as DatabaseApi)
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
 
   expect(await session.run(session.backup('/tmp/shop.sql'))).toBe(true)
   expect(api.dumps).toEqual([{ id: session.id, path: '/tmp/shop.sql' }])
@@ -34,7 +35,7 @@ test('backup sends the tab id and the path, then reports where the file is', asy
 })
 
 test('the backup file name has the database name and the local time', function () {
-  const session = new Session(new FakeApi() as unknown as DatabaseApi)
+  const session = new Session(new FakeApi() as unknown as DatabaseApi, new FakePrompt())
   const now = new Date(2026, 0, 31, 9, 5)
   expect(session.backupName(now)).toBe('backup-2026-01-31-0905.sql')
 

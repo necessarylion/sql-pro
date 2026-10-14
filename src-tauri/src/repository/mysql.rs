@@ -4,11 +4,34 @@ use async_trait::async_trait;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPool, MySqlQueryResult, MySqlRow};
 use sqlx::{MySql, Row as _};
 
+use std::collections::{BTreeSet, HashMap};
+
 use super::{
-    Repository, bytes_to_text, cell, collect, default_sql, first_column, kind, pool_options, single,
+    Repository, Statement, bytes_to_text, cell, collect, default_sql, execute_all, first_column,
+    kind, password_safe, pool_options, single,
+};
+use crate::constants::{
+    ANY_HOST, MYSQL_DATABASE_PRIVILEGES, MYSQL_HOST_MAX, MYSQL_SYSTEM_USERS, MYSQL_USER_NAME_MAX,
 };
 use crate::error::{AppError, AppResult};
-use crate::model::{ColumnInfo, ColumnSpec, ConnectionConfig, ResultSet, TableRef};
+use crate::model::{
+    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, ResultSet, TableRef, UserList,
+};
+
+/// The right that is no right. `MySQL` lists it for an account that has nothing.
+const USAGE: &str = "USAGE";
+
+/// One grant inside the current database: on the whole database, or on one table.
+struct Grant {
+    /// The account, as `information_schema` writes it: `'name'@'host'`.
+    grantee: String,
+    /// What the grant is on, ready for SQL: `` `db`.* `` or `` `db`.`table` ``.
+    target: String,
+    on_table: bool,
+    privileges: Vec<String>,
+    /// The account may pass these rights on.
+    grantable: bool,
+}
 
 pub struct MysqlRepository {
     pool: MySqlPool,
@@ -109,6 +132,203 @@ impl MysqlRepository {
         )
     }
 
+    /// The account this connection is logged in as: name and host.
+    async fn current_account(&self) -> AppResult<(String, String)> {
+        let set = single(self.query("SELECT CURRENT_USER()").await?);
+        let account = set.rows.first().map(|row| cell(row, 0)).unwrap_or_default();
+        // A host never holds an `@`, a name can.
+        let (name, host) = account.rsplit_once('@').unwrap_or((&account, ""));
+        Ok((name.to_owned(), host.to_owned()))
+    }
+
+    /// The selected database. `None` when the connection has none.
+    async fn database(&self) -> AppResult<Option<String>> {
+        let set = single(self.query("SELECT DATABASE()").await?);
+        Ok(set
+            .rows
+            .first()
+            .and_then(|row| row.first().cloned().flatten()))
+    }
+
+    /// Writes a text value as a SQL string, in the way the session reads strings.
+    ///
+    /// With the `NO_BACKSLASH_ESCAPES` mode a backslash is plain text and must
+    /// not be doubled. A doubled one would silently change a password.
+    async fn text(&self, value: &str) -> AppResult<String> {
+        let sql = "SELECT @@sql_mode LIKE '%NO_BACKSLASH_ESCAPES%'";
+        let set = single(self.query(sql).await?);
+        let plain_backslash = set.rows.first().is_some_and(|row| cell(row, 0) == "1");
+        let value = if plain_backslash {
+            value.to_owned()
+        } else {
+            value.replace('\\', "\\\\")
+        };
+        Ok(format!("'{}'", value.replace('\'', "''")))
+    }
+
+    /// The host of an account. An empty host means every host. Hosts are stored in lower case.
+    fn host(host: Option<&str>) -> String {
+        match host {
+            Some(host) if !host.is_empty() => host.to_lowercase(),
+            _ => ANY_HOST.to_owned(),
+        }
+    }
+
+    /// An account, ready for SQL: `'name'@'host'`.
+    async fn account(&self, name: &str, host: Option<&str>) -> AppResult<String> {
+        let host = Self::host(host);
+        Ok(format!(
+            "{}@{}",
+            self.text(name).await?,
+            self.text(&host).await?
+        ))
+    }
+
+    /// An account as `information_schema` writes it. That is not valid SQL: it escapes nothing.
+    fn grantee(name: &str, host: &str) -> String {
+        format!("'{name}'@'{host}'")
+    }
+
+    /// Splits a list that `GROUP_CONCAT` made.
+    fn split(list: &str) -> Vec<String> {
+        list.split(',').map(str::to_owned).collect()
+    }
+
+    /// The database rights each account holds on every database, by grantee.
+    /// An account without such rights is not in the map.
+    async fn global_rights(&self) -> AppResult<HashMap<String, Vec<String>>> {
+        let sql = format!(
+            "SELECT GRANTEE, GROUP_CONCAT(PRIVILEGE_TYPE) \
+            FROM information_schema.user_privileges \
+            WHERE PRIVILEGE_TYPE IN ('{}') GROUP BY GRANTEE",
+            MYSQL_DATABASE_PRIVILEGES.join("', '")
+        );
+        let set = single(self.query(&sql).await?);
+        let mut rights = HashMap::with_capacity(set.rows.len());
+        for row in &set.rows {
+            rights.insert(cell(row, 0), Self::split(&cell(row, 1)));
+        }
+        Ok(rights)
+    }
+
+    /// A database name as a pattern that matches only this name.
+    /// In a grant on a database, `_` and `%` are wildcards.
+    fn pattern(database: &str) -> String {
+        database
+            .replace('\\', "\\\\")
+            .replace('_', "\\_")
+            .replace('%', "\\%")
+    }
+
+    /// All grants inside `database`, of every account this connection may see.
+    // ponytail: a grant on a wildcard pattern that also matches this database, like
+    // `shop%`, is not found. Grants on routines are not found either. Match patterns
+    // and read `mysql.procs_priv` if such grants must show up.
+    async fn grants(&self, database: &str) -> AppResult<Vec<Grant>> {
+        let name = self.text(database).await?;
+        let pattern = self.text(&Self::pattern(database)).await?;
+        let sql = format!(
+            "SELECT GRANTEE, TABLE_SCHEMA, NULL, GROUP_CONCAT(PRIVILEGE_TYPE), MAX(IS_GRANTABLE) \
+            FROM information_schema.schema_privileges \
+            WHERE TABLE_SCHEMA IN ({name}, {pattern}) GROUP BY GRANTEE, TABLE_SCHEMA \
+            UNION ALL \
+            SELECT GRANTEE, TABLE_SCHEMA, TABLE_NAME, GROUP_CONCAT(DISTINCT PRIVILEGE_TYPE), \
+                MAX(IS_GRANTABLE) \
+            FROM (SELECT GRANTEE, TABLE_SCHEMA, TABLE_NAME, PRIVILEGE_TYPE, IS_GRANTABLE \
+                    FROM information_schema.table_privileges \
+                UNION ALL \
+                SELECT GRANTEE, TABLE_SCHEMA, TABLE_NAME, PRIVILEGE_TYPE, IS_GRANTABLE \
+                    FROM information_schema.column_privileges) table_grants \
+            WHERE TABLE_SCHEMA = {name} GROUP BY GRANTEE, TABLE_SCHEMA, TABLE_NAME"
+        );
+        let set = single(self.query(&sql).await?);
+        let mut grants = Vec::with_capacity(set.rows.len());
+        for row in &set.rows {
+            let schema = self.quote(&cell(row, 1));
+            let table = row.get(2).cloned().flatten();
+            let target = match &table {
+                Some(table) => format!("{schema}.{}", self.quote(table)),
+                None => format!("{schema}.*"),
+            };
+            grants.push(Grant {
+                grantee: cell(row, 0),
+                target,
+                on_table: table.is_some(),
+                privileges: Self::split(&cell(row, 3)),
+                grantable: cell(row, 4) == "YES",
+            });
+        }
+        Ok(grants)
+    }
+
+    /// The access level of one account, from its global rights and its grants in the database.
+    fn level(global: &[String], grants: &[&Grant]) -> AccessLevel {
+        let mut held: BTreeSet<&str> = global.iter().map(String::as_str).collect();
+        let mut table_grants = false;
+        for grant in grants {
+            if grant.on_table {
+                table_grants = true;
+            } else {
+                held.extend(grant.privileges.iter().map(String::as_str));
+            }
+        }
+        held.remove(USAGE);
+        let has_all = MYSQL_DATABASE_PRIVILEGES
+            .iter()
+            .all(|privilege| held.contains(privilege));
+        if has_all {
+            return AccessLevel::Admin;
+        }
+        if table_grants {
+            return AccessLevel::Custom;
+        }
+        if held.is_empty() {
+            return AccessLevel::None;
+        }
+        // Many read-only accounts also have SHOW VIEW. It changes no data, so we let it pass.
+        held.remove("SHOW VIEW");
+        // A `BTreeSet` is sorted, so the order here is fixed.
+        match held.into_iter().collect::<Vec<_>>()[..] {
+            ["SELECT"] => AccessLevel::Read,
+            ["DELETE", "INSERT", "SELECT", "UPDATE"] => AccessLevel::Write,
+            _ => AccessLevel::Custom,
+        }
+    }
+
+    /// The name and host of every account, without the built-in ones.
+    // ponytail: a MySQL 8 role looks like a normal account, so it is listed.
+    // A MariaDB role has an empty host, so those are skipped.
+    async fn accounts(&self) -> AppResult<Vec<(String, String)>> {
+        let sql = "SELECT User, Host FROM mysql.user ORDER BY User, Host";
+        let set = single(self.query(sql).await?);
+        let mut accounts = Vec::with_capacity(set.rows.len());
+        for row in &set.rows {
+            let (name, host) = (cell(row, 0), cell(row, 1));
+            if !host.is_empty() && !MYSQL_SYSTEM_USERS.contains(&name.as_str()) {
+                accounts.push((name, host));
+            }
+        }
+        Ok(accounts)
+    }
+
+    /// Can this account create and drop users? It needs the global `CREATE USER` right.
+    // ponytail: a right that comes from a role is not seen. Read the grants of the
+    // active roles if admins log in through roles.
+    async fn can_create_users(&self, grantee: &str) -> AppResult<bool> {
+        let sql = "SELECT GRANTEE FROM information_schema.user_privileges \
+            WHERE PRIVILEGE_TYPE = 'CREATE USER'";
+        let set = single(self.query(sql).await?);
+        Ok(first_column(&set).iter().any(|found| found == grantee))
+    }
+
+    /// Runs a statement that holds a password. The error never shows the password.
+    async fn run_secret(&self, sql: &str, password: &str) -> AppResult<()> {
+        match self.query(sql).await {
+            Ok(_) => Ok(()),
+            Err(error) => Err(password_safe(error, password)),
+        }
+    }
+
     /// `raw_sql` uses the text protocol, so every value arrives as text bytes.
     fn read(row: &MySqlRow, index: usize) -> Result<Option<String>, sqlx::Error> {
         let bytes: Option<&[u8]> = row.try_get_unchecked(index)?;
@@ -139,6 +359,14 @@ impl Repository for MysqlRepository {
         "() VALUES ()"
     }
 
+    fn rename_table_sql(&self, table: &str, new_name: &str) -> String {
+        format!("RENAME TABLE {table} TO {new_name}")
+    }
+
+    fn auto_increment(&self) -> &'static str {
+        "AUTO_INCREMENT"
+    }
+
     async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>> {
         let stream = sqlx::raw_sql(sql).fetch_many(&self.pool);
         collect::<MySql>(stream, Self::read, MySqlQueryResult::rows_affected).await
@@ -150,6 +378,12 @@ impl Repository for MysqlRepository {
             query = query.bind(param);
         }
         Ok(query.execute(&self.pool).await?.rows_affected())
+    }
+
+    // ponytail: a rollback does nothing on MyISAM tables, they have no transactions.
+    // Changes made before the failed one stay there. Only InnoDB is all or nothing.
+    async fn execute_all(&self, statements: Vec<Statement>) -> AppResult<Vec<u64>> {
+        execute_all(&self.pool, statements, MySqlQueryResult::rows_affected).await
     }
 
     async fn databases(&self) -> AppResult<Vec<String>> {
@@ -209,6 +443,143 @@ impl Repository for MysqlRepository {
         }
         statements.extend(default_sql(&table_sql, &column, old, new));
         Ok(statements)
+    }
+
+    async fn users(&self) -> AppResult<UserList> {
+        let me = self.current_account().await?;
+        let mut can_manage = self.can_create_users(&Self::grantee(&me.0, &me.1)).await?;
+        let mut accounts = vec![me.clone()];
+        if can_manage {
+            match self.accounts().await {
+                Ok(all) => accounts = all,
+                // The database says no: this account may not read the user table.
+                // Then it sees only itself.
+                Err(AppError::Database(sqlx::Error::Database(_))) => can_manage = false,
+                Err(error) => return Err(error),
+            }
+        }
+        let global = self.global_rights().await?;
+        let grants = match self.database().await? {
+            Some(database) => self.grants(&database).await?,
+            None => Vec::new(),
+        };
+        let mut users = Vec::with_capacity(accounts.len());
+        for (name, host) in accounts {
+            let grantee = Self::grantee(&name, &host);
+            let own_global = global.get(&grantee).map_or(&[][..], Vec::as_slice);
+            let own_grants: Vec<&Grant> = grants
+                .iter()
+                .filter(|grant| grant.grantee == grantee)
+                .collect();
+            users.push(DbUser {
+                access: Self::level(own_global, &own_grants),
+                current: name == me.0 && host == me.1,
+                name,
+                host: Some(host),
+            });
+        }
+        Ok(UserList { can_manage, users })
+    }
+
+    async fn check_grantable(&self) -> AppResult<()> {
+        match self.database().await? {
+            Some(_) => Ok(()),
+            None => Err("Choose a database first. Access is set per database.".into()),
+        }
+    }
+
+    async fn create_user(&self, name: &str, host: Option<&str>, password: &str) -> AppResult<()> {
+        if name.chars().count() > MYSQL_USER_NAME_MAX {
+            return Err(AppError::Message(format!(
+                "The user name is too long. The limit is {MYSQL_USER_NAME_MAX} characters."
+            )));
+        }
+        if Self::host(host).chars().count() > MYSQL_HOST_MAX {
+            return Err(AppError::Message(format!(
+                "The host is too long. The limit is {MYSQL_HOST_MAX} characters."
+            )));
+        }
+        let sql = format!(
+            "CREATE USER {} IDENTIFIED BY {}",
+            self.account(name, host).await?,
+            self.text(password).await?
+        );
+        self.run_secret(&sql, password).await
+    }
+
+    async fn drop_user(&self, name: &str, host: Option<&str>) -> AppResult<()> {
+        let sql = format!("DROP USER {}", self.account(name, host).await?);
+        self.query(&sql).await?;
+        Ok(())
+    }
+
+    async fn set_user_password(
+        &self,
+        name: &str,
+        host: Option<&str>,
+        password: &str,
+    ) -> AppResult<()> {
+        let secret = self.text(password).await?;
+        let (my_name, my_host) = self.current_account().await?;
+        let own = name == my_name && Self::host(host) == my_host;
+        let version = single(self.query("SELECT VERSION()").await?);
+        let sql = if own && first_column(&version).concat().contains("MariaDB") {
+            // MariaDB wants the CREATE USER right for ALTER USER, even on your own account.
+            // This form needs no right. MySQL 8 does not know it.
+            format!("SET PASSWORD = PASSWORD({secret})")
+        } else {
+            format!(
+                "ALTER USER {} IDENTIFIED BY {secret}",
+                self.account(name, host).await?
+            )
+        };
+        self.run_secret(&sql, password).await
+    }
+
+    // ponytail: the statements run one by one, MySQL cannot roll back a GRANT.
+    // If one fails, the earlier ones stay. Setting the access again repairs it.
+    async fn set_user_access(
+        &self,
+        name: &str,
+        host: Option<&str>,
+        access: AccessLevel,
+    ) -> AppResult<()> {
+        self.check_grantable().await?;
+        let database = self.database().await?.unwrap_or_default();
+        let grantee = Self::grantee(name, &Self::host(host));
+        if self.global_rights().await?.contains_key(&grantee) {
+            return Err(
+                "This account has global rights. They count in every database, \
+                so its access to one database cannot be changed here."
+                    .into(),
+            );
+        }
+        let account = self.account(name, host).await?;
+        for grant in self.grants(&database).await? {
+            if grant.grantee != grantee {
+                continue;
+            }
+            let target = &grant.target;
+            // REVOKE ALL fails when the grant holds no right at all.
+            if grant.privileges.iter().any(|privilege| privilege != USAGE) {
+                let sql = format!("REVOKE ALL PRIVILEGES ON {target} FROM {account}");
+                self.query(&sql).await?;
+            }
+            // ALL does not cover the right to pass rights on.
+            if grant.grantable {
+                let sql = format!("REVOKE GRANT OPTION ON {target} FROM {account}");
+                self.query(&sql).await?;
+            }
+        }
+        let privileges = match access {
+            AccessLevel::Read => "SELECT",
+            AccessLevel::Write => "SELECT, INSERT, UPDATE, DELETE",
+            _ => return Ok(()),
+        };
+        let pattern = self.quote(&Self::pattern(&database));
+        let sql = format!("GRANT {privileges} ON {pattern}.* TO {account}");
+        self.query(&sql).await?;
+        Ok(())
     }
 
     async fn close(&self) {

@@ -3,13 +3,27 @@ import { expect, test } from 'bun:test'
 import type { DatabaseApi } from '../src/services/DatabaseApi'
 import { Session } from '../src/services/Session'
 import { RAW_FILTER_COLUMN } from '../src/constants/filters'
-import type { BrowseRequest, ResultSet, TablePage, TableRef, Values } from '../src/types'
+import type {
+  BrowseRequest,
+  ResultSet,
+  Row,
+  RowUpdate,
+  SaveResult,
+  TablePage,
+  TableRef,
+  Values,
+} from '../src/types'
+import { FakePrompt } from './FakePrompt'
 
 const USERS: TableRef = { schema: null, name: 'users', kind: 'table' }
 
 class FakeApi {
-  updates: { key: Values; changes: Values }[] = []
-  inserts: Values[] = []
+  saves: { updates: RowUpdate[]; inserts: Values[]; deletes: Values[] }[] = []
+  failSave = false
+  rows: Row[] = [
+    ['1', 'Ann'],
+    ['2', null],
+  ]
   requests: BrowseRequest[] = []
 
   async browse(_id: string, request: BrowseRequest): Promise<TablePage> {
@@ -33,22 +47,24 @@ class FakeApi {
           extra: '',
         },
       ],
-      rows: [
-        ['1', 'Ann'],
-        ['2', null],
-      ],
-      total: 2,
+      rows: structuredClone(this.rows),
+      total: this.rows.length,
     }
   }
 
-  async updateRow(_id: string, _table: TableRef, key: Values, changes: Values): Promise<number> {
-    this.updates.push({ key, changes })
-    return 1
-  }
-
-  async insertRow(_id: string, _table: TableRef, values: Values): Promise<number> {
-    this.inserts.push(values)
-    return 1
+  async saveChanges(
+    _id: string,
+    _table: TableRef,
+    updates: RowUpdate[],
+    inserts: Values[],
+    deletes: Values[],
+  ): Promise<SaveResult> {
+    if (this.failSave) {
+      throw 'Row 1 could not be saved: bad value'
+    }
+    // A copy, as the session clears its own lists after the call.
+    this.saves.push(structuredClone({ updates, inserts, deletes }))
+    return { updated: updates.length, inserted: inserts.length, deleted: deletes.length }
   }
 
   async runQuery(_id: string, sql: string): Promise<ResultSet[]> {
@@ -66,32 +82,228 @@ class FakeApi {
   }
 }
 
-async function openUsers(): Promise<{ api: FakeApi; session: Session }> {
+async function openUsers(): Promise<{ api: FakeApi; session: Session; prompt: FakePrompt }> {
   const api = new FakeApi()
-  const session = new Session(api as unknown as DatabaseApi)
+  const prompt = new FakePrompt()
+  const session = new Session(api as unknown as DatabaseApi, prompt)
   session.view = 'query'
   await session.selectTable(USERS)
-  return { api, session }
+  return { api, session, prompt }
 }
 
-test('a cell edit sends the primary key and only the changed column', async function () {
+test('a cell edit is pending and is not sent', async function () {
   const { api, session } = await openUsers()
   expect(session.view).toBe('content')
   expect(session.editable).toBe(true)
 
-  await session.updateCell(1, 1, 'Bob')
-  expect(api.updates).toEqual([{ key: { id: '2' }, changes: { name: 'Bob' } }])
+  session.updateCell(1, 1, 'Bob')
+  expect(api.saves).toEqual([])
+  expect(session.pendingCount).toBe(1)
+  expect(session.unsavedText).toBe('1 unsaved change')
+  // The grid shows the new value. The loaded page is not changed.
+  expect(session.shownRows[1]).toEqual(['2', 'Bob'])
+  expect(session.page?.rows[1]).toEqual(['2', null])
+  expect(session.changedCells).toEqual({ 1: [1] })
+
+  // Back to the loaded value: nothing is pending any more.
+  session.updateCell(1, 1, null)
+  expect(session.pendingCount).toBe(0)
+  expect(session.edits).toEqual({})
+  expect(session.changedCells).toEqual({})
 })
 
-test('a draft row is changed locally and saved without its NULL columns', async function () {
+test('saveChanges sends one update per row with the original key, and the new rows', async function () {
   const { api, session } = await openUsers()
-  session.addDraft()
-  await session.updateCell(2, 1, 'Cy')
-  expect(api.updates).toEqual([])
+  // Two cells of one row. One of them is the primary key.
+  session.updateCell(0, 0, '9')
+  session.updateCell(0, 1, 'Anna')
+  session.updateCell(1, 1, 'Bob')
+  session.addRow()
+  session.addRow()
+  session.updateCell(2, 1, 'Cy')
+  expect(session.pendingCount).toBe(5)
+  expect(session.shownRows.length).toBe(4)
 
-  await session.saveDraft()
-  expect(api.inserts).toEqual([{ name: 'Cy' }])
-  expect(session.draft).toBeNull()
+  expect(await session.run(session.saveChanges())).toBe(true)
+  expect(api.saves).toEqual([
+    {
+      updates: [
+        { key: { id: '1' }, changes: { id: '9', name: 'Anna' } },
+        { key: { id: '2' }, changes: { name: 'Bob' } },
+      ],
+      // Only the columns that were set. The second new row is empty.
+      inserts: [{ name: 'Cy' }, {}],
+      deletes: [],
+    },
+  ])
+  expect(session.pendingCount).toBe(0)
+  expect(session.newRows).toEqual([])
+  expect(session.status).toBe('2 rows updated, 2 rows added')
+  // The first load and the reload after the save.
+  expect(api.requests.length).toBe(2)
+
+  // Nothing is pending now, so nothing is sent.
+  await session.saveChanges()
+  expect(api.saves.length).toBe(1)
+})
+
+test('a failed save keeps the pending changes, discard drops them', async function () {
+  const { api, session } = await openUsers()
+  session.updateCell(0, 1, 'Anna')
+  session.addRow()
+  api.failSave = true
+
+  expect(await session.run(session.saveChanges())).toBe(false)
+  expect(session.error).toBe('Row 1 could not be saved: bad value')
+  expect(session.pendingCount).toBe(2)
+  expect(session.shownRows[0]).toEqual(['1', 'Anna'])
+  expect(api.requests.length).toBe(1)
+
+  session.discardChanges()
+  expect(session.pendingCount).toBe(0)
+  expect(session.shownRows).toEqual(session.page?.rows ?? [])
+})
+
+test('the guard asks before the page changes and keeps the changes on "no"', async function () {
+  const { api, session, prompt } = await openUsers()
+  // Nothing is pending: no question.
+  await session.sort('name')
+  expect(prompt.questions).toEqual([])
+  expect(api.requests.length).toBe(2)
+
+  session.updateCell(0, 1, 'Anna')
+  session.addRow()
+  prompt.answer = false
+  await session.sort('id')
+  await session.reload()
+  await session.applyFilters()
+  await session.selectTable({ ...USERS })
+  await session.disconnect()
+  expect(prompt.questions.length).toBe(5)
+  expect(prompt.questions[0]).toBe('You have 2 unsaved changes in "users". Discard them?')
+  expect(api.requests.length).toBe(2)
+  expect(session.orderBy).toBe('name')
+  expect(session.pendingCount).toBe(2)
+
+  prompt.answer = true
+  await session.sort('id')
+  expect(api.requests.length).toBe(3)
+  expect(session.orderBy).toBe('id')
+  expect(session.pendingCount).toBe(0)
+})
+
+test('deleting a row only marks it, and deleting it again restores it', async function () {
+  const { api, session, prompt } = await openUsers()
+  session.updateCell(0, 1, 'Anna')
+  session.updateCell(1, 1, 'Bob')
+  session.addRow()
+  session.addRow()
+  session.updateCell(3, 1, 'kept')
+
+  // Row 1, which has an edit, and the first new row.
+  expect(session.restores([1, 2])).toBe(false)
+  session.deleteRows([1, 2])
+  // Nothing is asked and nothing is sent.
+  expect(prompt.questions).toEqual([])
+  expect(api.saves).toEqual([])
+  // The new row is gone. The other new row stays.
+  expect(session.newRows).toEqual([[null, 'kept']])
+  // The marked row stays in the grid, with its loaded values. Its edit is dropped.
+  expect(session.deletedRows).toEqual([1])
+  expect(session.shownRows[1]).toEqual(['2', null])
+  expect(Object.values(session.edits)).toEqual([{ key: { id: '1' }, changes: { name: 'Anna' } }])
+  // One edit, one new row, one delete.
+  expect(session.pendingCount).toBe(3)
+
+  // A marked row cannot be edited.
+  session.updateCell(1, 1, 'Bob')
+  expect(session.shownRows[1]).toEqual(['2', null])
+  expect(session.pendingCount).toBe(3)
+
+  // A marked row and a row without a mark: the row without a mark gets one too.
+  expect(session.restores([0, 1])).toBe(false)
+  expect(session.restores([])).toBe(false)
+  // Only marked rows: the delete action restores them.
+  expect(session.restores([1])).toBe(true)
+  session.deleteRows([1])
+  expect(session.deletedRows).toEqual([])
+  expect(session.deletes).toEqual({})
+  expect(session.pendingCount).toBe(2)
+
+  // Discard clears the marks too.
+  session.deleteRows([0, 1])
+  expect(session.deletedRows).toEqual([0, 1])
+  expect(session.edits).toEqual({})
+  session.discardChanges()
+  expect(session.deletedRows).toEqual([])
+  expect(session.pendingCount).toBe(0)
+})
+
+test('saveChanges asks once, then sends the deletes with the edits and the new rows', async function () {
+  const { api, session, prompt } = await openUsers()
+  session.updateCell(0, 1, 'Anna')
+  session.addRow()
+  session.deleteRows([1])
+  expect(session.unsavedText).toBe('3 unsaved changes')
+
+  // "No" sends nothing and keeps everything.
+  prompt.answer = false
+  expect(await session.run(session.saveChanges())).toBe(true)
+  expect(prompt.questions).toEqual([
+    'Saving will delete 1 row from "users". This cannot be undone. Continue?',
+  ])
+  expect(api.saves).toEqual([])
+  expect(session.pendingCount).toBe(3)
+
+  prompt.answer = true
+  expect(await session.run(session.saveChanges())).toBe(true)
+  expect(prompt.questions.length).toBe(2)
+  expect(api.saves).toEqual([
+    {
+      updates: [{ key: { id: '1' }, changes: { name: 'Anna' } }],
+      inserts: [{}],
+      deletes: [{ id: '2' }],
+    },
+  ])
+  expect(session.status).toBe('1 row updated, 1 row added, 1 row deleted')
+  expect(session.pendingCount).toBe(0)
+  expect(session.deletedRows).toEqual([])
+
+  // A save without deletes does not ask.
+  session.updateCell(0, 1, 'Al')
+  await session.saveChanges()
+  expect(prompt.questions.length).toBe(2)
+  expect(api.saves.length).toBe(2)
+})
+
+test('a failed save keeps the delete marks, and the guard counts them', async function () {
+  const { api, session, prompt } = await openUsers()
+  session.updateCell(0, 1, 'Anna')
+  session.deleteRows([1])
+  api.failSave = true
+
+  expect(await session.run(session.saveChanges())).toBe(false)
+  expect(session.error).toBe('Row 1 could not be saved: bad value')
+  expect(session.deletedRows).toEqual([1])
+  expect(session.pendingCount).toBe(2)
+  // No reload after the failed save.
+  expect(api.requests.length).toBe(1)
+
+  // A delete mark alone is an unsaved change: the page may not go without a question.
+  session.updateCell(0, 1, 'Ann')
+  expect(session.pendingCount).toBe(1)
+  prompt.answer = false
+  await session.reload()
+  expect(prompt.questions[prompt.questions.length - 1]).toBe(
+    'You have 1 unsaved change in "users". Discard it?',
+  )
+  expect(session.deletedRows).toEqual([1])
+
+  // "Yes" on the reload clears the mark.
+  prompt.answer = true
+  await session.reload()
+  expect(session.deletedRows).toEqual([])
+  expect(api.requests.length).toBe(2)
 })
 
 test('runQuery keeps the last set with columns and reports the rest', async function () {

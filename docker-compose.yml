@@ -1,0 +1,28 @@
+# Local test databases for SQL Pro. Both give full admin access.
+# Host ports are 5433 and 3307, so they do not clash with a local Postgres or MySQL.
+# Ports are open on 127.0.0.1 only, because the passwords are weak.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      # "postgres" is the superuser.
+      POSTGRES_PASSWORD: root
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      # Let root log in from the host, not only from inside the container.
+      MYSQL_ROOT_HOST: "%"
+    ports:
+      - "127.0.0.1:3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  postgres_data:
+  mysql_data:

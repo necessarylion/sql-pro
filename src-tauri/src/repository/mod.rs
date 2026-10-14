@@ -15,15 +15,20 @@ use async_trait::async_trait;
 use futures_util::StreamExt as _;
 use futures_util::stream::BoxStream;
 use sqlx::pool::PoolOptions;
-use sqlx::{Column as _, Database, Either, Row as _};
+use sqlx::{Column as _, Database, Either, Encode, Executor, IntoArguments, Pool, Row as _, Type};
 
 pub use dump::DumpRepository;
-pub use password::PasswordRepository;
+pub use password::{Keychain, OsKeychain, PasswordRepository};
 pub use tunnel::SshTunnel;
 
-use crate::constants::{CONNECT_TIMEOUT_SECONDS, LOCALHOST, MAX_QUERY_ROWS};
-use crate::error::AppResult;
-use crate::model::{ColumnInfo, ColumnSpec, ConnectionConfig, Driver, ResultSet, Row, TableRef};
+use crate::constants::{
+    CONNECT_TIMEOUT_SECONDS, LOCALHOST, MAX_QUERY_ROWS, NO_USER_ACCOUNTS, PASSWORD_ERROR_HIDDEN,
+};
+use crate::error::{AppError, AppResult};
+use crate::model::{
+    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, Driver, ResultSet, Row, TableRef,
+    UserList,
+};
 
 /// Stops the console window that Windows opens for every tool a window app starts.
 /// Other systems open no such window, so nothing happens there.
@@ -60,6 +65,13 @@ pub trait Repository: Send + Sync {
     /// Runs one statement with bound values. Gives the number of changed rows.
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64>;
 
+    /// Runs the statements in one transaction, in the given order. All or nothing.
+    ///
+    /// Each statement may change at most one row. When one fails or would change
+    /// more, everything is rolled back and the error names the statement.
+    /// Gives the number of changed rows of each statement.
+    async fn execute_all(&self, statements: Vec<Statement>) -> AppResult<Vec<u64>>;
+
     async fn databases(&self) -> AppResult<Vec<String>>;
 
     async fn tables(&self) -> AppResult<Vec<TableRef>>;
@@ -77,10 +89,68 @@ pub trait Repository: Send + Sync {
         new: &ColumnSpec,
     ) -> AppResult<Vec<String>>;
 
+    /// The login accounts of the server, and what each may do in the current database.
+    /// The default is for a database without accounts: an empty list.
+    async fn users(&self) -> AppResult<UserList> {
+        Ok(UserList::default())
+    }
+
+    /// Fails when an access level cannot be set right now.
+    async fn check_grantable(&self) -> AppResult<()> {
+        Ok(())
+    }
+
+    /// Creates a login account with no rights. `host` is only used by `MySQL`.
+    /// The caller has checked the texts for control characters.
+    async fn create_user(
+        &self,
+        _name: &str,
+        _host: Option<&str>,
+        _password: &str,
+    ) -> AppResult<()> {
+        Err(NO_USER_ACCOUNTS.into())
+    }
+
+    /// Removes a login account.
+    async fn drop_user(&self, _name: &str, _host: Option<&str>) -> AppResult<()> {
+        Err(NO_USER_ACCOUNTS.into())
+    }
+
+    /// Gives an account a new password.
+    async fn set_user_password(
+        &self,
+        _name: &str,
+        _host: Option<&str>,
+        _password: &str,
+    ) -> AppResult<()> {
+        Err(NO_USER_ACCOUNTS.into())
+    }
+
+    /// Makes the rights of an account on the current database exactly `access`:
+    /// it removes what the account has here, then grants the new level.
+    /// Rights on other databases and global rights stay as they are.
+    async fn set_user_access(
+        &self,
+        _name: &str,
+        _host: Option<&str>,
+        _access: AccessLevel,
+    ) -> AppResult<()> {
+        Err(NO_USER_ACCOUNTS.into())
+    }
+
     /// The statement that deletes all rows of a table. `table` is already quoted.
     fn truncate_sql(&self, table: &str) -> String {
         format!("TRUNCATE TABLE {table}")
     }
+
+    /// The statement that renames a table. Both names are already quoted.
+    fn rename_table_sql(&self, table: &str, new_name: &str) -> String {
+        format!("ALTER TABLE {table} RENAME TO {new_name}")
+    }
+
+    /// The words that make a primary key column number its rows itself.
+    /// They go right after `PRIMARY KEY` in a `CREATE TABLE`.
+    fn auto_increment(&self) -> &'static str;
 
     /// The full, quoted name of a table.
     fn table_name(&self, table: &TableRef) -> String {
@@ -89,6 +159,19 @@ pub trait Repository: Send + Sync {
             None => self.quote(&table.name),
         }
     }
+}
+
+/// One statement of a batch, with its bound values.
+pub struct Statement {
+    /// What the error calls this statement, like `Row 3`.
+    pub label: String,
+    pub sql: String,
+    pub params: Vec<Option<String>>,
+}
+
+/// The error for a change of a batch that failed.
+pub fn not_saved(label: &str, error: &AppError) -> AppError {
+    AppError::Message(format!("{label} could not be saved: {error}"))
 }
 
 /// Opens the right repository for a connection config.
@@ -133,6 +216,45 @@ fn pool_options<DB: Database>() -> PoolOptions<DB> {
         .idle_timeout(None)
         .max_lifetime(None)
         .acquire_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
+}
+
+/// Runs the statements in one transaction on the one connection of the pool.
+/// See `Repository::execute_all`.
+// ponytail: a transaction that the user opened by hand in the query editor is
+// not seen here. MySQL commits it first, PostgreSQL commits it with the batch,
+// and SQLite refuses the batch. Track open transactions if that hurts.
+async fn execute_all<DB>(
+    pool: &Pool<DB>,
+    statements: Vec<Statement>,
+    affected: fn(&DB::QueryResult) -> u64,
+) -> AppResult<Vec<u64>>
+where
+    DB: Database,
+    for<'conn> &'conn mut DB::Connection: Executor<'conn, Database = DB>,
+    for<'args> DB::Arguments<'args>: IntoArguments<'args, DB>,
+    for<'args> Option<String>: Encode<'args, DB> + Type<DB>,
+{
+    let mut transaction = pool.begin().await?;
+    let mut counts = Vec::with_capacity(statements.len());
+    for statement in statements {
+        let mut query = sqlx::query(&statement.sql);
+        for param in statement.params {
+            query = query.bind(param);
+        }
+        let error = match query.execute(&mut *transaction).await {
+            Ok(result) if affected(&result) <= 1 => {
+                counts.push(affected(&result));
+                continue;
+            }
+            Ok(result) => AppError::Message(format!("it would change {} rows", affected(&result))),
+            Err(error) => error.into(),
+        };
+        // A failed rollback closes the connection, and that rolls back too.
+        let _ = transaction.rollback().await;
+        return Err(not_saved(&statement.label, &error));
+    }
+    transaction.commit().await?;
+    Ok(counts)
 }
 
 /// What sqlx streams back: rows, and one statement result after each statement.
@@ -256,6 +378,24 @@ fn double_quote(identifier: &str) -> String {
 // `E'...'` strings if such servers must work.
 fn literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Cleans the error of a statement that holds a password.
+///
+/// The message of a syntax error quotes a piece of the SQL, and that piece could
+/// be the password. So such a message is replaced. Other messages pass through.
+fn password_safe(error: AppError, password: &str) -> AppError {
+    let AppError::Database(sqlx::Error::Database(database)) = &error else {
+        return error;
+    };
+    let message = database.message();
+    // 42601 is the PostgreSQL code. MySQL has no code for syntax errors alone.
+    let syntax_error = database.code().as_deref() == Some("42601")
+        || message.starts_with("You have an error in your SQL syntax");
+    if syntax_error || message.contains(password) {
+        return PASSWORD_ERROR_HIDDEN.into();
+    }
+    error
 }
 
 /// Shows bytes as text when they are valid UTF-8, else as hex.

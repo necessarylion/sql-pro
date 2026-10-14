@@ -1,14 +1,73 @@
 <script setup lang="ts">
-import { useTemplateRef } from 'vue'
+import { onBeforeUnmount, onMounted, useTemplateRef } from 'vue'
 import { PlugIcon, PlusIcon, SettingsIcon, XIcon } from 'lucide-vue-next'
 import ConnectionForm from './components/ConnectionForm.vue'
 import DbBadge from './components/DbBadge.vue'
+import EnvBadge from './components/EnvBadge.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import Workspace from './components/Workspace.vue'
-import { SESSION_MANAGER, injectRequired } from './services/keys'
+import { SESSION_MANAGER, SHORTCUTS, ZOOM_SERVICE, injectRequired } from './services/keys'
+import type { Session } from './services/Session'
 
 const manager = injectRequired(SESSION_MANAGER)
+const shortcuts = injectRequired(SHORTCUTS)
+const zoomService = injectRequired(ZOOM_SERVICE)
 const settings = useTemplateRef<InstanceType<typeof SettingsDialog>>('settings')
+
+/** The dim text of a tab: the open table. Without one, the database. */
+function detail(session: Session): string {
+  if (session.table) {
+    return session.table.name
+  }
+  // For SQLite the database is the file path. The title already names it.
+  return session.config && session.config.driver !== 'sqlite' ? session.config.database : ''
+}
+
+/**
+ * The one place for the save, refresh and zoom keys. Only the active tab saves or refreshes.
+ * The default is always stopped. It would save or reload the whole page of the app.
+ */
+function onKey(event: KeyboardEvent): void {
+  // The zoom is for the whole app, also with no open connection.
+  const zoom = shortcuts.zoom(event)
+  if (zoom) {
+    event.preventDefault()
+    void zoomService.change(zoom)
+    if (manager.active) {
+      manager.active.status = `Zoom ${zoomService.percent}%`
+    }
+    return
+  }
+  const action = shortcuts.action(event)
+  if (!action) {
+    return
+  }
+  event.preventDefault()
+  const session = manager.active
+  if (!session?.config || session.busy) {
+    return
+  }
+  // An open cell editor is a textarea. Leaving it keeps its edit as a pending change.
+  if (document.activeElement instanceof HTMLTextAreaElement) {
+    document.activeElement.blur()
+  }
+  if (action === 'refresh') {
+    session.run(session.refresh())
+  } else if (session.view === 'content') {
+    session.run(session.saveChanges())
+  }
+}
+
+function listenForKeys(): void {
+  window.addEventListener('keydown', onKey)
+}
+
+function stopListening(): void {
+  window.removeEventListener('keydown', onKey)
+}
+
+onMounted(listenForKeys)
+onBeforeUnmount(stopListening)
 </script>
 
 <template>
@@ -17,26 +76,21 @@ const settings = useTemplateRef<InstanceType<typeof SettingsDialog>>('settings')
       The tab bar is also the title bar. The window buttons of macOS lie over its left end.
       A drag region only works on the element that is clicked, so the tabs stay clickable.
     -->
-    <div class="tabs" data-tauri-drag-region>
+    <div class="tabs" :class="{ mac: shortcuts.mac }" data-tauri-drag-region>
       <div class="strip">
         <div
           v-for="session in manager.sessions"
           :key="session.id"
           class="tab"
           :class="{ active: session.id === manager.activeId, connected: !!session.config }"
-          :title="session.title"
+          :title="detail(session) ? `${session.title} · ${detail(session)}` : session.title"
           @click="manager.activate(session)"
         >
           <DbBadge v-if="session.config" :driver="session.config.driver" />
           <PlugIcon v-else class="plug" :size="12" />
           <span class="title">{{ session.title }}</span>
-          <!-- For SQLite the database is the file path. The title already names it. -->
-          <span
-            v-if="session.config?.database && session.config.driver !== 'sqlite'"
-            class="database"
-          >
-            {{ session.config.database }}
-          </span>
+          <span v-if="detail(session)" class="database">{{ detail(session) }}</span>
+          <EnvBadge class="env" :name="session.environment" />
           <button
             class="icon close"
             title="Close tab"
@@ -77,14 +131,26 @@ const settings = useTemplateRef<InstanceType<typeof SettingsDialog>>('settings')
   height: 100vh;
 }
 
-/* The left padding is the room for the window buttons of macOS. */
+/*
+  The left padding is the room over the sidebar. Only the window buttons of macOS lie there.
+  It is 8px less than the sidebar, because the strip has 8px of padding before the first tab.
+  So the first tab starts exactly where the sidebar ends.
+*/
 .tabs {
   display: flex;
   flex: none;
   align-items: flex-end;
   height: 36px;
-  padding: 0 8px 0 78px;
+  padding: 0 8px 0 calc(var(--sidebar-fit) - 8px);
   background: var(--chrome);
+}
+
+/*
+  The window buttons of macOS do not zoom with the page. When the page is zoomed out,
+  the bar keeps its 36 real pixels, so the buttons do not hang over the area below.
+*/
+.tabs.mac {
+  height: max(36px, calc(36px / var(--zoom)));
 }
 
 /* ponytail: very many tabs are cut at the right. Add scrolling when someone needs it. */
@@ -98,11 +164,19 @@ const settings = useTemplateRef<InstanceType<typeof SettingsDialog>>('settings')
   overflow: hidden;
 }
 
-/* The tabs share the width. They shrink when there are many. */
+/*
+  The tabs share the width. They shrink when there are many.
+  The width must be a real `width`. The container query below makes the content
+  count as zero wide, and the strip takes its own width from the tabs. With only
+  a flex basis the strip, and so every tab, falls to the smallest width.
+*/
 .tab {
   position: relative;
   display: flex;
-  flex: 0 1 220px;
+  flex: 0 1 auto;
+  width: 220px;
+  /* Lets the environment badge ask how wide its tab is. */
+  container-type: inline-size;
   gap: 7px;
   align-items: center;
   min-width: 90px;
@@ -185,11 +259,22 @@ const settings = useTemplateRef<InstanceType<typeof SettingsDialog>>('settings')
   flex: 1 1 auto;
 }
 
-/* The database name gives up its room first. */
+/* The table or database name gives up its room first. */
 .database {
   flex: 0 100 auto;
   color: var(--text-2);
   font-weight: 400;
+}
+
+/* A long environment name is cut. In a narrow tab the badge goes, so the name stays. */
+.env {
+  max-width: 72px;
+}
+
+@container (max-width: 170px) {
+  .env {
+    display: none;
+  }
 }
 
 .close {

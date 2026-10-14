@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { confirm } from '@tauri-apps/plugin-dialog'
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -8,25 +7,27 @@ import {
   MinusIcon,
   PlusIcon,
   RefreshCwIcon,
+  Undo2Icon,
 } from 'lucide-vue-next'
 import { PAGE_SIZE } from '../constants'
+import { SHORTCUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
-import type { GridColumn, Row, TablePage } from '../types'
+import type { GridColumn, TablePage } from '../types'
 import BottomBar from './BottomBar.vue'
 import DataGrid from './DataGrid.vue'
 import FilterBar from './FilterBar.vue'
 
 // The parent shows this view only when `session.page` is set.
 const props = defineProps<{ session: Session }>()
+const shortcuts = injectRequired(SHORTCUTS)
 
 const selected = ref<number[]>([])
 
 const gridColumns = computed(toGridColumns)
-const gridRows = computed(rowsWithDraft)
-const draftIndex = computed(indexOfDraft)
 const rangeText = computed(describeRange)
 const pageText = computed(describePage)
 const keyColumns = computed(primaryKeyNames)
+const restores = computed(selectionRestores)
 
 // Row numbers mean other rows after a reload. Drop the selection.
 watch(sessionPage, clearSelection)
@@ -45,15 +46,6 @@ function toGridColumns(): GridColumn[] {
     columns.push({ name: column.name, type: column.dataType, nullable: column.nullable })
   }
   return columns
-}
-
-function rowsWithDraft(): Row[] {
-  const rows = props.session.page?.rows ?? []
-  return props.session.draft ? [...rows, props.session.draft] : rows
-}
-
-function indexOfDraft(): number | undefined {
-  return props.session.draft ? props.session.page?.rows.length : undefined
 }
 
 function describeRange(): string {
@@ -83,19 +75,26 @@ function primaryKeyNames(): string[] {
 }
 
 function edit(rowIndex: number, columnIndex: number, value: string | null): void {
-  props.session.run(props.session.updateCell(rowIndex, columnIndex, value))
+  props.session.updateCell(rowIndex, columnIndex, value)
 }
 
-async function deleteSelected(): Promise<void> {
-  const count = selected.value.length
-  const sure = await confirm(`Delete ${count} selected ${count === 1 ? 'row' : 'rows'}?`, {
-    title: 'Delete rows',
-    kind: 'warning',
-  })
-  if (sure) {
-    await props.session.deleteRows(selected.value)
-    selected.value = []
+/** True when all selected rows are marked as deleted. The delete button restores them then. */
+function selectionRestores(): boolean {
+  return props.session.restores(selected.value)
+}
+
+/** Marks the selected rows as deleted, or restores them. Nothing is sent before Save. */
+function deleteSelected(): void {
+  props.session.deleteRows(selected.value)
+  // The selected new rows are gone. The loaded rows stay selected, so a second click restores.
+  const loaded = props.session.page?.rows.length ?? 0
+  const kept: number[] = []
+  for (const index of selected.value) {
+    if (index < loaded) {
+      kept.push(index)
+    }
   }
+  selected.value = kept
 }
 </script>
 
@@ -105,42 +104,46 @@ async function deleteSelected(): Promise<void> {
   <DataGrid
     v-model:selected="selected"
     :columns="gridColumns"
-    :rows="gridRows"
+    :rows="session.shownRows"
     :editable="session.editable"
     :order-by="session.orderBy"
     :descending="session.descending"
-    :draft-index="draftIndex"
+    :new-from="session.page?.rows.length"
+    :changed="session.changedCells"
+    :deleted="session.deletedRows"
     :key-columns="keyColumns"
-    gutter
     @sort="session.run(session.sort($event))"
     @edit="edit"
   />
 
   <BottomBar :session="session">
-    <button
-      class="icon"
-      title="Add row"
-      :disabled="!session.editable || !!session.draft"
-      @click="session.addDraft()"
-    >
+    <button class="icon" title="Add row" :disabled="!session.editable" @click="session.addRow()">
       <PlusIcon :size="13" />
     </button>
     <button
       class="icon"
-      title="Delete selected rows"
+      :title="restores ? 'Restore selected rows' : 'Delete selected rows'"
       :disabled="!session.editable || selected.length === 0"
-      @click="session.run(deleteSelected())"
+      @click="deleteSelected"
     >
-      <MinusIcon :size="13" />
+      <Undo2Icon v-if="restores" :size="13" />
+      <MinusIcon v-else :size="13" />
     </button>
-    <button class="icon" title="Reload rows" @click="session.run(session.loadPage())">
+    <button
+      class="icon"
+      :title="`Reload rows (${shortcuts.hint('R')})`"
+      @click="session.run(session.reload())"
+    >
       <RefreshCwIcon :size="13" />
     </button>
     <span class="divider" />
-    <template v-if="session.draft">
-      <span class="pill unsaved"><span class="dot" />1 unsaved row</span>
-      <button @click="session.discardDraft()">Discard</button>
-      <button class="primary" @click="session.run(session.saveDraft())">Save row</button>
+    <template v-if="session.pendingCount > 0">
+      <span class="pill unsaved"><span class="dot" />{{ session.unsavedText }}</span>
+      <button :disabled="session.busy" @click="session.discardChanges()">Discard</button>
+      <button class="primary" :disabled="session.busy" @click="session.run(session.saveChanges())">
+        Save changes
+        <span class="hint">{{ shortcuts.hint('S') }}</span>
+      </button>
     </template>
     <span v-if="!session.editable" class="pill">
       <LockIcon :size="10" />

@@ -30,9 +30,49 @@
   --mysql: #b95c00;
   --postgres: #336791;
   --sqlite: #0f766e;
+  /* The six folder colours. A folder saves the name, like `red`. */
+  --folder-grey: #a6a7ad;
+  --folder-red: #ff8078;
+  --folder-orange: #f2a65c;
+  --folder-green: #3fb950;
+  --folder-blue: #78aaff;
+  --folder-purple: #b794f6;
   --font-ui: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, Menlo, Consolas, monospace;
+  /* The zoom factor of the window, 1 for 100%. ZoomService sets it on this element. */
+  --zoom: 1;
+  /*
+    The room for the window buttons of macOS, at the left end of the tab bar.
+    The buttons do not zoom with the page. So the room is divided by the zoom factor
+    and stays 78 real pixels wide.
+  */
+  --traffic-lights: calc(78px / var(--zoom));
+  /* The main area next to the sidebar keeps at least this width. */
+  --main-min: 320px;
+  /* The chosen sidebar width. LayoutService sets it on this element. */
+  --sidebar-width: 210px;
+  /*
+    The width that is really used. Both sidebars and the tab bar read this one value,
+    so the first tab always starts where the sidebar ends.
+  */
+  --sidebar-fit: max(var(--traffic-lights), min(var(--sidebar-width), 100vw - var(--main-min)));
+  /* The chosen height of the SQL editor. LayoutService sets it on this element. */
+  --editor-height: 220px;
   font: 12px/1.3 var(--font-ui);
+}
+
+/* On while a pane is resized: the cursor stays and no text gets selected. */
+:root.resizing,
+:root.resizing * {
+  cursor: col-resize !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
+/* The same for a drag up and down. */
+:root.resizing.rows,
+:root.resizing.rows * {
+  cursor: row-resize !important;
 }
 
 /* The light look. Set data-theme="light" on <html> to use it. */
@@ -61,6 +101,12 @@
   --warn: #a75a00;
   --stmt-highlight: #eef4ff;
   --syntax-type: #0f766e;
+  --folder-grey: #8c8d93;
+  --folder-red: #c8261b;
+  --folder-orange: #b95c00;
+  --folder-green: #1f9d55;
+  --folder-blue: #2563eb;
+  --folder-purple: #7c3aed;
 }
 
 * {
@@ -373,6 +419,7 @@ button.icon {
   width: 100%;
   height: 28px;
   padding: 0 10px;
+  overflow: hidden;
   border: 0;
   border-top: 1px solid var(--border);
   border-radius: 0;

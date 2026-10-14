@@ -3,6 +3,26 @@
 A small desktop SQL client, like Sequel Pro. It works with MySQL, PostgreSQL and SQLite.
 It is built with Tauri v2 (Rust backend) and Vue 3 + TypeScript (frontend).
 
+## Install
+
+**macOS and Linux**, in the Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/necessarylion/sql-pro/main/install.sh | sh
+```
+
+- macOS (Apple silicon and Intel): it puts `SQL Pro.app` in your Applications folder.
+- Linux (64-bit Intel, AMD and ARM): it installs the `.deb` or the `.rpm` with the package manager of your system, and asks for your password. A system without `apt`, `dnf`, `yum` or `zypper` gets the AppImage in `~/.local/bin`.
+
+**Windows** (64-bit Intel, AMD and ARM), in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/necessarylion/sql-pro/main/install.ps1 | iex
+```
+
+Run the same line again to update. The app is not signed, so install it with these lines.
+A file you download with a browser from the [releases](https://github.com/necessarylion/sql-pro/releases) page (`.dmg`, `.msi`, `.exe`, `.deb`, `.rpm`, `.AppImage`) shows a warning on macOS and Windows.
+
 ## Run
 
 ```sh

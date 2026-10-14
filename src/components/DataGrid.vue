@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { ChevronDownIcon, ChevronUpIcon, KeyRoundIcon, PlusIcon } from 'lucide-vue-next'
-import { BINARY_TYPE_PATTERN, CELL_PREVIEW_LENGTH, NUMERIC_TYPE_PATTERN } from '../constants'
+import { computed, onBeforeUnmount, ref, watch, type CSSProperties } from 'vue'
+import { ChevronDownIcon, ChevronUpIcon, KeyRoundIcon } from 'lucide-vue-next'
+import {
+  BINARY_TYPE_PATTERN,
+  CELL_PREVIEW_LENGTH,
+  COLUMN_MIN_WIDTH,
+  NUMERIC_TYPE_PATTERN,
+} from '../constants'
 import type { GridColumn, Row } from '../types'
 
 const props = defineProps<{
@@ -11,12 +16,14 @@ const props = defineProps<{
   /** Give this (even as '') to make the headers sortable. */
   orderBy?: string
   descending?: boolean
-  /** Shows the narrow first column that marks the new row. */
-  gutter?: boolean
   /** The names of the primary key columns. Their headers get a key icon. */
   keyColumns?: string[]
-  /** The row to highlight as new. */
-  draftIndex?: number
+  /** Rows from this number on are new rows. They are highlighted. */
+  newFrom?: number
+  /** The cells with an unsaved edit: row number -> column numbers. */
+  changed?: Record<number, number[]>
+  /** The row numbers that are marked as deleted. They are crossed out and cannot be edited. */
+  deleted?: number[]
 }>()
 
 const emit = defineEmits<{
@@ -38,6 +45,86 @@ const vFocus = {
   },
 }
 
+// The widths the user dragged, by column name. A column without one has its automatic width.
+const widths = ref<Record<string, number>>({})
+/** The name of the column that is being dragged. */
+const resizing = ref('')
+// A drag can end with a click on the header. That click must not sort.
+let skipSort = false
+const columnStyles = computed(stylesOfColumns)
+
+// Another table or another query result starts with automatic widths.
+watch(columnNames, resetWidths)
+// The grid can go away in the middle of a drag.
+onBeforeUnmount(stopResize)
+
+function columnNames(): string {
+  const names: string[] = []
+  for (const column of props.columns) {
+    names.push(column.name)
+  }
+  return names.join('\n')
+}
+
+function resetWidths(): void {
+  widths.value = {}
+}
+
+/** One style per column. All three are needed: a table cell ignores `width` alone. */
+function stylesOfColumns(): (CSSProperties | undefined)[] {
+  const styles: (CSSProperties | undefined)[] = []
+  for (const column of props.columns) {
+    const width = widths.value[column.name]
+    const size = `${width}px`
+    styles.push(width === undefined ? undefined : { width: size, minWidth: size, maxWidth: size })
+  }
+  return styles
+}
+
+/** The same drag as in PaneResizer: the capture sends all moves to the handle. */
+function startResize(event: PointerEvent, column: string): void {
+  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+  resizing.value = column
+  document.documentElement.classList.add('resizing')
+}
+
+/** The new width is the way from the left edge of the header cell to the mouse. */
+function resize(event: PointerEvent): void {
+  const header = (event.currentTarget as HTMLElement).parentElement
+  if (resizing.value && header) {
+    const width = event.clientX - header.getBoundingClientRect().left
+    widths.value[resizing.value] = Math.max(COLUMN_MIN_WIDTH, Math.round(width))
+  }
+}
+
+function stopResize(): void {
+  if (resizing.value) {
+    resizing.value = ''
+    skipSort = true
+    document.documentElement.classList.remove('resizing')
+  }
+}
+
+function allowSort(): void {
+  skipSort = false
+}
+
+function resetWidth(column: string): void {
+  delete widths.value[column]
+}
+
+function isChanged(rowIndex: number, columnIndex: number): boolean {
+  return props.changed?.[rowIndex]?.includes(columnIndex) ?? false
+}
+
+function isNew(rowIndex: number): boolean {
+  return props.newFrom !== undefined && rowIndex >= props.newFrom
+}
+
+function isDeleted(rowIndex: number): boolean {
+  return props.deleted?.includes(rowIndex) ?? false
+}
+
 function preview(value: string): string {
   return value.length > CELL_PREVIEW_LENGTH ? value.slice(0, CELL_PREVIEW_LENGTH) : value
 }
@@ -47,7 +134,7 @@ function isNumeric(columnIndex: number): boolean {
 }
 
 function sort(column: string): void {
-  if (props.orderBy !== undefined) {
+  if (props.orderBy !== undefined && !skipSort) {
     emit('sort', column)
   }
 }
@@ -78,7 +165,12 @@ function isEditing(rowIndex: number, columnIndex: number): boolean {
 
 function startEdit(rowIndex: number, columnIndex: number): void {
   const column = props.columns[columnIndex]
-  if (!props.editable || column.readOnly || BINARY_TYPE_PATTERN.test(column.type ?? '')) {
+  if (
+    !props.editable ||
+    column.readOnly ||
+    isDeleted(rowIndex) ||
+    BINARY_TYPE_PATTERN.test(column.type ?? '')
+  ) {
     return
   }
   text.value = props.rows[rowIndex][columnIndex] ?? ''
@@ -123,12 +215,12 @@ function onEnter(event: KeyboardEvent): void {
   <div class="grid">
     <table>
       <thead>
-        <tr>
-          <th v-if="gutter" class="gutter"></th>
+        <tr @pointerdown="allowSort">
           <th
             v-for="(column, columnIndex) in columns"
             :key="columnIndex"
             :class="{ sortable: orderBy !== undefined, numeric: isNumeric(columnIndex) }"
+            :style="columnStyles[columnIndex]"
             :title="column.type"
             @click="sort(column.name)"
           >
@@ -140,6 +232,17 @@ function onEnter(event: KeyboardEvent): void {
                 <ChevronUpIcon v-else :size="10" />
               </template>
             </span>
+            <span
+              class="resizer"
+              :class="{ dragging: resizing === column.name }"
+              title="Drag to resize. Double click to reset."
+              @pointerdown.left="startResize($event, column.name)"
+              @pointermove="resize"
+              @pointerup="stopResize"
+              @pointercancel="stopResize"
+              @click.stop
+              @dblclick.stop="resetWidth(column.name)"
+            />
           </th>
         </tr>
       </thead>
@@ -147,16 +250,22 @@ function onEnter(event: KeyboardEvent): void {
         <tr
           v-for="(row, rowIndex) in rows"
           :key="rowIndex"
-          :class="{ selected: isSelected(rowIndex), draft: rowIndex === draftIndex }"
+          :class="{
+            selected: isSelected(rowIndex),
+            draft: isNew(rowIndex),
+            deleted: isDeleted(rowIndex),
+          }"
           @click="select(rowIndex, $event)"
         >
-          <td v-if="gutter" class="gutter">
-            <PlusIcon v-if="rowIndex === draftIndex" :size="10" />
-          </td>
           <td
             v-for="(value, columnIndex) in row"
             :key="columnIndex"
-            :class="{ editing: isEditing(rowIndex, columnIndex), numeric: isNumeric(columnIndex) }"
+            :class="{
+              editing: isEditing(rowIndex, columnIndex),
+              numeric: isNumeric(columnIndex),
+              modified: isChanged(rowIndex, columnIndex),
+            }"
+            :style="columnStyles[columnIndex]"
             @dblclick="startEdit(rowIndex, columnIndex)"
           >
             <template v-if="isEditing(rowIndex, columnIndex)">
@@ -227,6 +336,27 @@ th.sortable {
   cursor: pointer;
 }
 
+/* The drag handle on the right edge of a header cell. */
+.resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+}
+
+.resizer:hover::after,
+.resizer.dragging::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  content: '';
+}
+
 .head {
   display: inline-flex;
   gap: 4px;
@@ -259,8 +389,17 @@ tbody tr:nth-child(even) {
   background: var(--row-alt);
 }
 
+/* A new row is green. A row that is marked as deleted is red and crossed out. */
 tbody tr.draft {
   background: var(--added);
+}
+
+tbody tr.deleted {
+  background: var(--deleted);
+}
+
+tbody tr.deleted td {
+  text-decoration: line-through;
 }
 
 tbody tr.selected {
@@ -268,22 +407,24 @@ tbody tr.selected {
   color: var(--on-accent);
 }
 
-.gutter {
-  width: 26px;
-  min-width: 26px;
-  padding: 0;
-  color: var(--success);
-  text-align: center;
-  -webkit-user-select: none;
-  user-select: none;
+/* A selected row keeps a thin line on its left edge that tells what it is. */
+tr.selected.draft td:first-child {
+  box-shadow: inset 3px 0 var(--success);
 }
 
-.gutter svg {
-  vertical-align: middle;
+tr.selected.deleted td:first-child {
+  box-shadow: inset 3px 0 var(--danger);
 }
 
-tr.selected .gutter {
-  color: inherit;
+/* A cell with an unsaved edit. It stays green in a selected row, with normal text. */
+tbody td.modified {
+  background: var(--added);
+  color: var(--text);
+}
+
+tr.selected td.modified .null {
+  color: var(--text-3);
+  opacity: 1;
 }
 
 .null {

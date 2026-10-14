@@ -5,8 +5,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRo
 use sqlx::{Row as _, Sqlite, TypeInfo as _, ValueRef as _};
 
 use super::{
-    Repository, bytes_to_text, cell, collect, double_quote, kind, literal, pool_options, single,
-    standard_columns,
+    Repository, Statement, bytes_to_text, cell, collect, double_quote, execute_all, kind, literal,
+    pool_options, single, standard_columns,
 };
 use crate::error::AppResult;
 use crate::model::{ColumnInfo, ColumnSpec, ConnectionConfig, ResultSet, TableRef};
@@ -66,6 +66,10 @@ impl Repository for SqliteRepository {
         format!("DELETE FROM {table}")
     }
 
+    fn auto_increment(&self) -> &'static str {
+        "AUTOINCREMENT"
+    }
+
     async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>> {
         let stream = sqlx::raw_sql(sql).fetch_many(&self.pool);
         collect::<Sqlite>(stream, Self::read, SqliteQueryResult::rows_affected).await
@@ -77,6 +81,10 @@ impl Repository for SqliteRepository {
             query = query.bind(param);
         }
         Ok(query.execute(&self.pool).await?.rows_affected())
+    }
+
+    async fn execute_all(&self, statements: Vec<Statement>) -> AppResult<Vec<u64>> {
+        execute_all(&self.pool, statements, SqliteQueryResult::rows_affected).await
     }
 
     /// A `SQLite` file is one database.

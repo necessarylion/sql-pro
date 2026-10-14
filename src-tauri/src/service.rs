@@ -6,13 +6,21 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::constants::{LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS};
+use crate::constants::{
+    ANY_HOST, CANNOT_MANAGE_USERS, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS, NO_USER_ACCOUNTS,
+};
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    BrowseRequest, ColumnInfo, ColumnSpec, ConnectionConfig, FilterOperator, FilterRule, ResultSet,
-    TablePage, TableRef, Values,
+    AccessLevel, BrowseRequest, ColumnInfo, ColumnSpec, ConnectionConfig, DbUser, Driver,
+    FilterOperator, FilterRule, NewColumn, NewUser, ResultSet, RowUpdate, SaveResult, TablePage,
+    TableRef, UserList, Values,
 };
-use crate::repository::{DumpRepository, Repository, RepositoryFactory, SshTunnel};
+use crate::repository::{
+    DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, not_saved,
+};
+
+/// The bound values of one statement.
+type Params = Vec<Option<String>>;
 
 /// The `kind` of a `TableRef` that is a view.
 const VIEW: &str = "view";
@@ -169,19 +177,7 @@ impl ConnectionService {
         }
         let repository = self.repository(id)?;
         let columns = repository.columns(table).await?;
-        let mut params = Vec::new();
-        let mut assignments = Vec::with_capacity(changes.len());
-        for (name, value) in changes {
-            let column = Self::column(&columns, &name)?;
-            params.push(value);
-            assignments.push(Self::equals(repository.as_ref(), column, params.len()));
-        }
-        let condition = Self::key_condition(repository.as_ref(), &columns, key, &mut params)?;
-        let sql = format!(
-            "UPDATE {} SET {} WHERE {condition}",
-            repository.table_name(table),
-            assignments.join(", ")
-        );
+        let (sql, params) = Self::update_sql(repository.as_ref(), table, &columns, key, changes)?;
         repository.execute(&sql, params).await
     }
 
@@ -189,46 +185,65 @@ impl ConnectionService {
     pub async fn insert_row(&self, id: &str, table: &TableRef, values: Values) -> AppResult<u64> {
         let repository = self.repository(id)?;
         let columns = repository.columns(table).await?;
-        let mut params = Vec::new();
-        let mut names = Vec::with_capacity(values.len());
-        let mut placeholders = Vec::with_capacity(values.len());
-        for (name, value) in values {
-            let column = Self::column(&columns, &name)?;
-            params.push(value);
-            names.push(repository.quote(&column.name));
-            placeholders.push(repository.placeholder(params.len(), &column.data_type));
-        }
-        let table = repository.table_name(table);
-        let sql = if names.is_empty() {
-            format!("INSERT INTO {table} {}", repository.default_values())
-        } else {
-            format!(
-                "INSERT INTO {table} ({}) VALUES ({})",
-                names.join(", "),
-                placeholders.join(", ")
-            )
-        };
+        let (sql, params) = Self::insert_sql(repository.as_ref(), table, &columns, values)?;
         repository.execute(&sql, params).await
     }
 
-    /// Deletes the rows that `keys` point at. Gives the number of deleted rows.
-    pub async fn delete_rows(
+    /// Writes many row changes at once: first the deletes, then the updates, then the new rows.
+    /// The deletes go first, so a new or changed row can take the key of a deleted row.
+    /// All or nothing. When one change fails, none of them is kept.
+    /// An update with no changes is skipped. `deletes` holds the keys of the rows to delete.
+    pub async fn save_changes(
         &self,
         id: &str,
         table: &TableRef,
-        keys: Vec<Values>,
-    ) -> AppResult<u64> {
+        updates: Vec<RowUpdate>,
+        inserts: Vec<Values>,
+        deletes: Vec<Values>,
+    ) -> AppResult<SaveResult> {
         let repository = self.repository(id)?;
-        let columns = repository.columns(table).await?;
-        let table = repository.table_name(table);
-        let mut deleted = 0;
-        for key in keys {
-            let mut params = Vec::new();
-            let condition = Self::key_condition(repository.as_ref(), &columns, key, &mut params)?;
-            let sql = format!("DELETE FROM {table} WHERE {condition}");
-            deleted += repository.execute(&sql, params).await?;
+        if updates.is_empty() && inserts.is_empty() && deletes.is_empty() {
+            return Ok(SaveResult::default());
         }
-        Ok(deleted)
+        let columns = repository.columns(table).await?;
+        let mut statements = Vec::with_capacity(deletes.len() + updates.len() + inserts.len());
+        for (index, key) in deletes.into_iter().enumerate() {
+            let label = format!("Deleted row {}", index + 1);
+            let built = Self::delete_sql(repository.as_ref(), table, &columns, key);
+            statements.push(Self::statement(label, built)?);
+        }
+        let delete_count = statements.len();
+        for (index, update) in updates.into_iter().enumerate() {
+            if update.changes.is_empty() {
+                continue;
+            }
+            let label = format!("Row {}", index + 1);
+            let RowUpdate { key, changes } = update;
+            let built = Self::update_sql(repository.as_ref(), table, &columns, key, changes);
+            statements.push(Self::statement(label, built)?);
+        }
+        let update_end = statements.len();
+        for (index, values) in inserts.into_iter().enumerate() {
+            let label = format!("New row {}", index + 1);
+            let built = Self::insert_sql(repository.as_ref(), table, &columns, values);
+            statements.push(Self::statement(label, built)?);
+        }
+        if statements.is_empty() {
+            return Ok(SaveResult::default());
+        }
+        let counts = repository.execute_all(statements).await?;
+        Ok(SaveResult {
+            updated: Self::changed(&counts[delete_count..update_end]),
+            inserted: counts.len() - update_end,
+            deleted: Self::changed(&counts[..delete_count]),
+        })
+    }
+
+    /// Opens a second connection under `new_id`, with the settings that `id` uses now.
+    /// It is on its own: it has its own SSH tunnel, and closing one leaves the other open.
+    pub async fn clone_connection(&self, id: &str, new_id: String) -> AppResult<()> {
+        let config = self.connection(id)?.config;
+        self.connect(new_id, config).await
     }
 
     /// Adds a column to a table.
@@ -238,20 +253,73 @@ impl ConnectionService {
         table: &TableRef,
         column: &ColumnSpec,
     ) -> AppResult<()> {
-        Self::check_spec(column)?;
         let repository = self.repository(id)?;
-        let mut definition = format!("{} {}", repository.quote(&column.name), column.data_type);
-        if !column.nullable {
-            definition.push_str(" NOT NULL");
+        let sql = format!(
+            "ALTER TABLE {} ADD COLUMN {}",
+            repository.table_name(table),
+            Self::column_definition(repository.as_ref(), column, column.nullable)?
+        );
+        repository.query(&sql).await?;
+        Ok(())
+    }
+
+    /// Creates a table with one `CREATE TABLE` statement.
+    // ponytail: the table goes to the default schema of the connection. In
+    // PostgreSQL that is the first schema of the search path, mostly `public`.
+    // Take a schema here if tables must be created in other schemas.
+    pub async fn create_table(&self, id: &str, name: &str, columns: &[NewColumn]) -> AppResult<()> {
+        Self::check_table_name(name)?;
+        if columns.is_empty() {
+            return Err("The table needs at least one column".into());
         }
-        if let Some(default) = &column.default {
-            definition.push_str(" DEFAULT ");
-            definition.push_str(default);
+        let repository = self.repository(id)?;
+        let mut keys = Vec::new();
+        for column in columns {
+            if column.primary_key {
+                keys.push(repository.quote(&column.spec.name));
+            }
+        }
+        let mut parts = Vec::with_capacity(columns.len() + 1);
+        for column in columns {
+            // A primary key column never holds NULL. SQLite would allow it without this.
+            let nullable = column.spec.nullable && !column.primary_key;
+            let mut definition =
+                Self::column_definition(repository.as_ref(), &column.spec, nullable)?;
+            if column.primary_key && keys.len() == 1 {
+                definition.push_str(" PRIMARY KEY");
+                if column.auto_increment {
+                    definition.push(' ');
+                    definition.push_str(repository.auto_increment());
+                }
+            } else if column.auto_increment {
+                return Err(
+                    "Auto increment only works on a column that is the whole primary key".into(),
+                );
+            }
+            parts.push(definition);
+        }
+        if keys.len() > 1 {
+            parts.push(format!("PRIMARY KEY ({})", keys.join(", ")));
         }
         let sql = format!(
-            "ALTER TABLE {} ADD COLUMN {definition}",
-            repository.table_name(table)
+            "CREATE TABLE {} ({})",
+            repository.quote(name),
+            parts.join(", ")
         );
+        repository.query(&sql).await?;
+        Ok(())
+    }
+
+    /// Gives a table a new name. It stays in its schema.
+    pub async fn rename_table(&self, id: &str, table: &TableRef, name: &str) -> AppResult<()> {
+        Self::check_table_name(name)?;
+        let repository = self.repository(id)?;
+        let table = Self::known_table(repository.as_ref(), table).await?;
+        if table.kind == VIEW {
+            return Err("Only a table can be renamed here, not a view".into());
+        }
+        let sql =
+            repository.rename_table_sql(&repository.table_name(&table), &repository.quote(name));
         repository.query(&sql).await?;
         Ok(())
     }
@@ -323,6 +391,159 @@ impl ConnectionService {
         Ok(())
     }
 
+    /// The login accounts of the server. `SQLite` has none and gives an empty list.
+    pub async fn list_users(&self, id: &str) -> AppResult<UserList> {
+        self.repository(id)?.users().await
+    }
+
+    /// Creates a login account, then gives it its access level.
+    pub async fn create_user(&self, id: &str, user: &NewUser) -> AppResult<()> {
+        if user.name.is_empty() {
+            return Err("The user needs a name".into());
+        }
+        Self::check_text("name", &user.name)?;
+        Self::check_text("host", user.host.as_deref().unwrap_or_default())?;
+        Self::check_password(&user.password)?;
+        Self::check_level(user.access)?;
+        let (repository, list) = self.user_list(id).await?;
+        if !list.can_manage {
+            return Err(CANNOT_MANAGE_USERS.into());
+        }
+        let grant = user.access != AccessLevel::None;
+        if grant {
+            // Check before the account exists, so nothing is left half done.
+            repository.check_grantable().await?;
+        }
+        let host = user.host.as_deref();
+        repository
+            .create_user(&user.name, host, &user.password)
+            .await?;
+        if !grant {
+            return Ok(());
+        }
+        match repository
+            .set_user_access(&user.name, host, user.access)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => Err(AppError::Message(format!(
+                "The user was created, but its access could not be set: {error}"
+            ))),
+        }
+    }
+
+    /// Removes a login account. Never the one this connection is logged in as.
+    pub async fn drop_user(&self, id: &str, name: &str, host: Option<&str>) -> AppResult<()> {
+        let (repository, list) = self.user_list(id).await?;
+        if !list.can_manage {
+            return Err(CANNOT_MANAGE_USERS.into());
+        }
+        let user = Self::user(&list.users, name, host)?;
+        if user.current {
+            return Err("You cannot remove your own account".into());
+        }
+        repository.drop_user(&user.name, user.host.as_deref()).await
+    }
+
+    /// Sets what an account may do in the current database: nothing, read, or read and write.
+    pub async fn set_user_access(
+        &self,
+        id: &str,
+        name: &str,
+        host: Option<&str>,
+        access: AccessLevel,
+    ) -> AppResult<()> {
+        Self::check_level(access)?;
+        let (repository, list) = self.user_list(id).await?;
+        if !list.can_manage {
+            return Err(CANNOT_MANAGE_USERS.into());
+        }
+        let user = Self::user(&list.users, name, host)?;
+        if user.current {
+            return Err("You cannot change the access of your own account".into());
+        }
+        repository
+            .set_user_access(&user.name, user.host.as_deref(), access)
+            .await
+    }
+
+    /// Gives an account a new password. Everyone may change their own.
+    pub async fn set_user_password(
+        &self,
+        id: &str,
+        name: &str,
+        host: Option<&str>,
+        password: &str,
+    ) -> AppResult<()> {
+        Self::check_password(password)?;
+        let (repository, list) = self.user_list(id).await?;
+        let user = match Self::user(&list.users, name, host) {
+            Ok(user) => user,
+            // An account that may not manage users does not see the other accounts.
+            Err(_) if !list.can_manage => return Err(CANNOT_MANAGE_USERS.into()),
+            Err(error) => return Err(error),
+        };
+        if !user.current && !list.can_manage {
+            return Err(CANNOT_MANAGE_USERS.into());
+        }
+        repository
+            .set_user_password(&user.name, user.host.as_deref(), password)
+            .await
+    }
+
+    /// The repository of a tab and its accounts, as the database lists them now.
+    async fn user_list(&self, id: &str) -> AppResult<(Arc<dyn Repository>, UserList)> {
+        let connection = self.connection(id)?;
+        if connection.config.driver == Driver::Sqlite {
+            return Err(NO_USER_ACCOUNTS.into());
+        }
+        let list = connection.repository.users().await?;
+        Ok((connection.repository, list))
+    }
+
+    /// Finds an account in the list of the database. Stops names that are not in it.
+    /// A missing host means "any host", as it does when an account is created.
+    fn user<'list>(
+        users: &'list [DbUser],
+        name: &str,
+        host: Option<&str>,
+    ) -> AppResult<&'list DbUser> {
+        let host = host.filter(|host| !host.is_empty()).unwrap_or(ANY_HOST);
+        for user in users {
+            // PostgreSQL accounts have no host.
+            let same_host = user.host.as_deref().is_none_or(|listed| listed == host);
+            if user.name == name && same_host {
+                return Ok(user);
+            }
+        }
+        Err(AppError::Message(format!("Unknown user: {name}")))
+    }
+
+    /// Stops characters that have no place in a name, host or password.
+    fn check_text(label: &str, value: &str) -> AppResult<()> {
+        if value.chars().any(char::is_control) {
+            return Err(AppError::Message(format!(
+                "The {label} must not hold line breaks or other control characters"
+            )));
+        }
+        Ok(())
+    }
+
+    fn check_password(password: &str) -> AppResult<()> {
+        if password.is_empty() {
+            return Err("The password must not be empty".into());
+        }
+        Self::check_text("password", password)
+    }
+
+    /// Only these three levels can be set. `Admin` and `Custom` are only reported.
+    fn check_level(access: AccessLevel) -> AppResult<()> {
+        if matches!(access, AccessLevel::Admin | AccessLevel::Custom) {
+            return Err("The access must be none, read or write".into());
+        }
+        Ok(())
+    }
+
     /// Finds a table in the current database. Stops names that are not in it.
     /// Gives the table as the database lists it, so `kind` is the real one.
     async fn known_table(repository: &dyn Repository, table: &TableRef) -> AppResult<TableRef> {
@@ -332,6 +553,32 @@ impl ConnectionService {
             }
         }
         Err(AppError::Message(format!("Unknown table: {}", table.name)))
+    }
+
+    fn check_table_name(name: &str) -> AppResult<()> {
+        if name.trim().is_empty() {
+            return Err("The table needs a name".into());
+        }
+        Ok(())
+    }
+
+    /// One column as `ADD COLUMN` and `CREATE TABLE` write it: name, type, null rule, default.
+    /// The type and the default are raw SQL from the user. Only the name is quoted.
+    fn column_definition(
+        repository: &dyn Repository,
+        column: &ColumnSpec,
+        nullable: bool,
+    ) -> AppResult<String> {
+        Self::check_spec(column)?;
+        let mut definition = format!("{} {}", repository.quote(&column.name), column.data_type);
+        if !nullable {
+            definition.push_str(" NOT NULL");
+        }
+        if let Some(default) = &column.default {
+            definition.push_str(" DEFAULT ");
+            definition.push_str(default);
+        }
+        Ok(definition)
     }
 
     fn check_spec(column: &ColumnSpec) -> AppResult<()> {
@@ -469,6 +716,89 @@ impl ConnectionService {
             return Err("The IN filter needs at least one value".into());
         }
         Ok(format!("{column} IN ({})", items.join(", ")))
+    }
+
+    /// Turns built SQL into one statement of a batch. An error gets the label in front.
+    fn statement(label: String, built: AppResult<(String, Params)>) -> AppResult<Statement> {
+        match built {
+            Ok((sql, params)) => Ok(Statement { label, sql, params }),
+            Err(error) => Err(not_saved(&label, &error)),
+        }
+    }
+
+    /// Builds the UPDATE for the one row that `key` points at, with its bound values.
+    fn update_sql(
+        repository: &dyn Repository,
+        table: &TableRef,
+        columns: &[ColumnInfo],
+        key: Values,
+        changes: Values,
+    ) -> AppResult<(String, Params)> {
+        let mut params = Vec::new();
+        let mut assignments = Vec::with_capacity(changes.len());
+        for (name, value) in changes {
+            let column = Self::column(columns, &name)?;
+            params.push(value);
+            assignments.push(Self::equals(repository, column, params.len()));
+        }
+        let condition = Self::key_condition(repository, columns, key, &mut params)?;
+        let sql = format!(
+            "UPDATE {} SET {} WHERE {condition}",
+            repository.table_name(table),
+            assignments.join(", ")
+        );
+        Ok((sql, params))
+    }
+
+    /// Counts the statements that changed a row.
+    /// Zero is fine: the row is gone, or `MySQL` saw the same value as before.
+    fn changed(counts: &[u64]) -> usize {
+        counts.iter().filter(|count| **count == 1).count()
+    }
+
+    /// Builds the DELETE for the one row that `key` points at, with its bound values.
+    fn delete_sql(
+        repository: &dyn Repository,
+        table: &TableRef,
+        columns: &[ColumnInfo],
+        key: Values,
+    ) -> AppResult<(String, Params)> {
+        let mut params = Vec::new();
+        let condition = Self::key_condition(repository, columns, key, &mut params)?;
+        let sql = format!(
+            "DELETE FROM {} WHERE {condition}",
+            repository.table_name(table)
+        );
+        Ok((sql, params))
+    }
+
+    /// Builds the INSERT for one new row, with its bound values.
+    fn insert_sql(
+        repository: &dyn Repository,
+        table: &TableRef,
+        columns: &[ColumnInfo],
+        values: Values,
+    ) -> AppResult<(String, Params)> {
+        let mut params = Vec::new();
+        let mut names = Vec::with_capacity(values.len());
+        let mut placeholders = Vec::with_capacity(values.len());
+        for (name, value) in values {
+            let column = Self::column(columns, &name)?;
+            params.push(value);
+            names.push(repository.quote(&column.name));
+            placeholders.push(repository.placeholder(params.len(), &column.data_type));
+        }
+        let table = repository.table_name(table);
+        let sql = if names.is_empty() {
+            format!("INSERT INTO {table} {}", repository.default_values())
+        } else {
+            format!(
+                "INSERT INTO {table} ({}) VALUES ({})",
+                names.join(", "),
+                placeholders.join(", ")
+            )
+        };
+        Ok((sql, params))
     }
 
     /// Builds `column = value marker` for bound value number `index`.

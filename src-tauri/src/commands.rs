@@ -9,7 +9,8 @@ use tauri::State;
 
 use crate::error::AppResult;
 use crate::model::{
-    BrowseRequest, ColumnSpec, ConnectionConfig, ResultSet, TablePage, TableRef, Values,
+    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, NewColumn, NewUser, ResultSet,
+    RowUpdate, SaveResult, TablePage, TableRef, UserList, Values,
 };
 use crate::repository::PasswordRepository;
 use crate::service::ConnectionService;
@@ -26,6 +27,11 @@ pub async fn connect(service: Service<'_>, id: String, config: ConnectionConfig)
 pub async fn disconnect(service: Service<'_>, id: String) -> AppResult<()> {
     service.disconnect(&id).await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn clone_connection(service: Service<'_>, id: String, new_id: String) -> AppResult<()> {
+    service.clone_connection(&id, new_id).await
 }
 
 #[tauri::command]
@@ -79,13 +85,17 @@ pub async fn insert_row(
 }
 
 #[tauri::command]
-pub async fn delete_rows(
+pub async fn save_changes(
     service: Service<'_>,
     id: String,
     table: TableRef,
-    keys: Vec<Values>,
-) -> AppResult<u64> {
-    service.delete_rows(&id, &table, keys).await
+    updates: Vec<RowUpdate>,
+    inserts: Vec<Values>,
+    deletes: Vec<Values>,
+) -> AppResult<SaveResult> {
+    service
+        .save_changes(&id, &table, updates, inserts, deletes)
+        .await
 }
 
 #[tauri::command]
@@ -120,6 +130,26 @@ pub async fn alter_column(
 }
 
 #[tauri::command]
+pub async fn create_table(
+    service: Service<'_>,
+    id: String,
+    name: String,
+    columns: Vec<NewColumn>,
+) -> AppResult<()> {
+    service.create_table(&id, &name, &columns).await
+}
+
+#[tauri::command]
+pub async fn rename_table(
+    service: Service<'_>,
+    id: String,
+    table: TableRef,
+    name: String,
+) -> AppResult<()> {
+    service.rename_table(&id, &table, &name).await
+}
+
+#[tauri::command]
 pub async fn drop_table(service: Service<'_>, id: String, table: TableRef) -> AppResult<()> {
     service.drop_table(&id, &table).await
 }
@@ -132,6 +162,50 @@ pub async fn truncate_table(service: Service<'_>, id: String, table: TableRef) -
 #[tauri::command]
 pub async fn dump_database(service: Service<'_>, id: String, path: PathBuf) -> AppResult<()> {
     service.dump_database(&id, &path).await
+}
+
+#[tauri::command]
+pub async fn list_users(service: Service<'_>, id: String) -> AppResult<UserList> {
+    service.list_users(&id).await
+}
+
+#[tauri::command]
+pub async fn create_user(service: Service<'_>, id: String, user: NewUser) -> AppResult<()> {
+    service.create_user(&id, &user).await
+}
+
+#[tauri::command]
+pub async fn drop_user(
+    service: Service<'_>,
+    id: String,
+    name: String,
+    host: Option<String>,
+) -> AppResult<()> {
+    service.drop_user(&id, &name, host.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn set_user_access(
+    service: Service<'_>,
+    id: String,
+    name: String,
+    host: Option<String>,
+    access: AccessLevel,
+) -> AppResult<()> {
+    let host = host.as_deref();
+    service.set_user_access(&id, &name, host, access).await
+}
+
+#[tauri::command]
+pub async fn set_user_password(
+    service: Service<'_>,
+    id: String,
+    name: String,
+    host: Option<String>,
+    password: String,
+) -> AppResult<()> {
+    let host = host.as_deref();
+    service.set_user_password(&id, &name, host, &password).await
 }
 
 // The password commands are async so a keychain prompt does not freeze the window.

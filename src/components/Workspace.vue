@@ -1,40 +1,51 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, type Component } from 'vue'
+import { computed, nextTick, ref, useTemplateRef, type Component } from 'vue'
 import { confirm, save } from '@tauri-apps/plugin-dialog'
 import {
   ChevronsUpDownIcon,
   DatabaseIcon,
   DownloadIcon,
   EyeIcon,
+  PlusIcon,
   RefreshCwIcon,
   SearchIcon,
   TableIcon,
   TablePropertiesIcon,
   TerminalIcon,
   UnplugIcon,
+  UsersIcon,
 } from 'lucide-vue-next'
 import { VIEW_LABELS } from '../constants'
+import { SESSION_MANAGER, SHORTCUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
 import type { SessionView, TableRef } from '../types'
 import ContentView from './ContentView.vue'
+import EnvBadge from './EnvBadge.vue'
+import PaneResizer from './PaneResizer.vue'
 import QueryView from './QueryView.vue'
 import StructureView from './StructureView.vue'
+import TableDialog from './TableDialog.vue'
+import UsersView from './UsersView.vue'
 
 const props = defineProps<{ session: Session }>()
+const manager = injectRequired(SESSION_MANAGER)
+const shortcuts = injectRequired(SHORTCUTS)
 
 const VIEW_ICONS: Record<SessionView, Component> = {
   structure: TablePropertiesIcon,
   content: TableIcon,
   query: TerminalIcon,
+  users: UsersIcon,
 }
 
 // The size of the table menu. It keeps the menu inside the window.
 const MENU_WIDTH = 170
-const MENU_HEIGHT = 56
+const MENU_HEIGHT = 109
 
 const search = ref('')
-/** The table menu that is open now, and where it is on screen. */
-const menu = ref<{ table: TableRef; x: number; y: number } | null>(null)
+/** The table menu that is open now, and where it is on screen. No table: the menu of the empty space. */
+const menu = ref<{ table: TableRef | null; x: number; y: number } | null>(null)
+const tableDialog = useTemplateRef<InstanceType<typeof TableDialog>>('tableDialog')
 const menuElement = ref<HTMLElement | null>(null)
 const filteredTables = computed(matchingTables)
 const groups = computed(tableGroups)
@@ -99,8 +110,14 @@ function describeTables(): string {
   return `${tables} ${tables === 1 ? 'table' : 'tables'} · ${views} ${views === 1 ? 'view' : 'views'}`
 }
 
-/** Opens the table menu at the mouse. It takes the focus, so Escape closes it. */
-async function openMenu(event: MouseEvent, table: TableRef): Promise<void> {
+/**
+ * Opens the table menu at the mouse. It takes the focus, so Escape closes it.
+ * Pass null for the menu of the empty space. It is not shown when there is no database.
+ */
+async function openMenu(event: MouseEvent, table: TableRef | null): Promise<void> {
+  if (!table && backupBlocked.value) {
+    return
+  }
   menu.value = {
     table,
     x: Math.min(event.clientX, window.innerWidth - MENU_WIDTH - 4),
@@ -112,6 +129,27 @@ async function openMenu(event: MouseEvent, table: TableRef): Promise<void> {
 
 function closeMenu(): void {
   menu.value = null
+}
+
+/** A click opens the table here. With Cmd (macOS) or Ctrl held, it opens in a new tab. */
+function pick(table: TableRef, event: MouseEvent): void {
+  if (shortcuts.hasModifier(event)) {
+    openInNewTab(table)
+  } else {
+    props.session.run(props.session.selectTable(table))
+  }
+}
+
+/** An error is shown in this tab. A new tab is added only when its connection works. */
+function openInNewTab(table: TableRef): void {
+  closeMenu()
+  props.session.run(manager.openTable(props.session, table))
+}
+
+/** Opens the dialog to rename a table. Pass null for the dialog to create one. */
+function openDialog(table: TableRef | null): void {
+  closeMenu()
+  tableDialog.value?.open(table)
 }
 
 /** Asks first. Truncates or drops the table of the menu only on yes. */
@@ -167,8 +205,16 @@ async function backup(): Promise<void> {
 }
 
 function changeDatabase(event: Event): void {
-  const name = (event.target as HTMLSelectElement).value
-  props.session.run(props.session.useDatabase(name))
+  props.session.run(switchDatabase(event.target as HTMLSelectElement))
+}
+
+async function switchDatabase(select: HTMLSelectElement): Promise<void> {
+  try {
+    await props.session.useDatabase(select.value)
+  } finally {
+    // The user may have kept the unsaved changes. Then show the old database again.
+    select.value = props.session.config?.database ?? ''
+  }
 }
 </script>
 
@@ -184,17 +230,20 @@ function changeDatabase(event: Event): void {
         <ChevronsUpDownIcon :size="11" />
       </div>
       <div class="segmented">
-        <button
-          v-for="(text, view) in VIEW_LABELS"
-          :key="view"
-          :class="{ active: session.view === view }"
-          @click="session.view = view"
-        >
-          <component :is="VIEW_ICONS[view]" :size="12" />
-          {{ text }}
-        </button>
+        <template v-for="(text, view) in VIEW_LABELS" :key="view">
+          <!-- Users is only for an account that may manage users. -->
+          <button
+            v-if="view !== 'users' || session.canManageUsers"
+            :class="{ active: session.view === view }"
+            @click="session.view = view"
+          >
+            <component :is="VIEW_ICONS[view]" :size="12" />
+            {{ text }}
+          </button>
+        </template>
       </div>
       <span class="spacer" />
+      <EnvBadge :name="session.environment" />
       <span class="status-dot" />
       <span class="connection">{{ connection }}</span>
       <button class="icon" title="Refresh tables" @click="session.run(session.loadTables())">
@@ -219,10 +268,19 @@ function changeDatabase(event: Event): void {
           <SearchIcon :size="11" />
           <input v-model="search" placeholder="Filter tables" spellcheck="false" />
         </div>
-        <div class="tables">
+        <div class="tables" @contextmenu.prevent="openMenu($event, null)">
           <template v-for="group in groups" :key="group.title">
             <div class="section">
               <span>{{ group.title }}</span>
+              <button
+                v-if="group.title === 'Tables'"
+                class="icon add"
+                :title="backupBlocked ? 'Choose a database first' : 'New table'"
+                :disabled="backupBlocked"
+                @click="openDialog(null)"
+              >
+                <PlusIcon :size="11" />
+              </button>
               <span class="count">{{ group.items.length }}</span>
             </div>
             <ul class="list">
@@ -231,8 +289,9 @@ function changeDatabase(event: Event): void {
                 :key="label(table)"
                 :class="{ selected: session.isOpen(table) }"
                 :title="label(table)"
-                @click="session.run(session.selectTable(table))"
-                @contextmenu.prevent="openMenu($event, table)"
+                @click="pick(table, $event)"
+                @click.middle="openInNewTab(table)"
+                @contextmenu.prevent.stop="openMenu($event, table)"
               >
                 <component :is="group.icon" :size="12" />
                 <span class="name">{{ label(table) }}</span>
@@ -248,6 +307,7 @@ function changeDatabase(event: Event): void {
           <RefreshCwIcon :size="12" />
           {{ summary }}
         </button>
+        <PaneResizer size="sidebarWidth" />
       </aside>
 
       <main class="main">
@@ -256,8 +316,10 @@ function changeDatabase(event: Event): void {
           <QueryView :session="session" />
         </div>
         <template v-if="session.view !== 'query'">
+          <!-- The Users view needs no table. It has its own bottom bar for errors. -->
+          <UsersView v-if="session.view === 'users'" :session="session" />
           <!-- No table is open, so no view with a bottom bar. Show the error or the status here. -->
-          <div v-if="!session.page" class="empty">
+          <div v-else-if="!session.page" class="empty">
             <span v-if="session.error" class="error failure">{{ session.error }}</span>
             <template v-else-if="session.busy">Working…</template>
             <template v-else-if="session.status">{{ session.status }}</template>
@@ -285,12 +347,34 @@ function changeDatabase(event: Event): void {
         :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
         @keydown.esc="closeMenu"
       >
-        <button v-if="menu.table.kind !== 'view'" role="menuitem" @click.stop="choose('Truncate')">
-          Truncate table…
+        <button v-if="!menu.table" role="menuitem" @click.stop="openDialog(null)">
+          New table…
         </button>
-        <button role="menuitem" @click.stop="choose('Drop')">Drop {{ menu.table.kind }}…</button>
+        <template v-else>
+          <button role="menuitem" @click.stop="openInNewTab(menu.table)">Open in new tab</button>
+          <button
+            v-if="menu.table.kind !== 'view'"
+            role="menuitem"
+            @click.stop="openDialog(menu.table)"
+          >
+            Rename table…
+          </button>
+          <span class="menu-line" />
+          <button
+            v-if="menu.table.kind !== 'view'"
+            class="danger"
+            role="menuitem"
+            @click.stop="choose('Truncate')"
+          >
+            Truncate table…
+          </button>
+          <button class="danger" role="menuitem" @click.stop="choose('Drop')">
+            Drop {{ menu.table.kind }}…
+          </button>
+        </template>
       </div>
     </div>
+    <TableDialog ref="tableDialog" :session="session" />
   </div>
 </template>
 
@@ -311,20 +395,25 @@ function changeDatabase(event: Event): void {
   flex: 1;
 }
 
+/* The left padding is the side margin of the search box in the sidebar. */
 .toolbar {
   gap: 10px;
   height: 40px;
-  padding: 0 10px;
+  padding: 0 10px 0 8px;
 }
 
-/* A real select. The two icons lie over it and let clicks through. */
+/*
+  A real select. The two icons lie over it and let clicks through.
+  It is as wide as the search box below it: the sidebar without its two 8px
+  margins and its 1px border. So both boxes have the same left and right edge.
+*/
 .database {
   position: relative;
   display: flex;
   flex: none;
   align-items: center;
   justify-content: space-between;
-  width: 170px;
+  width: calc(var(--sidebar-fit) - 17px);
   height: 24px;
   padding: 0 7px;
   background: var(--bg);
@@ -392,8 +481,9 @@ function changeDatabase(event: Event): void {
 }
 
 .sidebar {
+  position: relative;
   flex: none;
-  width: 210px;
+  width: var(--sidebar-fit);
   background: var(--sidebar);
   border-right: 1px solid var(--border);
 }
@@ -401,6 +491,18 @@ function changeDatabase(event: Event): void {
 .tables {
   flex: 1;
   overflow: auto;
+}
+
+/* The small "+" after the title "Tables". The count stays at the right edge. */
+.section .add {
+  width: 16px;
+  height: 14px;
+  margin: -1px auto -1px 4px;
+  color: var(--text-2);
+}
+
+.section .add:hover:enabled {
+  color: var(--text);
 }
 
 .menu-backdrop {
@@ -430,9 +532,19 @@ function changeDatabase(event: Event): void {
   border: 0;
   border-radius: 4px;
   background: none;
-  color: var(--danger);
+  color: var(--text);
   font-size: 12px;
   font-weight: 400;
+}
+
+.menu button.danger {
+  color: var(--danger);
+}
+
+.menu-line {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
 }
 
 .menu button:hover,

@@ -6,6 +6,9 @@ export const PAGE_SIZE = 500
 /** Longer cell text is cut in the grid. The full value is still used for editing. */
 export const CELL_PREVIEW_LENGTH = 200
 
+/** The type of the `id` column that a new table starts with. All three databases know it. */
+export const ID_COLUMN_TYPE = 'INTEGER'
+
 export const FAVORITES_STORAGE_KEY = 'sql-pro.favorites'
 
 export const DRIVER_LABELS: Record<Driver, string> = {
@@ -59,6 +62,7 @@ export const VIEW_LABELS: Record<SessionView, string> = {
   structure: 'Structure',
   content: 'Content',
   query: 'Query',
+  users: 'Users',
 }
 
 /** Binary values arrive as hex text. Editing them would corrupt them. */
@@ -66,3 +70,12 @@ export const BINARY_TYPE_PATTERN = /blob|binary|bytea/i
 
 /** Columns of these types hold numbers. The grid aligns them to the right. */
 export const NUMERIC_TYPE_PATTERN = /int|decimal|numeric|float|double|real|serial|money/i
+
+/** A column of the grid cannot be dragged narrower than this, in pixels. */
+export const COLUMN_MIN_WIDTH = 40
+
+/** The title of the question that is asked before unsaved changes are lost. */
+export const UNSAVED_TITLE = 'Unsaved changes'
+
+/** The title of the question that is asked before a save deletes rows. */
+export const DELETE_ROWS_TITLE = 'Delete rows'
