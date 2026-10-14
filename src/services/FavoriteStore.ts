@@ -1,4 +1,4 @@
-import { FAVORITES_STORAGE_KEY, SSH_PASSWORD_SUFFIX } from '../constants'
+import { FAVORITE_COPY_SUFFIX, FAVORITES_STORAGE_KEY, SSH_PASSWORD_SUFFIX } from '../constants'
 import {
   DEFAULT_FOLDER_COLOR,
   DEFAULT_FOLDER_ICON,
@@ -44,6 +44,13 @@ export interface FavoriteSection {
 export interface LoadedConfig {
   config: ConnectionConfig
   /** The keychain error when a password could not be read. '' = all fine. */
+  keychainError: string
+}
+
+export interface DuplicatedFavorite {
+  /** The new copy, as it is in the list. */
+  favorite: Favorite
+  /** The keychain error when a password could not be copied. '' = all fine. */
   keychainError: string
 }
 
@@ -122,6 +129,29 @@ export class FavoriteStore {
       ? { ...saved, password: await this.secret(favorite.id + SSH_PASSWORD_SUFFIX, errors) }
       : null
     return { config: { ...favorite.config, password, ssh }, keychainError: errors[0] ?? '' }
+  }
+
+  /**
+   * Makes a copy of the favorite, right after it in the list.
+   * The copy has a new id and the name `<name> copy`. The passwords are copied too.
+   * The copy is always made. When the keychain fails, the copy has no password
+   * and `keychainError` is the error text.
+   */
+  async duplicate(favorite: Favorite): Promise<DuplicatedFavorite> {
+    const loaded = await this.fullConfig(favorite)
+    const copy: Favorite = {
+      ...favorite,
+      id: crypto.randomUUID(),
+      name: this.copyName(favorite.name),
+    }
+    // The copy takes its place first. `save` then finds it by id and fills it in.
+    const index = this.indexOf(favorite.id)
+    this.favorites.splice(index < 0 ? this.favorites.length : index + 1, 0, copy)
+    const failure = await this.save({ ...copy, config: loaded.config })
+    return {
+      favorite: this.favorites[this.indexOf(copy.id)],
+      keychainError: loaded.keychainError || failure,
+    }
   }
 
   /**
@@ -246,6 +276,25 @@ export class FavoriteStore {
       }
     }
     return fallback
+  }
+
+  /** `<name> copy`. When that name is taken: `<name> copy 2`, `<name> copy 3`, ... */
+  private copyName(name: string): string {
+    const base = name + FAVORITE_COPY_SUFFIX
+    let candidate = base
+    for (let count = 2; this.hasName(candidate); count++) {
+      candidate = `${base} ${count}`
+    }
+    return candidate
+  }
+
+  private hasName(name: string): boolean {
+    for (const favorite of this.favorites) {
+      if (favorite.name === name) {
+        return true
+      }
+    }
+    return false
   }
 
   private folder(id: string): Folder | undefined {

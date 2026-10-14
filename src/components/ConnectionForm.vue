@@ -9,7 +9,12 @@ import {
   XIcon,
 } from 'lucide-vue-next'
 import { confirm, open } from '@tauri-apps/plugin-dialog'
-import { DEFAULT_CONFIGS, DEFAULT_SSH_CONFIG, DRIVER_LABELS } from '../constants'
+import {
+  CONNECTION_STRING_EXAMPLE,
+  DEFAULT_CONFIGS,
+  DEFAULT_SSH_CONFIG,
+  DRIVER_LABELS,
+} from '../constants'
 import {
   DEFAULT_ENVIRONMENT,
   ENVIRONMENT_HINT,
@@ -23,6 +28,8 @@ import {
   KEYCHAIN_READ_NOTE,
   KEYCHAIN_WRITE_NOTE,
 } from '../constants/keychain'
+import { ConnectionString } from '../services/ConnectionString'
+import { DriverChange } from '../services/DriverChange'
 import { Environment } from '../services/Environment'
 import type { Favorite, FavoriteSection, Folder } from '../services/FavoriteStore'
 import { FAVORITE_STORE, injectRequired } from '../services/keys'
@@ -51,6 +58,9 @@ const env = reactive({ kind: DEFAULT_ENVIRONMENT as EnvironmentKind, custom: '' 
  * `detail` is the raw keychain text. It is shown only as a tooltip.
  */
 const note = reactive({ text: '', detail: '' })
+
+/** The pasted connection string. It can hold a password, so it is cleared after use. */
+const pasted = ref('')
 
 const search = ref('')
 const sections = computed(shownSections)
@@ -88,11 +98,9 @@ function openFolderMenu(event: MouseEvent, folder: Folder): void {
   menu.value = { x: event.clientX, y: event.clientY, folder, favorite: null }
 }
 
-/** Opens the "Move to" menu of a connection. There is nothing to move to with no folders. */
+/** Opens the menu of a connection. With no folders it only holds "Duplicate". */
 function openFavoriteMenu(event: MouseEvent, favorite: Favorite): void {
-  if (store.folders.length > 0) {
-    menu.value = { x: event.clientX, y: event.clientY, folder: null, favorite }
-  }
+  menu.value = { x: event.clientX, y: event.clientY, folder: null, favorite }
 }
 
 function closeMenu(): void {
@@ -219,7 +227,22 @@ function reset(): void {
 }
 
 function setDriver(driver: Driver): void {
-  form.config = { ...DEFAULT_CONFIGS[driver] }
+  form.config = DriverChange.apply(form.config, driver)
+}
+
+/**
+ * Fills the fields from the pasted connection string. It does not save or connect.
+ * The name, the folder and the environment stay as they are.
+ */
+function fillFromString(): void {
+  const session = props.session
+  try {
+    form.config = ConnectionString.parse(pasted.value)
+    pasted.value = ''
+    session.error = ''
+  } catch (error) {
+    session.error = (error as Error).message
+  }
 }
 
 /** Turns the SSH fields on or off. */
@@ -283,6 +306,16 @@ async function saveFavorite(): Promise<void> {
     config: currentConfig(),
   })
   setNote(KEYCHAIN_WRITE_NOTE, failure)
+}
+
+/** Makes a copy and loads it into the form, so the user can rename it right away. */
+async function duplicateFavorite(favorite: Favorite): Promise<void> {
+  const made = await store.duplicate(favorite)
+  await load(made.favorite)
+  // The copy has no saved password then. This note says so.
+  if (made.keychainError) {
+    setNote(KEYCHAIN_WRITE_NOTE, made.keychainError)
+  }
 }
 
 /** Asks first. The saved password goes away with the connection. */
@@ -400,6 +433,22 @@ async function browseKey(): Promise<void> {
           <h1>New connection</h1>
           <p>Pick a database type, then fill in the details.</p>
         </header>
+
+        <!-- Enter here fills the form. It must not submit the form, which would connect. -->
+        <div class="row">
+          <input
+            v-model="pasted"
+            class="mono"
+            :placeholder="`Paste a connection string: ${CONNECTION_STRING_EXAMPLE}`"
+            aria-label="Connection string"
+            autocomplete="off"
+            autocorrect="off"
+            autocapitalize="off"
+            spellcheck="false"
+            @keydown.enter.prevent="fillFromString"
+          />
+          <button type="button" @click="fillFromString">Fill</button>
+        </div>
 
         <div class="segmented">
           <button
@@ -595,6 +644,11 @@ async function browseKey(): Promise<void> {
         </button>
       </template>
       <template v-else-if="menu.favorite">
+        <button role="menuitem" @click="session.run(duplicateFavorite(menu.favorite))">
+          Duplicate
+        </button>
+        <!-- With folders there is always a "Move" item below. -->
+        <span v-if="store.folders.length > 0" class="menu-line" />
         <!-- The folder it is in already is left out. -->
         <template v-for="folder in store.folders" :key="folder.id">
           <button

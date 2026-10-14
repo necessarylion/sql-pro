@@ -46,6 +46,21 @@ export const DEFAULT_CONFIGS: Record<Driver, ConnectionConfig> = {
   sqlite: { driver: 'sqlite', host: '', port: 0, user: '', password: '', database: '', ssh: null },
 }
 
+/** The scheme of a connection string -> the driver. */
+export const CONNECTION_STRING_DRIVERS: Record<string, Driver> = {
+  mysql: 'mysql',
+  mariadb: 'mysql',
+  postgres: 'postgres',
+  postgresql: 'postgres',
+  sqlite: 'sqlite',
+  file: 'sqlite',
+}
+
+export const CONNECTION_STRING_EXAMPLE = 'postgres://user:password@host:5432/database'
+
+/** It must never hold the text the user typed: that text can hold a password. */
+export const CONNECTION_STRING_ERROR = `This is not a connection string. Example: ${CONNECTION_STRING_EXAMPLE}`
+
 export const DEFAULT_SSH_CONFIG: SshConfig = {
   host: '',
   port: 22,
@@ -56,6 +71,9 @@ export const DEFAULT_SSH_CONFIG: SshConfig = {
 
 /** Added to a favorite id to get the keychain entry of its SSH password. */
 export const SSH_PASSWORD_SUFFIX = ':ssh'
+
+/** Added to the name of a saved connection to name its copy. */
+export const FAVORITE_COPY_SUFFIX = ' copy'
 
 /** The order here is the order of the buttons in the toolbar. */
 export const VIEW_LABELS: Record<SessionView, string> = {

@@ -128,3 +128,58 @@ test('remove with a failing keychain still removes the favorite', async function
   // The entries that stay behind do no harm.
   expect(api.secrets['a' + SSH_PASSWORD_SUFFIX]).toBe('tunnel')
 })
+
+test('duplicate makes a copy with a new id and the same passwords', async function () {
+  const api = new FakeApi()
+  const store = storeOf(api)
+  store.saveFolder('', 'Work', '', '')
+  const folderId = store.folders[0].id
+  await store.save({ ...favorite(), environment: 'prod', folderId })
+  await store.save({ ...favorite(), id: 'b', name: 'Other' })
+
+  const made = await store.duplicate(store.favorites[0])
+  const copy = made.favorite
+  expect(made.keychainError).toBe('')
+  expect(copy.id).not.toBe('a')
+  expect(copy.name).toBe('Shop copy')
+  expect(copy.environment).toBe('prod')
+  expect(copy.folderId).toBe(folderId)
+  expect(copy.config).toEqual(store.favorites[0].config)
+  // The copy sits right after the original.
+  expect(store.favorites[1]).toBe(copy)
+  expect(store.favorites.length).toBe(3)
+
+  const loaded = await store.fullConfig(copy)
+  expect(loaded.config.password).toBe('secret')
+  expect(loaded.config.ssh?.password).toBe('tunnel')
+
+  // The original is unchanged.
+  expect(store.favorites[0].id).toBe('a')
+  expect(store.favorites[0].name).toBe('Shop')
+  expect(api.secrets.a).toBe('secret')
+  expect(api.secrets['a' + SSH_PASSWORD_SUFFIX]).toBe('tunnel')
+  // A new store reads the copy back from the storage.
+  expect(storeOf(api).favorites[1].name).toBe('Shop copy')
+})
+
+test('duplicate picks the next free name', async function () {
+  const store = storeOf(new FakeApi())
+  await store.save(favorite())
+
+  expect((await store.duplicate(store.favorites[0])).favorite.name).toBe('Shop copy')
+  expect((await store.duplicate(store.favorites[0])).favorite.name).toBe('Shop copy 2')
+  expect((await store.duplicate(store.favorites[0])).favorite.name).toBe('Shop copy 3')
+})
+
+test('duplicate with a failing keychain still makes the copy and reports it', async function () {
+  const api = new FakeApi()
+  const store = storeOf(api)
+  await store.save(favorite())
+  api.broken = true
+
+  const made = await store.duplicate(store.favorites[0])
+  expect(made.keychainError).toBe(DENIED)
+  expect(made.favorite.name).toBe('Shop copy')
+  expect(store.favorites.length).toBe(2)
+  expect(api.secrets[made.favorite.id]).toBeUndefined()
+})
