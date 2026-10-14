@@ -76,6 +76,13 @@
   cursor: row-resize !important;
 }
 
+/* On while rows of a grid are selected with a drag: no text gets selected. */
+:root.selecting,
+:root.selecting * {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
 /* The light look. Set data-theme="light" on <html> to use it. */
 :root[data-theme='light'] {
   color-scheme: light;

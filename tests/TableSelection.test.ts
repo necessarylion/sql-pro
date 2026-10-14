@@ -54,3 +54,49 @@ test('noun names tables, views or both', function () {
   expect(TableSelection.noun([view, view])).toBe('views')
   expect(TableSelection.noun([table, view])).toBe('tables and views')
 })
+
+test('a drag selects the range from the start row to the row under the mouse', function () {
+  const rows = [0, 1, 2, 3, 4]
+  const selection = new TableSelection<number>()
+  selection.startDrag(2)
+  expect(selection.names).toEqual([2])
+  expect(selection.dragging).toBe(true)
+  selection.dragTo(rows, 4)
+  expect(selection.names).toEqual([2, 3, 4])
+  selection.dragTo(rows, 3)
+  expect(selection.names).toEqual([2, 3])
+  selection.dragTo(rows, 0)
+  expect(selection.names).toEqual([0, 1, 2])
+  selection.endDrag()
+  expect(selection.dragging).toBe(false)
+  // After the release, moving over rows changes nothing. Shift-click still uses the start row.
+  selection.dragTo(rows, 4)
+  expect(selection.names).toEqual([0, 1, 2])
+  selection.range(rows, 3)
+  expect(selection.names).toEqual([2, 3])
+})
+
+test('a drag from the empty area starts at the first row the mouse moves over', function () {
+  const rows = [0, 1, 2, 3, 4]
+  const selection = new TableSelection<number>()
+  selection.only(1)
+  selection.startEmptyDrag(false)
+  expect(selection.names).toEqual([])
+  expect(selection.dragging).toBe(true)
+  selection.dragTo(rows, 4)
+  expect(selection.names).toEqual([4])
+  selection.dragTo(rows, 2)
+  expect(selection.names).toEqual([2, 3, 4])
+  selection.endDrag()
+  expect(selection.dragging).toBe(false)
+})
+
+test('a Shift drag from the empty area extends from the old anchor', function () {
+  const rows = [0, 1, 2, 3, 4]
+  const selection = new TableSelection<number>()
+  selection.only(1)
+  selection.startEmptyDrag(true)
+  expect(selection.names).toEqual([1])
+  selection.dragTo(rows, 3)
+  expect(selection.names).toEqual([1, 2, 3])
+})

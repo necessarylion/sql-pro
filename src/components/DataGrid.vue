@@ -7,6 +7,8 @@ import {
   COLUMN_MIN_WIDTH,
   NUMERIC_TYPE_PATTERN,
 } from '../constants'
+import { injectRequired, SHORTCUTS } from '../services/keys'
+import { TableSelection } from '../services/TableSelection'
 import type { GridColumn, Row } from '../types'
 
 const props = defineProps<{
@@ -34,6 +36,11 @@ const emit = defineEmits<{
 }>()
 
 const selected = defineModel<number[]>('selected')
+const shortcuts = injectRequired(SHORTCUTS)
+// The selection logic. `selected` stays the source: the parent can clear it, like after a reload.
+const selection = new TableSelection<number>()
+// The mouse button can be let go in the middle of a drag when the grid goes away.
+onBeforeUnmount(endDrag)
 
 // The cell that is being edited, and the text in its editor.
 const editing = ref<{ row: number; column: number } | null>(null)
@@ -158,20 +165,71 @@ function isSelected(rowIndex: number): boolean {
   return selected.value?.includes(rowIndex) ?? false
 }
 
-/** A click selects one row. Cmd/Ctrl-click adds or removes a row. */
-function select(rowIndex: number, event: MouseEvent): void {
-  if (!event.metaKey && !event.ctrlKey) {
-    selected.value = [rowIndex]
+/** The row numbers in shown order. */
+function rowOrder(): number[] {
+  const order: number[] = []
+  for (let index = 0; index < props.rows.length; index += 1) {
+    order.push(index)
+  }
+  return order
+}
+
+/**
+ * A press selects one row and starts a drag: moving over rows selects the range.
+ * Shift-press selects a range. Cmd-press (Ctrl on Windows and Linux) adds or removes a row.
+ * A press in the cell editor is left alone, so its text can be selected.
+ */
+function press(rowIndex: number, event: MouseEvent): void {
+  if ((event.target as HTMLElement).closest('.editor')) {
     return
   }
-  const next = [...(selected.value ?? [])]
-  const position = next.indexOf(rowIndex)
-  if (position < 0) {
-    next.push(rowIndex)
+  selection.names = [...(selected.value ?? [])]
+  if (event.shiftKey) {
+    selection.range(rowOrder(), rowIndex)
+  } else if (shortcuts.hasModifier(event)) {
+    selection.toggle(rowIndex)
   } else {
-    next.splice(position, 1)
+    selection.startDrag(rowIndex)
   }
-  selected.value = next
+  selected.value = [...selection.names]
+  // Set now, before the browser starts a text selection. The release can be outside the grid.
+  document.documentElement.classList.add('selecting')
+  window.addEventListener('mouseup', endDrag)
+}
+
+/**
+ * A press on the empty area below the rows must not start a text selection.
+ * Rows, the header and the cell editor handle their own presses.
+ * A press on the scrollbar is left alone, so the scrollbar still drags.
+ * The press clears the selection (Shift keeps it) and starts a drag: moving over rows selects them.
+ */
+function pressEmpty(event: MouseEvent): void {
+  const target = event.target as HTMLElement
+  if (target.closest('tbody tr, thead, .editor')) {
+    return
+  }
+  if (event.offsetX >= target.clientWidth || event.offsetY >= target.clientHeight) {
+    return
+  }
+  event.preventDefault()
+  selection.names = [...(selected.value ?? [])]
+  selection.startEmptyDrag(event.shiftKey)
+  selected.value = [...selection.names]
+  document.documentElement.classList.add('selecting')
+  window.addEventListener('mouseup', endDrag)
+}
+
+function dragOver(rowIndex: number): void {
+  if (selection.dragging) {
+    selection.dragTo(rowOrder(), rowIndex)
+    selected.value = [...selection.names]
+  }
+}
+
+function endDrag(): void {
+  selection.endDrag()
+  document.documentElement.classList.remove('selecting')
+  window.removeEventListener('mouseup', endDrag)
 }
 
 /**
@@ -242,7 +300,7 @@ function onEnter(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <div class="grid">
+  <div class="grid" @mousedown.left="pressEmpty">
     <table>
       <thead>
         <tr @pointerdown="allowSort">
@@ -285,7 +343,8 @@ function onEnter(event: KeyboardEvent): void {
             draft: isNew(rowIndex),
             deleted: isDeleted(rowIndex),
           }"
-          @click="select(rowIndex, $event)"
+          @mousedown.left="press(rowIndex, $event)"
+          @mouseenter="dragOver(rowIndex)"
           @contextmenu="openMenu(rowIndex, $event)"
         >
           <td
