@@ -1,5 +1,6 @@
 // One small check of the Session logic, with a fake backend. Run: bun test
 import { expect, test } from 'bun:test'
+import { isReactive, markRaw, reactive } from 'vue'
 import type { DatabaseApi } from '../src/services/DatabaseApi'
 import { Session } from '../src/services/Session'
 import { RAW_FILTER_COLUMN } from '../src/constants/filters'
@@ -111,6 +112,23 @@ async function openUsers(): Promise<{ api: FakeApi; session: Session; prompt: Fa
   await session.selectTable(USERS)
   return { api, session, prompt }
 }
+
+test('Vue does not wrap the loaded rows, but new rows stay reactive', async function () {
+  // markRaw: the fake keeps its rows in a field, and a Proxy cannot be cloned.
+  const api = markRaw(new FakeApi())
+  const session = reactive(new Session(api as unknown as DatabaseApi, new FakePrompt())) as Session
+  await session.selectTable(USERS)
+  await session.runQuery('select 1')
+  // Big row data stays plain. Reading it in the grid is then fast.
+  expect(isReactive(session.page)).toBe(false)
+  expect(isReactive(session.page?.rows)).toBe(false)
+  expect(isReactive(session.result)).toBe(false)
+  // A new row is changed in place, so Vue must still see it.
+  session.addRow()
+  session.updateCell(session.page?.rows.length ?? 0, 1, 'new')
+  expect(isReactive(session.newRows[0])).toBe(true)
+  expect(session.shownRows.at(-1)).toEqual([null, 'new'])
+})
 
 test('a cell edit is pending and is not sent', async function () {
   const { api, session } = await openUsers()

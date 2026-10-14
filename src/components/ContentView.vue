@@ -85,24 +85,24 @@ function toGridColumns(): GridColumn[] {
  */
 function lastSelected(): number {
   const index = selected.value.at(-1)
-  return index !== undefined && index < props.session.shownRows.length ? index : -1
+  return index !== undefined && index < shownRows.value.length ? index : -1
 }
 
 function rowOfDetail(): Row | null {
-  return props.session.shownRows[detailIndex.value] ?? null
+  return shownRows.value[detailIndex.value] ?? null
 }
 
 /** The same rule as the grid: an editable table, and not a row that is marked as deleted. */
 function detailCanEdit(): boolean {
-  return props.session.editable && !props.session.deletedRows.includes(detailIndex.value)
+  return props.session.editable && !deletedRows.value.includes(detailIndex.value)
 }
 
 function changedOfDetail(): number[] {
-  return props.session.changedCells[detailIndex.value] ?? []
+  return changedCells.value[detailIndex.value] ?? []
 }
 
 function tagOfDetail(): string {
-  if (props.session.deletedRows.includes(detailIndex.value)) {
+  if (deletedRows.value.includes(detailIndex.value)) {
     return 'Marked for delete'
   }
   if (detailIndex.value >= (props.session.page?.rows.length ?? 0)) {

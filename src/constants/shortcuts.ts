@@ -19,5 +19,8 @@ export const CANCEL_KEY = 'Escape'
 /** The key that cancels a running query together with Cmd (macOS) or Ctrl (Windows, Linux). */
 export const CANCEL_SHORTCUT_KEY = '.'
 
+/** The key that selects all rows of a grid together with Cmd (macOS) or Ctrl (Windows, Linux). */
+export const SELECT_ALL_KEY = 'a'
+
 /** `navigator.platform` of an Apple device matches this. */
 export const MAC_PLATFORM_PATTERN = /mac|iphone|ipad/i

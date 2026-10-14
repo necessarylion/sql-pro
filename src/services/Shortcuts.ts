@@ -2,6 +2,7 @@ import {
   CANCEL_KEY,
   CANCEL_SHORTCUT_KEY,
   MAC_PLATFORM_PATTERN,
+  SELECT_ALL_KEY,
   SHIFT_SHORTCUT_KEYS,
   SHORTCUT_KEYS,
   type ShortcutAction,
@@ -41,6 +42,16 @@ export class Shortcuts {
     }
     const keys = shiftKey ? SHIFT_SHORTCUT_KEYS : SHORTCUT_KEYS
     return keys[event.key.toLowerCase()] ?? null
+  }
+
+  /** True for Cmd+A (macOS) or Ctrl+A (Windows, Linux). Caps Lock gives 'A', so the case does not matter. */
+  selectsAll(event: ModifierKeys & { key: string }): boolean {
+    // Read each key by name. A spread copy of a real KeyboardEvent has none of them.
+    const { metaKey, ctrlKey, shiftKey, altKey } = event
+    return (
+      event.key.toLowerCase() === SELECT_ALL_KEY &&
+      this.hasModifier({ metaKey, ctrlKey, shiftKey, altKey })
+    )
   }
 
   /** True for Escape alone, or Cmd+. (macOS) or Ctrl+. (Windows, Linux). Both stop a running query. */

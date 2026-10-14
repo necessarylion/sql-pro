@@ -1,3 +1,4 @@
+import { markRaw } from 'vue'
 import {
   DELETE_ROWS_TITLE,
   OBJECT_KIND_LABELS,
@@ -475,7 +476,8 @@ export class Session {
     this.cancellable = false
     // The user may have picked another table while this one was loading.
     if (this.table === table) {
-      this.page = page
+      // markRaw: Vue does not wrap the rows. A page is only replaced, never changed in place.
+      this.page = markRaw(page)
       this.dropLostEdits()
       // A filter row made before the columns were known gets the first column now.
       for (const row of this.filterRows) {
@@ -713,9 +715,9 @@ export class Session {
 
   /** True when `deleteRows` would restore these rows: all of them are marked as deleted. */
   restores(indexes: number[]): boolean {
-    const marked = this.deletedRows
+    const marked = new Set(this.deletedRows)
     for (const index of indexes) {
-      if (!marked.includes(index)) {
+      if (!marked.has(index)) {
         return false
       }
     }
@@ -1138,7 +1140,8 @@ export class Session {
         affected += set.affected
       }
     }
-    this.result = result
+    // markRaw: Vue does not wrap the rows. A result is only replaced, never changed in place.
+    this.result = result && markRaw(result)
     if (result) {
       const cut = result.truncated ? ' (truncated)' : ''
       const changed = affected > 0 ? `, ${this.plural(affected, 'row')} affected` : ''

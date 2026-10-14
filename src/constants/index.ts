@@ -110,6 +110,15 @@ export const BINARY_TYPE_PATTERN = /blob|binary|bytea/i
 /** Columns of these types hold numbers. The grid aligns them to the right. */
 export const NUMERIC_TYPE_PATTERN = /int|decimal|numeric|float|double|real|serial|money/i
 
+/** The height of one grid row, in pixels. The CSS of DataGrid uses the same number. */
+export const GRID_ROW_HEIGHT = 22
+
+/**
+ * The grid draws only the rows that can be seen, plus this many rows above and below.
+ * The drawn part moves in steps of this many rows, so a small scroll draws nothing new.
+ */
+export const GRID_ROW_BUFFER = 20
+
 /** A column of the grid cannot be dragged narrower than this, in pixels. */
 export const COLUMN_MIN_WIDTH = 40
 

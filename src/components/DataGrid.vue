@@ -3,6 +3,7 @@ import {
   computed,
   nextTick,
   onBeforeUnmount,
+  onMounted,
   ref,
   useTemplateRef,
   watch,
@@ -13,6 +14,8 @@ import {
   BINARY_TYPE_PATTERN,
   CELL_PREVIEW_LENGTH,
   COLUMN_MIN_WIDTH,
+  GRID_ROW_BUFFER,
+  GRID_ROW_HEIGHT,
   NUMERIC_TYPE_PATTERN,
 } from '../constants'
 import { injectRequired, SHORTCUTS } from '../services/keys'
@@ -86,11 +89,100 @@ const columnStyles = computed(stylesOfColumns)
 // Sets, so each row finds out in one step if it is selected or deleted.
 const selectedSet = computed(setOfSelected)
 const deletedSet = computed(setOfDeleted)
+// One regex test per column, not one per cell.
+const numericColumns = computed(columnsThatAreNumeric)
+
+// Only the rows that can be seen are drawn. A page has up to 500 rows and a query result
+// up to 2000, and drawing all their cells made the grid slow. Empty rows above and below
+// keep the scroll height. `start` and `end` are numbers, so a scroll that keeps them the
+// same does not draw the grid again.
+const scrollTop = ref(0)
+const viewHeight = ref(0)
+const start = computed(firstDrawnRow)
+const end = computed(endOfDrawnRows)
+const drawnRows = computed(rowsToDraw)
+// The longest text of each column. A hidden row holds it, so the columns get the width
+// of all rows, not only of the drawn ones. Without it the widths would jump on scroll.
+const widest = computed(widestValues)
+let resizeObserver: ResizeObserver | null = null
+onMounted(watchSize)
+onBeforeUnmount(unwatchSize)
 
 // Another table or another query result starts with automatic widths.
 watch(columnNames, resetWidths)
 // The grid can go away in the middle of a drag.
 onBeforeUnmount(stopResize)
+
+function watchSize(): void {
+  if (grid.value) {
+    resizeObserver = new ResizeObserver(measure)
+    resizeObserver.observe(grid.value)
+    measure()
+  }
+}
+
+function unwatchSize(): void {
+  resizeObserver?.disconnect()
+}
+
+function measure(): void {
+  viewHeight.value = grid.value?.clientHeight ?? 0
+}
+
+/** An edit in a row that scrolls out of the drawn part is kept, because its editor goes away. */
+function onScroll(): void {
+  scrollTop.value = grid.value?.scrollTop ?? 0
+  const row = editing.value?.row
+  if (row !== undefined && (row < start.value || row >= end.value)) {
+    commit(text.value)
+  }
+}
+
+function firstDrawnRow(): number {
+  const first = Math.floor(scrollTop.value / GRID_ROW_HEIGHT) - GRID_ROW_BUFFER
+  const stepped = Math.floor(Math.max(0, first) / GRID_ROW_BUFFER) * GRID_ROW_BUFFER
+  // A shorter new page can come before the scroll moves back. Never start past the end.
+  return Math.min(stepped, props.rows.length)
+}
+
+function endOfDrawnRows(): number {
+  const last = Math.ceil((scrollTop.value + viewHeight.value) / GRID_ROW_HEIGHT) + GRID_ROW_BUFFER
+  const stepped = Math.ceil(last / GRID_ROW_BUFFER) * GRID_ROW_BUFFER
+  return Math.max(start.value, Math.min(stepped, props.rows.length))
+}
+
+function rowsToDraw(): number[] {
+  const indexes: number[] = []
+  for (let index = start.value; index < end.value; index += 1) {
+    indexes.push(index)
+  }
+  return indexes
+}
+
+/** The cell font is monospace, so the most characters means the widest text. */
+function widestValues(): string[] {
+  const widest: string[] = []
+  for (let column = 0; column < props.columns.length; column += 1) {
+    widest.push('')
+  }
+  for (const row of props.rows) {
+    for (const [column, value] of row.entries()) {
+      const shown = value === null ? 'NULL' : preview(value)
+      if (shown.length > (widest[column]?.length ?? 0)) {
+        widest[column] = shown
+      }
+    }
+  }
+  return widest
+}
+
+function columnsThatAreNumeric(): boolean[] {
+  const numeric: boolean[] = []
+  for (const column of props.columns) {
+    numeric.push(NUMERIC_TYPE_PATTERN.test(column.type ?? ''))
+  }
+  return numeric
+}
 
 function columnNames(): string {
   const names: string[] = []
@@ -192,7 +284,7 @@ function preview(value: string): string {
 }
 
 function isNumeric(columnIndex: number): boolean {
-  return NUMERIC_TYPE_PATTERN.test(props.columns[columnIndex]?.type ?? '')
+  return numericColumns.value[columnIndex] ?? false
 }
 
 function sort(column: string): void {
@@ -245,13 +337,15 @@ function press(rowIndex: number, event: MouseEvent): void {
  */
 function pressEmpty(event: MouseEvent): void {
   const target = event.target as HTMLElement
-  if (target.closest('tbody tr, thead, .editor')) {
+  if (target.closest('tbody tr:not(.spacer), thead, .editor')) {
     return
   }
   if (event.offsetX >= target.clientWidth || event.offsetY >= target.clientHeight) {
     return
   }
   event.preventDefault()
+  // The prevented press does not focus the grid. Focus it, so the arrows and Cmd+A work after it.
+  grid.value?.focus({ preventScroll: true })
   selection.names = [...(selected.value ?? [])]
   selection.startEmptyDrag(event.shiftKey)
   selected.value = [...selection.names]
@@ -268,10 +362,17 @@ function dragOver(rowIndex: number): void {
 
 /**
  * Up and down arrows select the row above or below the last selected row.
- * Only when the grid itself has the focus. The cell editor keeps its arrows.
+ * Cmd+A (Ctrl+A on Windows and Linux) selects all rows, instead of all text of the page.
+ * Only when the grid itself has the focus. The cell editor keeps its arrows and its Cmd+A.
  */
 function moveSelection(event: KeyboardEvent): void {
   if (event.target !== event.currentTarget || props.rows.length === 0) {
+    return
+  }
+  if (shortcuts.selectsAll(event)) {
+    event.preventDefault()
+    selection.names = rowOrder()
+    selected.value = [...selection.names]
     return
   }
   let step = 0
@@ -290,11 +391,22 @@ function moveSelection(event: KeyboardEvent): void {
   void nextTick(showSelected)
 }
 
-/** Scrolls the grid so the last selected row can be seen. */
+/**
+ * Scrolls the grid so the last selected row can be seen. The row may not be drawn yet,
+ * so the place comes from the row height. The sticky header must not hide the row.
+ */
 function showSelected(): void {
   const index = selected.value?.at(-1)
-  if (index !== undefined) {
-    grid.value?.querySelectorAll('tbody tr')[index]?.scrollIntoView({ block: 'nearest' })
+  const box = grid.value
+  if (index === undefined || !box) {
+    return
+  }
+  const header = box.querySelector('thead')?.offsetHeight ?? 0
+  const top = index * GRID_ROW_HEIGHT
+  if (top < box.scrollTop) {
+    box.scrollTop = top
+  } else if (header + top + GRID_ROW_HEIGHT > box.scrollTop + box.clientHeight) {
+    box.scrollTop = header + top + GRID_ROW_HEIGHT - box.clientHeight
   }
 }
 
@@ -372,7 +484,14 @@ function onEnter(event: KeyboardEvent): void {
 </script>
 
 <template>
-  <div ref="grid" class="grid" tabindex="0" @mousedown.left="pressEmpty" @keydown="moveSelection">
+  <div
+    ref="grid"
+    class="grid"
+    tabindex="0"
+    @mousedown.left="pressEmpty"
+    @keydown="moveSelection"
+    @scroll.passive="onScroll"
+  >
     <table>
       <thead>
         <tr @pointerdown="allowSort">
@@ -407,11 +526,18 @@ function onEnter(event: KeyboardEvent): void {
         </tr>
       </thead>
       <tbody>
+        <tr class="sizer" aria-hidden="true">
+          <td v-for="(value, columnIndex) in widest" :key="columnIndex">{{ value }}</td>
+        </tr>
+        <tr v-if="start > 0" class="spacer">
+          <td :colspan="columns.length" :style="{ height: `${start * GRID_ROW_HEIGHT}px` }" />
+        </tr>
         <tr
-          v-for="(row, rowIndex) in rows"
+          v-for="rowIndex in drawnRows"
           :key="rowIndex"
-          v-memo="rowMemo(row, rowIndex)"
+          v-memo="rowMemo(rows[rowIndex], rowIndex)"
           :class="{
+            alt: rowIndex % 2 === 1,
             selected: isSelected(rowIndex),
             draft: isNew(rowIndex),
             deleted: isDeleted(rowIndex),
@@ -421,7 +547,7 @@ function onEnter(event: KeyboardEvent): void {
           @contextmenu="openMenu(rowIndex, $event)"
         >
           <td
-            v-for="(value, columnIndex) in row"
+            v-for="(value, columnIndex) in rows[rowIndex]"
             :key="columnIndex"
             :class="{
               editing: isEditing(rowIndex, columnIndex),
@@ -455,6 +581,12 @@ function onEnter(event: KeyboardEvent): void {
             <template v-else>{{ preview(value) }}</template>
           </td>
         </tr>
+        <tr v-if="end < rows.length" class="spacer">
+          <td
+            :colspan="columns.length"
+            :style="{ height: `${(rows.length - end) * GRID_ROW_HEIGHT}px` }"
+          />
+        </tr>
       </tbody>
     </table>
   </div>
@@ -478,6 +610,7 @@ table {
   border-spacing: 0;
 }
 
+/* The height is GRID_ROW_HEIGHT. The row windowing counts on it. */
 th,
 td {
   height: 22px;
@@ -553,13 +686,24 @@ tbody tr:last-child td {
   border-bottom: 1px solid var(--border-soft);
 }
 
-/* A row that the arrow keys scroll to is not hidden under the sticky header. */
-tbody tr {
-  scroll-margin-top: 22px;
+tbody tr.alt {
+  background: var(--row-alt);
 }
 
-tbody tr:nth-child(even) {
-  background: var(--row-alt);
+/* The empty rows that stand for the rows that are not drawn. */
+tbody tr.spacer td {
+  max-width: none;
+  padding: 0;
+  border: 0;
+}
+
+/* The hidden row with the longest text of each column. It sets the widths but has no height. */
+tbody tr.sizer td {
+  height: 0;
+  border-top: 0;
+  border-bottom: 0;
+  line-height: 0;
+  visibility: hidden;
 }
 
 /* A new row is green. A row that is marked as deleted is red and crossed out. */

@@ -60,3 +60,16 @@ test('Shift with the main modifier gives the export action', function () {
   ).toBeNull()
   expect(windows.hint('E', true)).toBe('Ctrl+Shift+E')
 })
+
+test('Cmd+A on macOS and Ctrl+A on Windows and Linux select all rows', function () {
+  const mac = new Shortcuts('MacIntel')
+  expect(mac.selectsAll({ ...NONE, key: 'a', metaKey: true })).toBe(true)
+  // Caps Lock gives a capital letter.
+  expect(mac.selectsAll({ ...NONE, key: 'A', metaKey: true })).toBe(true)
+  expect(mac.selectsAll({ ...NONE, key: 'a', ctrlKey: true })).toBe(false)
+  expect(mac.selectsAll({ ...NONE, key: 'a', metaKey: true, shiftKey: true })).toBe(false)
+  expect(mac.selectsAll({ ...NONE, key: 'a' })).toBe(false)
+  const windows = new Shortcuts('Win32')
+  expect(windows.selectsAll({ ...NONE, key: 'a', ctrlKey: true })).toBe(true)
+  expect(windows.selectsAll({ ...NONE, key: 'a', metaKey: true })).toBe(false)
+})
