@@ -128,6 +128,9 @@ Installers are not code signed, but the update files are signed with the updater
   asks the user, then installs and restarts. Release builds only: a debug build never checks.
 - The app reads `https://github.com/necessarylion/sql-pro/releases/latest/download/latest.json`
   (`plugins.updater` in `tauri.conf.json`). Users get an update only after the workflow has published the release.
+- `latest.json` is made once by the `publish` job with `.github/scripts/latest-json.sh`, from the `.sig` files
+  in the release. The build jobs do not upload it (`uploadUpdaterJson: false`), because six jobs writing one
+  file lose platforms.
 - The tag must match the version in `tauri.conf.json`. Raise the version there before you tag.
 - The workflow signs with the repository secret `TAURI_SIGNING_PRIVATE_KEY` (no password). The private key
   file is `~/.tauri/sql-pro-updater.key` on the owner's machine. Never commit it.

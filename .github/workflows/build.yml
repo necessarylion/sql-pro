@@ -10,11 +10,15 @@ name: build
 #   If a build fails, the release stays a draft. Fix it, or publish it by hand.
 #
 # Auto update:
-# - The build also makes the update files and `latest.json`, and adds them to the release.
+# - Each build adds its update files and their `.sig` files to the release.
+# - The builds do NOT make `latest.json`. Six jobs writing one file at the same time
+#   lose entries. The `publish` job makes it once, from the `.sig` files, with
+#   `.github/scripts/latest-json.sh`. It fails if a platform is missing.
 # - The app reads `releases/latest`. A draft is not the latest release.
 #   So users only get the update after the `publish` job has run.
 # - The app compares its own version with the one in `latest.json`. That one comes
-#   from `tauri.conf.json`, not from the tag. So raise the version there before you tag.
+#   from the tag. The file names come from `tauri.conf.json`. So the two must match:
+#   raise the version there before you tag.
 # - The update files are signed with the updater key. The secret
 #   TAURI_SIGNING_PRIVATE_KEY must be set in the repository, or the build fails.
 #
@@ -95,9 +99,14 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: SQL Pro ${{ github.ref_name }}
           # Keep this a draft on purpose. The six jobs upload their files one by one.
-          # The app reads `latest.json` from the latest release, so it must not see
-          # a release that is only half filled. The `publish` job publishes it at the end.
+          # The app reads the latest release, so it must not see a release that is
+          # only half filled. The `publish` job publishes it at the end.
           releaseDraft: true
+          # Do not upload `latest.json` here. The six jobs would overwrite each other
+          # and lose platforms. The `publish` job makes it once.
+          uploadUpdaterJson: false
+          # The `.sig` files are still needed. The `publish` job reads them.
+          uploadUpdaterSignatures: true
           # A run started by hand keeps the installers as workflow artifacts.
           uploadWorkflowArtifacts: ${{ github.ref_type != 'tag' }}
 
@@ -112,6 +121,17 @@ jobs:
       # Needed to change the release.
       contents: write
     steps:
+      - uses: actions/checkout@v7
+
+      - name: Make latest.json for the auto update
+        # Must run before the release is published, so users never see a release without it.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          bash .github/scripts/latest-json.sh "$TAG" > latest.json
+          gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY" --clobber
+
       - name: Publish the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
