@@ -38,7 +38,8 @@ export class SessionManager {
 
   /**
    * Opens `table` in a new tab, with its own copy of the connection of `source`.
-   * The tab shows at once with a loading state, because a far away database is slow to copy.
+   * The tab shows at once with a loading state. The copy is fast when the backend has a spare
+   * connection ready, but it can be slow when it must open a new one to a far away database.
    * When the copy fails, the tab goes away and the error shows in `source`.
    */
   async openTable(source: Session, table: TableRef): Promise<void> {

@@ -2,6 +2,7 @@
 
 mod export;
 mod import;
+mod spare;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -23,6 +24,7 @@ use crate::model::{
 use crate::repository::{
     DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, not_saved,
 };
+use spare::Spare;
 
 /// The bound values of one statement.
 type Params = Vec<Option<String>>;
@@ -34,6 +36,8 @@ struct Connection {
     repository: Arc<dyn Repository>,
     /// Lives as long as the connection. It also knows the local port of the tunnel.
     tunnel: Option<Arc<SshTunnel>>,
+    /// Shared by the first tab and all its copies.
+    spare: Arc<Spare>,
 }
 
 /// Keeps the open connections and does all the work on them.
@@ -51,35 +55,59 @@ impl ConnectionService {
     }
 
     /// Opens a connection under `id`. An older connection with the same id is closed.
+    /// A spare connection then opens in the background for the next new tab.
     pub async fn connect(&self, id: String, config: ConnectionConfig) -> AppResult<()> {
-        self.open(id, config, None).await
+        self.open(id, config, None, Arc::default()).await
     }
 
-    /// Like `connect`, but goes through `tunnel` when it is set.
+    /// Like `connect`, but goes through `tunnel` when it is set, and keeps `spare`.
     /// A shared tunnel stops when the last connection that uses it is closed.
     async fn open(
         &self,
         id: String,
         config: ConnectionConfig,
         tunnel: Option<Arc<SshTunnel>>,
+        spare: Arc<Spare>,
     ) -> AppResult<()> {
         let (repository, tunnel) = self.factory.create(&config, tunnel).await?;
         let connection = Connection {
             config,
             repository,
             tunnel,
+            spare,
         };
+        self.insert(id, connection).await;
+        Ok(())
+    }
+
+    /// Stores `connection` under `id` and starts a new spare when the group has none.
+    async fn insert(&self, id: String, connection: Connection) {
+        let tunnel = connection.tunnel.clone();
+        let config = connection.config.clone();
+        connection.spare.refill(self.factory, config, tunnel);
         let previous = self.connections.lock().insert(id, connection);
         if let Some(previous) = previous {
-            previous.repository.close().await;
+            self.release(previous).await;
         }
-        Ok(())
+    }
+
+    /// Closes a connection. When it was the last tab of its group, the spare closes too.
+    async fn release(&self, connection: Connection) {
+        connection.repository.close().await;
+        let used = self
+            .connections
+            .lock()
+            .values()
+            .any(|other| Arc::ptr_eq(&other.spare, &connection.spare));
+        if !used {
+            connection.spare.close().await;
+        }
     }
 
     pub async fn disconnect(&self, id: &str) {
         let removed = self.connections.lock().remove(id);
         if let Some(removed) = removed {
-            removed.repository.close().await;
+            self.release(removed).await;
         }
     }
 
@@ -87,11 +115,14 @@ impl ConnectionService {
     /// so we reconnect for every driver.
     pub async fn use_database(&self, id: &str, database: String) -> AppResult<()> {
         let Connection {
-            mut config, tunnel, ..
+            mut config,
+            tunnel,
+            spare,
+            ..
         } = self.connection(id)?;
         config.database = database;
-        // Same server, so the same tunnel.
-        self.open(id.to_owned(), config, tunnel).await
+        // Same server, so the same tunnel and the same spare.
+        self.open(id.to_owned(), config, tunnel, spare).await
     }
 
     pub async fn databases(&self, id: &str) -> AppResult<Vec<String>> {
@@ -330,9 +361,26 @@ impl ConnectionService {
     /// Opens a second connection under `new_id`, with the settings that `id` uses now.
     /// It has its own pool, so `USE` and transactions stay apart. It shares the SSH
     /// tunnel of `id`. Closing one tab leaves the tunnel open for the other.
+    /// It takes the spare connection when that fits, so it is fast. Else it opens a new one.
+    /// Then the next spare starts to open in the background.
     pub async fn clone_connection(&self, id: &str, new_id: String) -> AppResult<()> {
-        let Connection { config, tunnel, .. } = self.connection(id)?;
-        self.open(new_id, config, tunnel).await
+        let Connection {
+            config,
+            tunnel,
+            spare,
+            ..
+        } = self.connection(id)?;
+        let Some((repository, tunnel)) = spare.take(&config).await else {
+            return self.open(new_id, config, tunnel, spare).await;
+        };
+        let connection = Connection {
+            config,
+            repository,
+            tunnel,
+            spare,
+        };
+        self.insert(new_id, connection).await;
+        Ok(())
     }
 
     /// Adds a column to a table.
@@ -1084,5 +1132,75 @@ impl ConnectionService {
             return Err("This table has no primary key, so its rows cannot be changed".into());
         }
         Ok(parts.join(" AND "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// Waits until the spare of tab `id` is open, and gives it.
+    async fn ready_spare(service: &ConnectionService, id: &str) -> Arc<dyn Repository> {
+        let spare = service.connection(id).expect("connected").spare;
+        for _ in 0..100 {
+            if let Some(ready) = spare.ready() {
+                return ready;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the spare did not open");
+    }
+
+    fn same(left: &Arc<dyn Repository>, right: &Arc<dyn Repository>) -> bool {
+        Arc::as_ptr(left).cast::<()>() == Arc::as_ptr(right).cast::<()>()
+    }
+
+    #[tokio::test]
+    async fn new_tab_takes_the_spare() {
+        let path = std::env::temp_dir().join(format!("sqlpro-spare-{}.sqlite", std::process::id()));
+        std::fs::File::create(&path).expect("create file");
+        let config = ConnectionConfig {
+            driver: Driver::Sqlite,
+            host: String::new(),
+            port: 0,
+            user: String::new(),
+            password: String::new(),
+            database: path.to_string_lossy().into_owned(),
+            ssh: None,
+        };
+        let service = ConnectionService::new(RepositoryFactory);
+        service
+            .connect("a".to_owned(), config)
+            .await
+            .expect("connect");
+
+        // The new tab gets the spare that opened after the connect.
+        let first = ready_spare(&service, "a").await;
+        service
+            .clone_connection("a", "b".to_owned())
+            .await
+            .expect("clone");
+        assert!(same(&service.repository("b").expect("b"), &first));
+
+        // The next spare opens, and the next new tab gets that one.
+        let second = ready_spare(&service, "a").await;
+        assert!(!same(&first, &second));
+        service
+            .clone_connection("b", "c".to_owned())
+            .await
+            .expect("clone");
+        assert!(same(&service.repository("c").expect("c"), &second));
+        service.tables("c").await.expect("tables");
+
+        // The spare closes with the last tab of the group.
+        let spare = service.connection("a").expect("a").spare;
+        ready_spare(&service, "a").await;
+        for id in ["a", "b", "c"] {
+            service.disconnect(id).await;
+        }
+        assert!(spare.ready().is_none());
+        std::fs::remove_file(&path).ok();
     }
 }

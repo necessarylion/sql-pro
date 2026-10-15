@@ -15,7 +15,7 @@ pub enum Driver {
 }
 
 /// How to reach one database. For `SQLite`, `database` is the file path.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 pub struct ConnectionConfig {
     pub driver: Driver,
     pub host: String,
@@ -30,7 +30,7 @@ pub struct ConnectionConfig {
 
 /// An SSH server to tunnel through.
 /// `password` is the login password, or the passphrase of the key. Empty means keys and agent only.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SshConfig {
     pub host: String,

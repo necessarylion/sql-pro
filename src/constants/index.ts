@@ -9,7 +9,7 @@ export const OBJECT_KIND_LABELS: Record<DbObjectKind, string> = {
 }
 
 /** Rows loaded per page in the content view. */
-export const PAGE_SIZE = 500
+export const PAGE_SIZE = 300
 
 /** The status of a tab after the user cancelled its query. */
 export const QUERY_CANCELLED_STATUS = 'Query cancelled'

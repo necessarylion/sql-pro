@@ -57,7 +57,8 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
   grid can show any column type. **Writes use `sqlx::query`** with bound `Option<String>` values. PostgreSQL
   placeholders are wrapped as `CAST($n AS type)` for non-text columns.
 - **One connection per tab**: each tab has its own pool with `max_connections(1)`, so `USE database` and
-  transactions stay on the same connection.
+  transactions stay on the same connection. A tab and its copies share one spare connection
+  (`service/spare.rs`) that opens in the background. A new tab takes it, so it opens at once.
 - **`save_changes`** applies pending deletes, then updates, then inserts in one transaction
   (`Repository::execute_all`). This is the only write path for row data.
 - Identifiers are quoted with the repository helpers. Column types and defaults in `add_column` / `create_table`

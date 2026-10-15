@@ -249,6 +249,7 @@ pub fn not_saved(label: &str, error: &AppError) -> AppError {
 }
 
 /// Opens the right repository for a connection config.
+#[derive(Clone, Copy)]
 pub struct RepositoryFactory;
 
 impl RepositoryFactory {
