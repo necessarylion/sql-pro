@@ -396,9 +396,11 @@ watch([entryCount, working, phase, hasResult], scrollDown)
         <div v-else :class="['entry', entry.kind, { failed: entry.failed }]">
           {{ entry.text }}
           <span v-if="entry.files" class="files">
-            <span v-for="file in entry.files" :key="file.name" class="chip">
+            <span v-for="file in entry.files" :key="file.name" class="chip" :title="file.name">
               <FileTextIcon :size="10" />
-              {{ fileLabel(file) }}{{ file.kept ? '' : ' (not saved)' }}
+              <span class="chip-name">
+                {{ fileLabel(file) }}{{ file.kept ? '' : ' (not saved)' }}
+              </span>
             </span>
           </span>
         </div>
@@ -419,12 +421,21 @@ watch([entryCount, working, phase, hasResult], scrollDown)
       <DataGrid v-model:selected="selected" :columns="columns" :rows="session.chat.result.rows" />
     </div>
     <div v-if="session.chat.attachments.items.length" class="chips">
-      <span v-for="(file, index) in session.chat.attachments.items" :key="index" class="chip">
+      <span
+        v-for="(file, index) in session.chat.attachments.items"
+        :key="index"
+        class="chip"
+        :title="fileLabel(file)"
+      >
         <img v-if="!AiAttachments.isCsv(file)" :src="AiAttachments.preview(file)" alt="" />
         <FileTextIcon v-else :size="11" />
-        {{ fileLabel(file) }}
-        <button class="icon" title="Remove" @click="session.chat.attachments.remove(index)">
-          <XIcon :size="10" />
+        <span class="chip-name">{{ fileLabel(file) }}</span>
+        <button
+          class="icon chip-remove"
+          :title="`Remove ${file.name}`"
+          @click="session.chat.attachments.remove(index)"
+        >
+          <XIcon :size="11" />
         </button>
       </span>
     </div>
@@ -552,21 +563,39 @@ watch([entryCount, working, phase, hasResult], scrollDown)
   margin-top: 4px;
 }
 
+/* The chips start where the input box starts: after the paperclip (22px) and the gap (6px). */
+.chips {
+  padding-left: 36px;
+}
+
+/* A small control, like the others in the bars. */
 .chip {
   display: inline-flex;
+  flex: none;
   gap: 4px;
   align-items: center;
-  max-width: 220px;
+  max-width: 240px;
   height: 22px;
-  padding: 0 4px 0 6px;
-  overflow: hidden;
+  padding: 0 2px 0 5px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 5px;
   color: var(--text);
   font-size: 11px;
-  text-overflow: ellipsis;
+  font-weight: 400;
+  line-height: 1;
   white-space: nowrap;
+}
+
+.chip > :not(.chip-name) {
+  flex-shrink: 0;
+}
+
+/* A long name is cut. The full name is in the title. */
+.chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chip img {
@@ -576,9 +605,21 @@ watch([entryCount, working, phase, hasResult], scrollDown)
   border-radius: 3px;
 }
 
-.chip button.icon {
+.chip-remove.icon {
   width: 16px;
   height: 16px;
+  border-radius: 3px;
+  color: var(--text-2);
+}
+
+.chip-remove.icon:hover {
+  background: var(--seg-active);
+  color: var(--text);
+}
+
+/* User messages are on the accent colour. Their chips keep the normal colours. */
+.user .chip {
+  color: var(--text);
 }
 
 .attach {
