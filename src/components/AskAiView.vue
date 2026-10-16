@@ -1,12 +1,33 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue'
-import { confirm } from '@tauri-apps/plugin-dialog'
-import { LoaderCircleIcon, PlusIcon, SendIcon, SquareIcon, Trash2Icon } from 'lucide-vue-next'
-import { AI_CUSTOM_MODEL, AI_MODES, AI_PROVIDERS } from '../constants/ai'
+import { confirm, open } from '@tauri-apps/plugin-dialog'
+import {
+  CheckIcon,
+  FileTextIcon,
+  LoaderCircleIcon,
+  PaperclipIcon,
+  PlusIcon,
+  SendIcon,
+  SquareIcon,
+  TerminalIcon,
+  Trash2Icon,
+  UploadIcon,
+  XIcon,
+} from 'lucide-vue-next'
+import {
+  AI_CUSTOM_MODEL,
+  AI_FILE_EXTENSIONS,
+  AI_MODES,
+  AI_PASTE_NAMES,
+  AI_PRIVACY_NOTE,
+  AI_PROVIDERS,
+} from '../constants/ai'
+import { AiAttachments } from '../services/AiAttachments'
+import type { FileDropEvent } from '../services/FileDrop'
 import { AiStore } from '../services/AiStore'
-import { AI_STORE, CHAT_FORMATTER, injectRequired } from '../services/keys'
+import { AI_STORE, CHAT_FORMATTER, FILE_DROP, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
-import type { GridColumn, SavedChat } from '../types'
+import type { ChatEntry, GridColumn, SavedChat } from '../types'
 import BottomBar from './BottomBar.vue'
 import DataGrid from './DataGrid.vue'
 import PaneResizer from './PaneResizer.vue'
@@ -14,6 +35,10 @@ import PaneResizer from './PaneResizer.vue'
 const props = defineProps<{ session: Session }>()
 const store = injectRequired(AI_STORE)
 const formatter = injectRequired(CHAT_FORMATTER)
+const fileDrop = injectRequired(FILE_DROP)
+const root = useTemplateRef<HTMLDivElement>('root')
+/** True while files are dragged over this view. It shows the drop overlay. */
+const dropping = ref(false)
 
 const question = ref('')
 const selected = ref<number[]>([])
@@ -59,12 +84,19 @@ function send(): void {
   if (!text || working.value) {
     return
   }
-  question.value = ''
   props.session.run(askAndSave(text))
 }
 
-/** Saves the chat also when the question fails, so the question is not lost. */
+/**
+ * Saves the chat also when the question fails, so the question is not lost.
+ * A production connection asks once before its data goes to the AI.
+ */
 async function askAndSave(text: string): Promise<void> {
+  const allowed = await store.allowSend(connection.value, props.session.environment, props.session)
+  if (!allowed) {
+    return
+  }
+  question.value = ''
   try {
     await props.session.askAi(text, store.options(chatProvider()))
   } finally {
@@ -86,6 +118,71 @@ function onKey(event: KeyboardEvent): void {
     event.preventDefault()
     send()
   }
+}
+
+/** The paperclip button: pick images and CSV files. */
+async function pickFiles(): Promise<void> {
+  const picked = await open({
+    multiple: true,
+    filters: [{ name: 'Images and CSV files', extensions: AI_FILE_EXTENSIONS }],
+  })
+  await attachAll(picked ?? [])
+}
+
+/** Adds the files one by one. The first refused file stops it with its reason. */
+async function attachAll(paths: string[]): Promise<void> {
+  for (const path of paths) {
+    await props.session.chat.attachFile(path)
+  }
+}
+
+/** True when the page point lies on this view, and the view can be seen. */
+function isOver(x: number, y: number): boolean {
+  const box = root.value?.getBoundingClientRect()
+  if (!box || box.width === 0 || box.height === 0) {
+    return false
+  }
+  return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom
+}
+
+/** Files dragged from the desktop. Only a drop on this view is taken. */
+function onFileDrop(event: FileDropEvent): void {
+  if (event.type === 'leave') {
+    dropping.value = false
+    return
+  }
+  const over = isOver(event.x, event.y)
+  dropping.value = over && event.type !== 'drop'
+  if (event.type === 'drop' && over && !working.value) {
+    props.session.run(attachAll(event.paths))
+  }
+}
+
+/** An image pasted into the input. Text pastes as usual. */
+function onPaste(event: ClipboardEvent): void {
+  for (const item of event.clipboardData?.items ?? []) {
+    const name = AI_PASTE_NAMES[item.type]
+    const file = item.kind === 'file' ? item.getAsFile() : null
+    if (name && file) {
+      event.preventDefault()
+      props.session.run(attachPasted(name, file))
+    }
+  }
+}
+
+async function attachPasted(name: string, file: File): Promise<void> {
+  const data = AiAttachments.toBase64(new Uint8Array(await file.arrayBuffer()))
+  await props.session.chat.attachPasted(name, data)
+}
+
+/** Like "users.csv · 120 rows". An old chat did not keep the file. */
+function fileLabel(file: { name: string; rows: number; mediaType: string }): string {
+  return AiAttachments.isCsv(file) ? `${file.name} · ${file.rows} rows` : file.name
+}
+
+/** The approval card of a write: run the SQL as it is in the box now. */
+function approve(entry: ChatEntry): void {
+  props.session.chat.decide(entry.text)
 }
 
 function stop(): void {
@@ -197,131 +294,340 @@ function unobserve(): void {
   observer = null
 }
 
+let stopDrop: (() => void) | null = null
+
+async function listenForDrops(): Promise<void> {
+  stopDrop = await fileDrop.listen({ onFileDrop })
+}
+
+function stopListening(): void {
+  stopDrop?.()
+  stopDrop = null
+}
+
 onMounted(observe)
+onMounted(listenForDrops)
 onBeforeUnmount(unobserve)
+onBeforeUnmount(stopListening)
 // A new message, the busy line, its text ("Running SQL…" or "thinking") and a new result all move the end.
 watch([entryCount, working, phase, hasResult], scrollDown)
 </script>
 
 <template>
-  <div class="bar head">
-    <select
-      class="history"
-      title="Open an earlier chat of this connection"
-      :value="saved ? session.chat.chatId : ''"
-      :disabled="working || history.length === 0"
-      @change="pickChat"
-    >
-      <option value="" disabled>{{ history.length ? 'History…' : 'No history' }}</option>
-      <option v-for="chat in history" :key="chat.id" :value="chat.id">
-        {{ chatLabel(chat) }}
-      </option>
-    </select>
-    <button
-      class="icon"
-      title="Delete this chat from the history"
-      :disabled="working || !saved"
-      @click="session.run(deleteChat())"
-    >
-      <Trash2Icon :size="12" />
-    </button>
-    <span class="spacer" />
-    <button
-      title="Start a new chat. The AI forgets this one."
-      :disabled="working || session.chat.entries.length === 0"
-      @click="session.chat.clear()"
-    >
-      <PlusIcon :size="11" />
-      New chat
-    </button>
-  </div>
-  <div ref="log" class="log" @scroll="trackScroll">
-    <div v-if="session.chat.entries.length === 0" class="empty">
-      Ask about this database in plain English. The AI writes the SQL. Changes ask you first.
+  <div ref="root" class="ask-view">
+    <div class="bar head">
+      <select
+        class="history"
+        title="Open an earlier chat of this connection"
+        :value="saved ? session.chat.chatId : ''"
+        :disabled="working || history.length === 0"
+        @change="pickChat"
+      >
+        <option value="" disabled>{{ history.length ? 'History…' : 'No history' }}</option>
+        <option v-for="chat in history" :key="chat.id" :value="chat.id">
+          {{ chatLabel(chat) }}
+        </option>
+      </select>
+      <button
+        class="icon"
+        title="Delete this chat from the history"
+        :disabled="working || !saved"
+        @click="session.run(deleteChat())"
+      >
+        <Trash2Icon :size="12" />
+      </button>
+      <span class="spacer" />
+      <button
+        title="Start a new chat. The AI forgets this one."
+        :disabled="working || session.chat.entries.length === 0"
+        @click="session.chat.clear()"
+      >
+        <PlusIcon :size="11" />
+        New chat
+      </button>
     </div>
-    <template v-for="(entry, index) in session.chat.entries" :key="index">
-      <div v-if="entry.kind === 'sql'" class="sql">
-        <!-- ChatFormatter escapes all text. Only its own colour spans are HTML. -->
-        <pre v-html="formatter.sql(entry.text, session.config?.driver)" />
-        <span v-if="entry.outcome" class="outcome" :class="{ error: entry.failed }">
-          {{ entry.outcome }}
-        </span>
+    <div ref="log" class="log" @scroll="trackScroll">
+      <div v-if="session.chat.entries.length === 0" class="empty">
+        Ask about this database in plain English. The AI writes the SQL. Changes ask you first.
       </div>
-      <!-- Markdown with raw HTML, links and images turned off. See ChatFormatter. -->
-      <div
-        v-else-if="entry.kind === 'ai'"
-        class="entry ai markdown"
-        v-html="formatter.markdown(entry.text, session.config?.driver)"
+      <template v-for="(entry, index) in session.chat.entries" :key="index">
+        <!-- A write waits here. The user may change it, then Run asks once more in a dialog. -->
+        <div v-if="entry.kind === 'sql' && entry.pending" class="sql card">
+          <span class="card-title"
+            >The AI wants to change data. Check the SQL, change it if needed.</span
+          >
+          <textarea v-model="entry.text" class="mono" rows="4" spellcheck="false" />
+          <div class="card-buttons">
+            <button class="primary" :disabled="!entry.text.trim()" @click="approve(entry)">
+              <CheckIcon :size="11" />
+              Run
+            </button>
+            <button @click="session.chat.decide(null)">Reject</button>
+            <span class="spacer" />
+            <button
+              title="Put this SQL in the Query editor"
+              @click="session.openInQuery(entry.text)"
+            >
+              <TerminalIcon :size="11" />
+              Open in Query
+            </button>
+          </div>
+        </div>
+        <div v-else-if="entry.kind === 'sql'" class="sql">
+          <!-- ChatFormatter escapes all text. Only its own colour spans are HTML. -->
+          <pre v-html="formatter.sql(entry.text, session.config?.driver)" />
+          <div class="outcome" :class="{ error: entry.failed }">
+            <span class="outcome-text">{{ entry.outcome }}</span>
+            <button
+              class="icon"
+              title="Open in Query: put this SQL in the Query editor"
+              @click="session.openInQuery(entry.text)"
+            >
+              <TerminalIcon :size="11" />
+            </button>
+          </div>
+        </div>
+        <!-- Markdown with raw HTML, links and images turned off. See ChatFormatter. -->
+        <div
+          v-else-if="entry.kind === 'ai'"
+          class="entry ai markdown"
+          v-html="formatter.markdown(entry.text, session.config?.driver)"
+        />
+        <div v-else :class="['entry', entry.kind, { failed: entry.failed }]">
+          {{ entry.text }}
+          <span v-if="entry.files" class="files">
+            <span v-for="file in entry.files" :key="file.name" class="chip">
+              <FileTextIcon :size="10" />
+              {{ fileLabel(file) }}{{ file.kept ? '' : ' (not saved)' }}
+            </span>
+          </span>
+        </div>
+      </template>
+      <div v-if="working" class="entry note">
+        <LoaderCircleIcon :size="12" class="spin" />
+        {{
+          session.chat.phase === 'running'
+            ? 'Running SQL…'
+            : session.chat.phase === 'waiting'
+              ? 'Waiting for you to approve the SQL…'
+              : 'AI is thinking…'
+        }}
+      </div>
+    </div>
+    <div v-if="session.chat.result" class="result">
+      <PaneResizer size="aiResultHeight" />
+      <DataGrid v-model:selected="selected" :columns="columns" :rows="session.chat.result.rows" />
+    </div>
+    <div v-if="session.chat.attachments.items.length" class="chips">
+      <span v-for="(file, index) in session.chat.attachments.items" :key="index" class="chip">
+        <img v-if="!AiAttachments.isCsv(file)" :src="AiAttachments.preview(file)" alt="" />
+        <FileTextIcon v-else :size="11" />
+        {{ fileLabel(file) }}
+        <button class="icon" title="Remove" @click="session.chat.attachments.remove(index)">
+          <XIcon :size="10" />
+        </button>
+      </span>
+    </div>
+    <div class="ask">
+      <button
+        class="icon attach"
+        title="Attach images (PNG, JPEG, WebP) or CSV files. You can also drop or paste them."
+        :disabled="working"
+        @click="session.run(pickFiles())"
+      >
+        <PaperclipIcon :size="13" />
+      </button>
+      <textarea
+        v-model="question"
+        rows="2"
+        placeholder="Like: how many users signed up in the last 7 days?"
+        @keydown="onKey"
+        @paste="onPaste"
       />
-      <div v-else :class="['entry', entry.kind, { failed: entry.failed }]">{{ entry.text }}</div>
-    </template>
-    <div v-if="working" class="entry note">
-      <LoaderCircleIcon :size="12" class="spin" />
-      {{ session.chat.phase === 'running' ? 'Running SQL…' : 'AI is thinking…' }}
+      <button v-if="working" title="Stop the AI" @click="stop">
+        <SquareIcon :size="11" />
+        Stop
+      </button>
+      <button
+        v-else
+        class="primary"
+        title="Send (Enter)"
+        :disabled="!question.trim()"
+        @click="send"
+      >
+        <SendIcon :size="11" />
+        Ask
+      </button>
+    </div>
+    <BottomBar :session="session">
+      <select v-model="store.provider" title="AI provider" @change="saveSettings">
+        <option v-for="(provider, id) in AI_PROVIDERS" :key="id" :value="id">
+          {{ provider.label }}
+        </option>
+      </select>
+      <select v-model="modelChoice" title="Model">
+        <option v-for="choice in store.current.models" :key="choice.value" :value="choice.value">
+          {{ choice.label }}
+        </option>
+        <option :value="AI_CUSTOM_MODEL">Custom…</option>
+      </select>
+      <input
+        v-if="modelChoice === AI_CUSTOM_MODEL"
+        class="custom mono"
+        :value="store.model"
+        placeholder="model id, like claude-opus-5-5"
+        title="Any model id the AI tool knows. Lower case letters, digits, '.', '-', '[' and ']'."
+        pattern="[a-z0-9][a-z0-9.\-\[\]]{0,79}"
+        autocapitalize="off"
+        spellcheck="false"
+        @change="saveCustom"
+      />
+      <select v-model="store.effort" title="Effort" @change="saveSettings">
+        <option v-for="choice in store.current.efforts" :key="choice.value" :value="choice.value">
+          {{ choice.label }}
+        </option>
+      </select>
+      <select
+        v-model="store.mode"
+        title="What happens with SQL that changes data"
+        @change="saveSettings"
+      >
+        <option v-for="mode in AI_MODES" :key="mode.value" :value="mode.value">
+          {{ mode.label }}
+        </option>
+      </select>
+      <span class="divider" />
+      <span class="dim privacy" :title="AI_PRIVACY_NOTE">{{ AI_PRIVACY_NOTE }}</span>
+    </BottomBar>
+    <div v-if="dropping" class="drop">
+      <UploadIcon :size="22" />
+      Drop images or CSV files to attach them
     </div>
   </div>
-  <div v-if="session.chat.result" class="result">
-    <PaneResizer size="aiResultHeight" />
-    <DataGrid v-model:selected="selected" :columns="columns" :rows="session.chat.result.rows" />
-  </div>
-  <div class="ask">
-    <textarea
-      v-model="question"
-      rows="2"
-      placeholder="Like: how many users signed up in the last 7 days?"
-      @keydown="onKey"
-    />
-    <button v-if="working" title="Stop the AI" @click="stop">
-      <SquareIcon :size="11" />
-      Stop
-    </button>
-    <button v-else class="primary" title="Send (Enter)" :disabled="!question.trim()" @click="send">
-      <SendIcon :size="11" />
-      Ask
-    </button>
-  </div>
-  <BottomBar :session="session">
-    <select v-model="store.provider" title="AI provider" @change="saveSettings">
-      <option v-for="(provider, id) in AI_PROVIDERS" :key="id" :value="id">
-        {{ provider.label }}
-      </option>
-    </select>
-    <select v-model="modelChoice" title="Model">
-      <option v-for="choice in store.current.models" :key="choice.value" :value="choice.value">
-        {{ choice.label }}
-      </option>
-      <option :value="AI_CUSTOM_MODEL">Custom…</option>
-    </select>
-    <input
-      v-if="modelChoice === AI_CUSTOM_MODEL"
-      class="custom mono"
-      :value="store.model"
-      placeholder="model id, like claude-opus-5-5"
-      title="Any model id the AI tool knows. Lower case letters, digits, '.', '-', '[' and ']'."
-      pattern="[a-z0-9][a-z0-9.\-\[\]]{0,79}"
-      autocapitalize="off"
-      spellcheck="false"
-      @change="saveCustom"
-    />
-    <select v-model="store.effort" title="Effort" @change="saveSettings">
-      <option v-for="choice in store.current.efforts" :key="choice.value" :value="choice.value">
-        {{ choice.label }}
-      </option>
-    </select>
-    <select
-      v-model="store.mode"
-      title="What happens with SQL that changes data"
-      @change="saveSettings"
-    >
-      <option v-for="mode in AI_MODES" :key="mode.value" :value="mode.value">
-        {{ mode.label }}
-      </option>
-    </select>
-    <span class="divider" />
-  </BottomBar>
 </template>
 
 <style scoped>
+/* The whole view. The drop overlay covers it. */
+.ask-view {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.drop {
+  position: absolute;
+  inset: 6px;
+  z-index: 20;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  color: var(--accent-text);
+  font-size: 13px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.chips,
+.files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chips {
+  flex: none;
+  padding: 6px 8px 0;
+  background: var(--toolbar);
+  border-top: 1px solid var(--border);
+}
+
+.files {
+  margin-top: 4px;
+}
+
+.chip {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  max-width: 220px;
+  height: 22px;
+  padding: 0 4px 0 6px;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip img {
+  width: 16px;
+  height: 16px;
+  object-fit: cover;
+  border-radius: 3px;
+}
+
+.chip button.icon {
+  width: 16px;
+  height: 16px;
+}
+
+.attach {
+  align-self: center;
+}
+
+/* The approval card of a write. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 320px;
+  padding: 6px 8px;
+  border-color: var(--warn);
+}
+
+.card-title {
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.card textarea {
+  padding: 4px 6px;
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  resize: vertical;
+}
+
+.card-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.card-buttons button {
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 5px;
+}
+
+.privacy {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.outcome-text {
+  flex: 1;
+}
+
 .log {
   display: flex;
   flex: 1 1 0;
@@ -490,7 +796,8 @@ watch([entryCount, working, phase, hasResult], scrollDown)
 }
 
 .outcome {
-  display: block;
+  display: flex;
+  align-items: center;
   padding: 2px 9px;
   border-top: 1px solid var(--border-soft);
   color: var(--text-2);

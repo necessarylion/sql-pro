@@ -1169,6 +1169,21 @@ export class Session {
     await this.loadTables()
   }
 
+  /** Asks a yes or no question in a dialog. */
+  confirm(message: string, title: string): Promise<boolean> {
+    return this.prompt.ask(message, title)
+  }
+
+  /**
+   * Puts SQL into the Query editor and shows the Query view.
+   * Text that is in the editor already stays: the SQL goes on a new line at the end.
+   */
+  openInQuery(sql: string): void {
+    const current = this.sql.trimEnd()
+    this.sql = current ? `${current}\n\n${sql}` : sql
+    this.view = 'query'
+  }
+
   /** Asks the AI about this database. Its SQL may create or drop tables, so the list is reloaded after a write. */
   async askAi(question: string, options: AiOptions): Promise<void> {
     await this.chat.ask(this.id, question, options)

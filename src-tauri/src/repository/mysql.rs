@@ -415,6 +415,12 @@ impl Repository for MysqlRepository {
         )
     }
 
+    /// `MySQL` cannot say if `BEGIN` ran. With autocommit off, every statement opens one.
+    /// The service also watches the Query view for `BEGIN`. See `transaction_change`.
+    fn open_transaction_sql(&self) -> Option<&'static str> {
+        Some("SELECT CASE WHEN @@autocommit = 0 THEN 1 ELSE 0 END")
+    }
+
     fn auto_increment(&self) -> &'static str {
         "AUTO_INCREMENT"
     }

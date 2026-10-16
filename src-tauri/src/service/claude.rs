@@ -152,6 +152,50 @@ pub fn is_read_only(sql: &str) -> bool {
         && !words.any(|word| WRITE_KEYWORDS.contains(&word.as_str()))
 }
 
+/// How `sql` from the Query view changes the transaction state of the connection:
+/// `Some(true)` it opens one, `Some(false)` it ends it, `None` no change.
+/// Only `MySQL` needs this: it cannot tell if `BEGIN` ran. The last statement wins.
+///
+/// ponytail: only the first words of each statement are read. When we cannot read
+/// the text for sure, a word like `BEGIN` anywhere counts as open. A wrong "open"
+/// only blocks AI reads until the user runs `COMMIT` or `ROLLBACK`.
+pub(super) fn transaction_change(sql: &str) -> Option<bool> {
+    let Some(code) = code_only(sql) else {
+        let upper = sql.to_ascii_uppercase();
+        let opens = ["BEGIN", "START", "LOCK", "AUTOCOMMIT", "XA"];
+        return words(&upper)
+            .any(|word| opens.contains(&word.as_str()))
+            .then_some(true);
+    };
+    let mut change = None;
+    for statement in code.split(';') {
+        let all: Vec<String> = words(statement).collect();
+        let first = all.first().map_or("", String::as_str);
+        let second = all.get(1).map_or("", String::as_str);
+        let autocommit = all.iter().any(|word| word == "AUTOCOMMIT");
+        change = match (first, second) {
+            ("BEGIN" | "LOCK", _) | ("START", "TRANSACTION") | ("XA", "START" | "BEGIN") => {
+                Some(true)
+            }
+            ("SET", _) if autocommit => {
+                let off = all.iter().any(|word| word == "0" || word == "OFF");
+                Some(off)
+            }
+            ("ROLLBACK", "TO") => change,
+            ("COMMIT" | "ROLLBACK" | "UNLOCK", _) => Some(false),
+            _ => change,
+        };
+    }
+    change
+}
+
+/// The words of `text`, in upper case.
+fn words(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.split(|char: char| !(char.is_ascii_alphanumeric() || char == '_'))
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_uppercase)
+}
+
 /// `sql` with strings, quoted names and comments turned into spaces.
 /// `None` when the text has something we cannot read for sure.
 fn code_only(sql: &str) -> Option<String> {
@@ -223,7 +267,7 @@ fn close(chars: &[char], mut index: usize, quote: char) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_options, is_model_id, is_read_only, parse_reply};
+    use super::{check_options, is_model_id, is_read_only, parse_reply, transaction_change};
     use crate::model::AiOptions;
 
     #[test]
@@ -240,6 +284,33 @@ mod tests {
         assert!(check_options(&options(Some("--dangerously-skip-permissions"), None)).is_err());
         assert!(check_options(&options(None, Some("huge"))).is_err());
         assert!(check_options(&options(None, Some(""))).is_err());
+    }
+
+    #[test]
+    fn transaction_changes() {
+        assert_eq!(transaction_change("SELECT 1"), None);
+        assert_eq!(transaction_change("BEGIN"), Some(true));
+        assert_eq!(
+            transaction_change("start transaction; update t set a = 1"),
+            Some(true)
+        );
+        assert_eq!(
+            transaction_change("BEGIN; UPDATE t SET a = 1; COMMIT"),
+            Some(false)
+        );
+        assert_eq!(transaction_change("ROLLBACK TO SAVEPOINT a"), None);
+        assert_eq!(transaction_change("SET autocommit = 0"), Some(true));
+        assert_eq!(transaction_change("SET autocommit = 1"), Some(false));
+        assert_eq!(transaction_change("LOCK TABLES t WRITE"), Some(true));
+        assert_eq!(transaction_change("UNLOCK TABLES"), Some(false));
+        assert_eq!(transaction_change("SELECT 'BEGIN'"), None);
+        // A procedure body: the `BEGIN` is not at the start of a statement.
+        assert_eq!(
+            transaction_change("CREATE PROCEDURE p() BEGIN SELECT 1; END"),
+            None
+        );
+        // Text we cannot read for sure: any such word counts as open.
+        assert_eq!(transaction_change("SELECT 1 # x\nBEGIN"), Some(true));
     }
 
     #[test]

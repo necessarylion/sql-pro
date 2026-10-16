@@ -3979,6 +3979,7 @@ name = "sql-pro"
 version = "0.7.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "futures-util",
  "keyring",

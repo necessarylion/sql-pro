@@ -180,13 +180,53 @@ pub const FUNCTION: &str = "function";
 /// A smaller number reacts faster but makes every query a little slower.
 pub const SQLITE_CANCEL_CHECK_STEPS: i32 = 1000;
 
-/// Where `claude` may be, inside the home folder. Tried after the login shell.
-pub const CLAUDE_HOME_PATHS: [&str; 4] = [
+/// Where `claude` may be, inside the home folder. Tried first on macOS and Linux.
+pub const CLAUDE_HOME_PATHS: [&str; 3] = [
     ".claude/local/claude",
     ".local/bin/claude",
-    ".local/bin/claude.exe",
     ".npm-global/bin/claude",
 ];
+
+/// Where `claude.exe` may be on Windows, after `where claude`.
+/// Each entry is an environment variable and the path inside that folder.
+pub const CLAUDE_WINDOWS_PATHS: [(&str, &str); 3] = [
+    ("USERPROFILE", r".local\bin\claude.exe"),
+    ("LOCALAPPDATA", r"Programs\claude\claude.exe"),
+    ("APPDATA", r"npm\claude.cmd"),
+];
+
+/// The script of the npm package, next to the npm `claude.cmd` shim. We run it with
+/// `node`, because a `.cmd` file cannot take our long arguments safely.
+pub const CLAUDE_NPM_SCRIPT: &str = r"node_modules\@anthropic-ai\claude-code\cli.js";
+
+/// The error on Windows when only the npm shim is there and `node` or its script is missing.
+pub const CLAUDE_NEEDS_NATIVE: &str = "Claude Code was found only as an npm script that SQL Pro cannot run. Install the native build from https://claude.com/claude-code (claude.exe).";
+
+/// How long one answer of the AI may take. Then the run is killed like a stop.
+pub const CLAUDE_TIMEOUT_SECONDS: u64 = 300;
+
+/// The error when the AI did not answer in `CLAUDE_TIMEOUT_SECONDS`.
+pub const CLAUDE_TIMEOUT: &str = "The AI did not answer in 5 minutes.";
+
+/// The error when an AI read would run while the tab has an open transaction.
+/// The read-only guard would end (MySQL: commit, others: roll back) the user's work.
+pub const OPEN_TRANSACTION: &str = "Finish the open transaction in the Query view first.";
+
+/// The largest image the AI may get, in bytes.
+pub const AI_IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+/// The largest CSV file the AI may get, in bytes. A bigger one is refused, never cut.
+pub const AI_CSV_MAX_BYTES: usize = 200 * 1024;
+
+/// The most images, and the most CSV files, in one message.
+pub const AI_MAX_IMAGES: usize = 5;
+pub const AI_MAX_CSV_FILES: usize = 5;
+
+/// The error for a file type the AI may not get.
+pub const AI_FILE_TYPES: &str = "Only PNG, JPEG and WebP images and CSV files can be attached.";
+
+/// The error when SQL that is not a read is sent to the read-only path.
+pub const NOT_A_READ: &str = "This SQL is not a read, so it cannot run as one.";
 
 /// The error when the Claude Code CLI cannot be found.
 pub const CLAUDE_NOT_FOUND: &str = "Claude Code is not installed. Install it from https://claude.com/claude-code, then run `claude` once in a terminal to log in.";

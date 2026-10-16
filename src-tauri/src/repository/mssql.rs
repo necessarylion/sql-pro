@@ -376,6 +376,16 @@ impl Repository for MssqlRepository {
         "DEFAULT VALUES"
     }
 
+    /// SQL Server has no read-only transaction. The transaction is always rolled back,
+    /// so a write inside it does not stay.
+    fn read_only_guard(&self) -> (&'static str, &'static str) {
+        ("BEGIN TRAN", "ROLLBACK")
+    }
+
+    fn open_transaction_sql(&self) -> Option<&'static str> {
+        Some("SELECT @@TRANCOUNT")
+    }
+
     fn auto_increment(&self) -> &'static str {
         "IDENTITY(1,1)"
     }

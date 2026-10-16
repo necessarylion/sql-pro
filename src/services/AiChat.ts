@@ -3,6 +3,7 @@ import {
   AI_CELL_MAX,
   AI_CONFIRM_TITLE,
   AI_DEFAULT_PROVIDER,
+  AI_EDITED_NOTE,
   AI_MAX_STEPS,
   AI_READ_ONLY_REJECTED,
   AI_REJECTED,
@@ -10,7 +11,16 @@ import {
   AI_SESSION_GONE,
   AI_TITLE_MAX,
 } from '../constants/ai'
-import type { AiOptions, ChatEntry, ClaudeReply, ResultSet, SavedChat } from '../types'
+import type {
+  AiOptions,
+  Attachment,
+  ChatEntry,
+  ChatFile,
+  ClaudeReply,
+  ResultSet,
+  SavedChat,
+} from '../types'
+import { AiAttachments } from './AiAttachments'
 import type { DatabaseApi } from './DatabaseApi'
 import type { DiscardPrompt } from './DiscardPrompt'
 
@@ -18,14 +28,18 @@ import type { DiscardPrompt } from './DiscardPrompt'
  * The Ask AI chat of one tab. The app drives the loop: the AI sends one SQL
  * statement, the app runs it and sends the result back, until the AI is done.
  * Today the AI is Claude Code. The loop itself does not depend on it.
- * A read runs at once. Anything else asks the user first, or never runs in read-only mode.
+ * A read runs at once, inside the read-only guard of the backend. A write waits in an
+ * approval card, where the user can change it, then asks again in a dialog with the final SQL.
+ * In read-only mode a write never runs.
  */
 export class AiChat {
   entries: ChatEntry[] = []
   /** The last result with columns that the AI's SQL gave. */
   result: ResultSet | null = null
-  /** What runs now. '' = nothing. */
-  phase: '' | 'thinking' | 'running' = ''
+  /** What runs now. '' = nothing. `waiting` = a write waits in its approval card. */
+  phase: '' | 'thinking' | 'running' | 'waiting' = ''
+  /** The files for the next message. */
+  attachments = new AiAttachments()
   /** True when the last question ran SQL that can change data. */
   wrote = false
   /** The id of this chat in the saved history. */
@@ -36,6 +50,8 @@ export class AiChat {
   private sessionId: string | null = null
   private options: AiOptions | null = null
   private stopped = false
+  /** Ends the wait of the approval card: the final SQL, or null for Reject. */
+  private resolveDecision: ((sql: string | null) => void) | null = null
   private api: DatabaseApi
   private prompt: DiscardPrompt
 
@@ -53,9 +69,17 @@ export class AiChat {
     this.options = { ...options, provider: this.provider }
     this.stopped = false
     this.wrote = false
-    this.entries.push({ kind: 'user', text: question })
+    const files = this.attachments.take()
+    this.entries.push({ kind: 'user', text: question, files: AiChat.fileList(files, true) })
     try {
-      let reply = await this.think(id, question)
+      let reply: ClaudeReply
+      try {
+        reply = await this.think(id, question, files)
+      } catch (error) {
+        // The AI did not get the message. Keep the files for the next try.
+        this.attachments.items = files
+        throw error
+      }
       for (let step = 0; reply.sql && !this.stopped; step += 1) {
         if (step >= AI_MAX_STEPS) {
           this.note(`Stopped after ${AI_MAX_STEPS} queries. Ask again to go on.`)
@@ -87,7 +111,9 @@ export class AiChat {
       return
     }
     this.stopped = true
-    if (this.phase === 'running') {
+    if (this.phase === 'waiting') {
+      this.decide(null)
+    } else if (this.phase === 'running') {
       await this.api.cancelQuery(id)
     } else {
       await this.api.stopClaude(id)
@@ -122,8 +148,7 @@ export class AiChat {
       sessionId: this.sessionId,
       created: this.created,
       updated: Date.now(),
-      // A plain copy, so later changes to this chat do not change the saved one.
-      entries: JSON.parse(JSON.stringify(this.entries)) as ChatEntry[],
+      entries: AiChat.forHistory(this.entries),
     }
   }
 
@@ -138,6 +163,47 @@ export class AiChat {
     this.provider = saved.provider
     this.created = saved.created
     this.sessionId = saved.sessionId
+  }
+
+  /** Reads a file for the next message. The backend checks it. Throws the reason when refused. */
+  async attachFile(path: string): Promise<void> {
+    this.attachments.add(await this.api.readAttachment(path))
+  }
+
+  /** Adds an image from the clipboard. `data` is base64. */
+  async attachPasted(name: string, data: string): Promise<void> {
+    this.attachments.add(await this.api.attachmentFromBase64(name, data))
+  }
+
+  /** The answer of the approval card: the SQL to run (maybe changed), or null for Reject. */
+  decide(sql: string | null): void {
+    const resolve = this.resolveDecision
+    this.resolveDecision = null
+    resolve?.(sql)
+  }
+
+  /** A plain copy for the history. Files keep only name and type. No card stays open. */
+  private static forHistory(entries: ChatEntry[]): ChatEntry[] {
+    const copy = JSON.parse(JSON.stringify(entries)) as ChatEntry[]
+    for (const entry of copy) {
+      delete entry.pending
+      if (entry.files) {
+        entry.files = AiChat.fileList(entry.files, false)
+      }
+    }
+    return copy
+  }
+
+  /** What the chat shows and saves of attached files: never the content. */
+  private static fileList(files: (Attachment | ChatFile)[], kept: boolean): ChatFile[] | undefined {
+    if (files.length === 0) {
+      return undefined
+    }
+    const list: ChatFile[] = []
+    for (const file of files) {
+      list.push({ name: file.name, mediaType: file.mediaType, rows: file.rows, kept })
+    }
+    return list
   }
 
   /** The chat as plain text, for a new AI session that lost the old one. */
@@ -190,7 +256,7 @@ export class AiChat {
   }
 
   /** Sends one message to the AI and shows its reply text. */
-  private async think(id: string, message: string): Promise<ClaudeReply> {
+  private async think(id: string, message: string, files: Attachment[] = []): Promise<ClaudeReply> {
     this.phase = 'thinking'
     const options = this.options ?? {
       provider: this.provider,
@@ -200,7 +266,7 @@ export class AiChat {
     }
     let reply: ClaudeReply
     try {
-      reply = await this.api.askClaude(id, message, this.sessionId, options)
+      reply = await this.api.askClaude(id, message, this.sessionId, options, files)
     } catch (error) {
       if (!this.sessionId || !String(error).includes(AI_SESSION_GONE)) {
         throw error
@@ -210,7 +276,7 @@ export class AiChat {
       this.note('The old AI session is gone. A new one starts with the old messages.')
       this.sessionId = null
       const text = `Earlier messages of this chat:\n${earlier}\n\nNew message: ${message}`
-      reply = await this.api.askClaude(id, text, null, options)
+      reply = await this.api.askClaude(id, text, null, options, files)
     }
     this.sessionId = reply.sessionId
     if (reply.message) {
@@ -219,25 +285,45 @@ export class AiChat {
     return reply
   }
 
-  /** Runs SQL from the AI. A write asks first. Gives the text that goes back to the AI. */
-  private async runSql(id: string, sql: string, isRead: boolean): Promise<string> {
-    this.entries.push({ kind: 'sql', text: sql })
+  /**
+   * Runs SQL from the AI and gives the text that goes back to the AI.
+   * A write waits for the approval card. The user may change it there. The final SQL is
+   * checked again: a read runs in the read-only guard, a write needs the confirm dialog.
+   */
+  private async runSql(id: string, proposed: string, proposedIsRead: boolean): Promise<string> {
+    this.entries.push({ kind: 'sql', text: proposed })
     // Read it back from the list, so changes to it are seen by Vue.
     const entry = this.entries[this.entries.length - 1]
-    if (!isRead && this.options?.readOnly) {
-      entry.outcome = 'Not run: read-only mode'
-      entry.failed = true
-      return AI_READ_ONLY_REJECTED
+    let sql = proposed
+    let isRead = proposedIsRead
+    if (!isRead) {
+      if (this.options?.readOnly) {
+        return AiChat.refuseInReadOnly(entry)
+      }
+      entry.pending = true
+      this.phase = 'waiting'
+      const decided = await this.waitForDecision()
+      entry.pending = false
+      if (decided === null || this.stopped || !decided.trim()) {
+        return AiChat.reject(entry)
+      }
+      sql = decided.trim()
+      entry.text = sql
+      isRead = await this.api.isReadSql(sql)
+      if (!isRead) {
+        if (this.options?.readOnly) {
+          return AiChat.refuseInReadOnly(entry)
+        }
+        if (!(await this.prompt.ask(`Run this SQL?\n\n${sql}`, AI_CONFIRM_TITLE))) {
+          return AiChat.reject(entry)
+        }
+      }
     }
-    if (!isRead && !(await this.prompt.ask(`The AI wants to run:\n\n${sql}`, AI_CONFIRM_TITLE))) {
-      entry.outcome = 'Rejected'
-      entry.failed = true
-      return AI_REJECTED
-    }
+    const edited = sql !== proposed.trim() ? `${AI_EDITED_NOTE}\n${sql}\n\n` : ''
     this.wrote ||= !isRead
     this.phase = 'running'
     try {
-      const sets = await this.api.runQuery(id, sql)
+      const sets = isRead ? await this.api.runAiRead(id, sql) : await this.api.runQuery(id, sql)
       let result: ResultSet | null = null
       let affected = 0
       for (const set of sets) {
@@ -254,12 +340,33 @@ export class AiChat {
       } else {
         entry.outcome = `${affected} rows affected`
       }
-      return AiChat.describe(result, affected)
+      return edited + AiChat.describe(result, affected)
     } catch (error) {
       entry.outcome = String(error)
       entry.failed = true
-      return `The query failed: ${String(error)}`
+      return `${edited}The query failed: ${String(error)}`
     }
+  }
+
+  private static refuseInReadOnly(entry: ChatEntry): string {
+    entry.outcome = 'Not run: read-only mode'
+    entry.failed = true
+    return AI_READ_ONLY_REJECTED
+  }
+
+  private static reject(entry: ChatEntry): string {
+    entry.outcome = 'Rejected'
+    entry.failed = true
+    return AI_REJECTED
+  }
+
+  /** Waits until the approval card calls `decide`. */
+  private waitForDecision(): Promise<string | null> {
+    return new Promise<string | null>(this.keepResolver.bind(this))
+  }
+
+  private keepResolver(resolve: (sql: string | null) => void): void {
+    this.resolveDecision = resolve
   }
 
   private note(text: string): void {

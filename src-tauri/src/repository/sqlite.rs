@@ -127,6 +127,12 @@ impl Repository for SqliteRepository {
         format!("DELETE FROM {table}")
     }
 
+    /// `SQLite` has no read-only transaction. `query_only` blocks every write, and
+    /// changing it does not end a transaction the user opened. So no check is needed.
+    fn read_only_guard(&self) -> (&'static str, &'static str) {
+        ("PRAGMA query_only = ON", "PRAGMA query_only = OFF")
+    }
+
     fn auto_increment(&self) -> &'static str {
         "AUTOINCREMENT"
     }

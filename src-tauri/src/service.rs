@@ -1,26 +1,30 @@
 //! Business logic: open connections and the SQL for browsing and changing rows.
 
+mod attachment;
 mod claude;
 mod export;
 mod import;
 mod spare;
 
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 
 use crate::constants::{
-    ANY_HOST, CANNOT_MANAGE_USERS, CLAUDE_READ_ONLY_NOTE, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS,
-    MSSQL_NO_USER_ACCOUNTS, NO_USER_ACCOUNTS, PRIMARY_KEY_NOT_DROPPED, VIEW,
+    AI_IMAGE_MAX_BYTES, ANY_HOST, CANNOT_MANAGE_USERS, CLAUDE_READ_ONLY_NOTE, LIKE_ESCAPE,
+    LOCALHOST, MAX_QUERY_ROWS, MSSQL_NO_USER_ACCOUNTS, NO_USER_ACCOUNTS, NOT_A_READ,
+    OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, AiOptions, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec, ConnectionConfig,
-    DbObject, DbUser, Diagram, DiagramTable, Driver, ExportRequest, FilterOperator, FilterRule,
-    NewColumn, NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult,
-    TableKeys, TablePage, TableRef, UserList, Values,
+    AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
+    ConnectionConfig, DbObject, DbUser, Diagram, DiagramTable, Driver, ExportRequest,
+    FilterOperator, FilterRule, NewColumn, NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate,
+    RowsExport, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::repository::{
     ClaudeCli, DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, not_saved,
@@ -39,6 +43,9 @@ struct Connection {
     tunnel: Option<Arc<SshTunnel>>,
     /// Shared by the first tab and all its copies.
     spare: Arc<Spare>,
+    /// True when SQL from the Query view seems to have opened a transaction.
+    /// Only used for `MySQL`. See `claude::transaction_change`.
+    user_transaction: Arc<AtomicBool>,
 }
 
 /// Keeps the open connections and does all the work on them.
@@ -78,6 +85,7 @@ impl ConnectionService {
             repository,
             tunnel,
             spare,
+            user_transaction: Arc::default(),
         };
         self.insert(id, connection).await;
         Ok(())
@@ -138,7 +146,83 @@ impl ConnectionService {
 
     /// Runs SQL typed by the user.
     pub async fn run_query(&self, id: &str, sql: &str) -> AppResult<Vec<ResultSet>> {
-        self.repository(id)?.query(sql).await
+        let connection = self.connection(id)?;
+        let result = connection.repository.query(sql).await;
+        // A failed batch may still have opened a transaction, but only a good one ends it.
+        match claude::transaction_change(sql) {
+            Some(true) => connection.user_transaction.store(true, Ordering::SeqCst),
+            Some(false) if result.is_ok() => {
+                connection.user_transaction.store(false, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        result
+    }
+
+    /// True when SQL only reads, by the same check that Ask AI uses.
+    pub fn is_read_sql(sql: &str) -> bool {
+        claude::is_read_only(sql)
+    }
+
+    /// Runs a read of the AI in a guard that blocks writes and keeps nothing:
+    /// a read-only transaction that is rolled back (`SQLite`: `query_only`).
+    /// It is a second layer behind `is_read_only`. It refuses to run while the tab
+    /// has an open transaction, because the guard would end the user's transaction.
+    pub async fn run_ai_read(&self, id: &str, sql: &str) -> AppResult<Vec<ResultSet>> {
+        if !claude::is_read_only(sql) {
+            return Err(NOT_A_READ.into());
+        }
+        let connection = self.connection(id)?;
+        let repository = connection.repository.as_ref();
+        let typed_begin = connection.config.driver == Driver::Mysql
+            && connection.user_transaction.load(Ordering::SeqCst);
+        if typed_begin || Self::transaction_open(repository).await {
+            return Err(OPEN_TRANSACTION.into());
+        }
+        Self::guarded_read(repository, sql).await
+    }
+
+    /// True when the connection has an open transaction. An error counts as open.
+    async fn transaction_open(repository: &dyn Repository) -> bool {
+        let Some(check) = repository.open_transaction_sql() else {
+            return false;
+        };
+        match repository.query(check).await {
+            Ok(sets) => {
+                let cell = sets
+                    .first()
+                    .and_then(|set| set.rows.first())
+                    .and_then(|row| row.first());
+                !matches!(cell, Some(Some(value)) if value == "0")
+            }
+            Err(_) => true,
+        }
+    }
+
+    /// Runs `sql` between the start and the end of the guard, in one round trip, so no
+    /// other query of the tab can come between them. When `sql` fails, the rest of the
+    /// batch may not run, so the end runs once more on its own.
+    async fn guarded_read(repository: &dyn Repository, sql: &str) -> AppResult<Vec<ResultSet>> {
+        let (start, end) = repository.read_only_guard();
+        let body = sql.trim_end();
+        let body = body.strip_suffix(';').unwrap_or(body);
+        // The newline ends a `--` comment at the end of the SQL.
+        let batch = format!("{start};\n{body}\n;{end}");
+        match repository.query(&batch).await {
+            Ok(mut sets) => {
+                // The start and the end give their own empty result sets.
+                if sets.len() >= 2 {
+                    sets.pop();
+                    sets.remove(0);
+                }
+                Ok(sets)
+            }
+            Err(error) => {
+                // Without a transaction this may fail too. That is fine.
+                let _ = repository.query(end).await;
+                Err(error)
+            }
+        }
     }
 
     /// Stops the query that runs now in tab `id`.
@@ -158,8 +242,16 @@ impl ConnectionService {
         message: &str,
         session: Option<&str>,
         options: &AiOptions,
+        attachments: &[Attachment],
     ) -> AppResult<ClaudeReply> {
         claude::check_options(options)?;
+        let files = attachment::check_all(attachments)?;
+        let message = format!("{message}{}", attachment::csv_text(&files));
+        let message = message.as_str();
+        let images: Vec<Attachment> = files
+            .into_iter()
+            .filter(|file| file.media_type != attachment::CSV)
+            .collect();
         let mut prompt = if session.is_some() {
             message.to_owned()
         } else {
@@ -178,7 +270,11 @@ impl ConnectionService {
         }
         // `check_options` allows only known providers. A new one gets its own arm here.
         let output = match options.provider.as_str() {
-            "claude" => self.claude.ask(id, &prompt, session, options).await?,
+            "claude" => {
+                self.claude
+                    .ask(id, &prompt, &images, session, options)
+                    .await?
+            }
             other => return Err(AppError::Message(format!("Unknown AI provider: {other}"))),
         };
         let (sql, message) = match &output.structured_output {
@@ -199,6 +295,26 @@ impl ConnectionService {
             sql,
             is_read,
         })
+    }
+
+    /// Reads a file for the AI and checks its type and size. See `attachment::check`.
+    pub fn read_attachment(path: &Path) -> AppResult<Attachment> {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        // At most one byte more than the largest file is read. The check refuses that.
+        let limit = u64::try_from(AI_IMAGE_MAX_BYTES).unwrap_or(u64::MAX) + 1;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(limit)
+            .read_to_end(&mut bytes)?;
+        attachment::check(&name, &bytes)
+    }
+
+    /// Checks an image that comes as base64, like one pasted from the clipboard.
+    pub fn attachment_from_base64(name: &str, data: &str) -> AppResult<Attachment> {
+        attachment::check_base64(name, data)
     }
 
     /// Sets the folder `claude` runs in. See `CLAUDE_FOLDER`.
@@ -449,6 +565,7 @@ impl ConnectionService {
             repository,
             tunnel,
             spare,
+            user_transaction: Arc::default(),
         };
         self.insert(new_id, connection).await;
         Ok(())
@@ -1266,6 +1383,64 @@ mod tests {
             service.disconnect(id).await;
         }
         assert!(spare.ready().is_none());
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// `query_only` blocks a write that the classifier would let through, and it is
+    /// off again after the read, also after an error.
+    #[tokio::test]
+    async fn sqlite_read_guard() {
+        let path = std::env::temp_dir().join(format!("sqlpro-guard-{}.sqlite", std::process::id()));
+        std::fs::File::create(&path).expect("create file");
+        let config = ConnectionConfig {
+            driver: Driver::Sqlite,
+            host: String::new(),
+            port: 0,
+            user: String::new(),
+            password: String::new(),
+            database: path.to_string_lossy().into_owned(),
+            ssh: None,
+        };
+        let service = ConnectionService::new(RepositoryFactory);
+        service
+            .connect("g".to_owned(), config)
+            .await
+            .expect("connect");
+        service
+            .run_query("g", "CREATE TABLE t (a INTEGER)")
+            .await
+            .expect("table");
+        let repository = service.repository("g").expect("repository");
+        let query_only = async || {
+            let sets = service
+                .run_query("g", "PRAGMA query_only")
+                .await
+                .expect("pragma");
+            sets[0].rows[0][0].clone()
+        };
+
+        let write =
+            ConnectionService::guarded_read(repository.as_ref(), "INSERT INTO t VALUES (1)");
+        assert!(write.await.is_err(), "the guard must block the write");
+        assert_eq!(query_only().await.as_deref(), Some("0"));
+
+        let missing = ConnectionService::guarded_read(repository.as_ref(), "SELECT * FROM nope");
+        assert!(missing.await.is_err());
+        assert_eq!(query_only().await.as_deref(), Some("0"));
+
+        let sets = service
+            .run_ai_read("g", "SELECT count(*) FROM t;")
+            .await
+            .expect("read");
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].rows[0][0].as_deref(), Some("0"));
+        assert_eq!(query_only().await.as_deref(), Some("0"));
+        assert!(service.run_ai_read("g", "DELETE FROM t").await.is_err());
+        service
+            .run_query("g", "INSERT INTO t VALUES (2)")
+            .await
+            .expect("normal write works");
+        service.disconnect("g").await;
         std::fs::remove_file(&path).ok();
     }
 }

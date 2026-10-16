@@ -4,16 +4,20 @@ import { AiChat } from '../src/services/AiChat'
 import type { DatabaseApi } from '../src/services/DatabaseApi'
 import type { DiscardPrompt } from '../src/services/DiscardPrompt'
 import {
+  AI_EDITED_NOTE,
   AI_MAX_CHATS,
+  AI_MAX_CSV_FILES,
+  AI_MAX_IMAGES,
   AI_MAX_STEPS,
   AI_READ_ONLY_REJECTED,
   AI_REJECTED,
   AI_RESULT_ROWS,
   AI_SESSION_GONE,
 } from '../src/constants/ai'
+import { AiAttachments } from '../src/services/AiAttachments'
 import { AiStore } from '../src/services/AiStore'
 import { ProfileStorage } from '../src/services/ProfileStorage'
-import type { AiOptions, ClaudeReply, ResultSet, SavedChat } from '../src/types'
+import type { AiOptions, Attachment, ClaudeReply, ResultSet, SavedChat } from '../src/types'
 import { FakePrompt } from './FakePrompt'
 
 const ID = 'tab'
@@ -25,6 +29,10 @@ class FakeApi {
   replies: ClaudeReply[] = []
   sent: { message: string; sessionId: string | null }[] = []
   ran: string[] = []
+  /** The SQL that ran in the read-only guard. */
+  guarded: string[] = []
+  /** The files of each message to the AI. */
+  files: Attachment[][] = []
   result: ResultSet = { columns: ['id'], rows: [['1']], affected: 0, truncated: false }
 
   options: AiOptions[] = []
@@ -36,13 +44,34 @@ class FakeApi {
     message: string,
     sessionId: string | null,
     options: AiOptions,
+    files: Attachment[] = [],
   ): Promise<ClaudeReply> {
     if (sessionId && this.gone.includes(sessionId)) {
       throw `${AI_SESSION_GONE}`
     }
     this.sent.push({ message, sessionId })
+    this.files.push(files)
     this.options.push(options)
     return this.replies.shift() ?? { sessionId: 's1', message: 'Done', sql: null, isRead: false }
+  }
+
+  async runAiRead(id: string, sql: string): Promise<ResultSet[]> {
+    this.guarded.push(sql)
+    return this.runQuery(id, sql)
+  }
+
+  async isReadSql(sql: string): Promise<boolean> {
+    return /^\s*select\b/i.test(sql)
+  }
+
+  async readAttachment(path: string): Promise<Attachment> {
+    const csv = path.endsWith('.csv')
+    return {
+      name: path,
+      mediaType: csv ? 'text/csv' : 'image/png',
+      data: csv ? 'email\nsecret@x.com' : 'iVBORw0KGgo=',
+      rows: csv ? 2 : 0,
+    }
   }
 
   async runQuery(_id: string, sql: string): Promise<ResultSet[]> {
@@ -56,6 +85,14 @@ class FakeApi {
 
 function reply(sql: string | null, isRead: boolean): ClaudeReply {
   return { sessionId: 's1', message: 'Working', sql, isRead }
+}
+
+/** Waits until the chat shows the approval card of a write. */
+async function untilCard(chat: AiChat): Promise<void> {
+  for (let tries = 0; tries < 100 && chat.phase !== 'waiting'; tries += 1) {
+    await Bun.sleep(0)
+  }
+  expect(chat.phase).toBe('waiting')
 }
 
 function chatWith(api: FakeApi, prompt: FakePrompt): AiChat {
@@ -72,6 +109,7 @@ test('a read runs at once and its result goes back to the AI', async function ()
 
   expect(prompt.questions).toEqual([])
   expect(api.ran).toEqual(['SELECT id FROM users'])
+  expect(api.guarded).toEqual(['SELECT id FROM users'])
   expect(api.sent[0]).toEqual({ message: 'how many users?', sessionId: null })
   expect(api.sent[1].sessionId).toBe('s1')
   expect(api.sent[1].message).toContain('Columns: id')
@@ -80,31 +118,91 @@ test('a read runs at once and its result goes back to the AI', async function ()
   expect(chat.phase).toBe('')
 })
 
-test('a write asks first and runs on Yes', async function () {
+test('a write waits in its card, then asks with the final SQL and runs on Yes', async function () {
   const api = new FakeApi()
   const prompt = new FakePrompt()
   api.replies = [reply('UPDATE users SET blocked = 1', false)]
   api.result = { columns: [], rows: [], affected: 1, truncated: false }
   const chat = chatWith(api, prompt)
 
-  await chat.ask(ID, 'block abc@email.com', ASK)
+  const asked = chat.ask(ID, 'block abc@email.com', ASK)
+  await untilCard(chat)
+  expect(api.ran).toEqual([])
+  expect(prompt.questions).toEqual([])
+  chat.decide('UPDATE users SET blocked = 1')
+  await asked
 
   expect(prompt.questions.length).toBe(1)
   expect(prompt.questions[0]).toContain('UPDATE users SET blocked = 1')
   expect(api.ran).toEqual(['UPDATE users SET blocked = 1'])
   expect(api.sent[1].message).toBe('OK. 1 rows affected.')
+  expect(api.guarded).toEqual([])
   expect(chat.wrote).toBe(true)
 })
 
-test('a rejected write does not run and the AI is told', async function () {
+test('an edited write runs, and the AI gets the edited SQL', async function () {
+  const api = new FakeApi()
+  const prompt = new FakePrompt()
+  api.replies = [reply('UPDATE users SET blocked = 1', false)]
+  api.result = { columns: [], rows: [], affected: 1, truncated: false }
+  const chat = chatWith(api, prompt)
+
+  const asked = chat.ask(ID, 'block abc@email.com', ASK)
+  await untilCard(chat)
+  chat.decide('UPDATE users SET blocked = 1 WHERE id = 2')
+  await asked
+
+  expect(prompt.questions[0]).toContain('WHERE id = 2')
+  expect(api.ran).toEqual(['UPDATE users SET blocked = 1 WHERE id = 2'])
+  expect(api.sent[1].message).toContain(AI_EDITED_NOTE)
+  expect(api.sent[1].message).toContain('UPDATE users SET blocked = 1 WHERE id = 2')
+  expect(chat.entries.find(isSql)?.text).toBe('UPDATE users SET blocked = 1 WHERE id = 2')
+})
+
+test('a write edited into a read runs in the guard without a dialog', async function () {
+  const api = new FakeApi()
+  const prompt = new FakePrompt()
+  api.replies = [reply('DELETE FROM users', false)]
+  const chat = chatWith(api, prompt)
+
+  const asked = chat.ask(ID, 'clean up', ASK)
+  await untilCard(chat)
+  chat.decide('SELECT count(*) FROM users')
+  await asked
+
+  expect(prompt.questions).toEqual([])
+  expect(api.guarded).toEqual(['SELECT count(*) FROM users'])
+  expect(chat.wrote).toBe(false)
+})
+
+test('No in the dialog after Run still rejects', async function () {
   const api = new FakeApi()
   const prompt = new FakePrompt()
   prompt.answer = false
   api.replies = [reply('DELETE FROM users', false)]
   const chat = chatWith(api, prompt)
 
-  await chat.ask(ID, 'delete everyone', ASK)
+  const asked = chat.ask(ID, 'delete everyone', ASK)
+  await untilCard(chat)
+  chat.decide('DELETE FROM users')
+  await asked
 
+  expect(api.ran).toEqual([])
+  expect(api.sent[1].message).toBe(AI_REJECTED)
+})
+
+test('a rejected write does not run and the AI is told', async function () {
+  const api = new FakeApi()
+  const prompt = new FakePrompt()
+  api.replies = [reply('DELETE FROM users', false)]
+  const chat = chatWith(api, prompt)
+
+  const asked = chat.ask(ID, 'delete everyone', ASK)
+  await untilCard(chat)
+  chat.decide(null)
+  await asked
+
+  expect(prompt.questions).toEqual([])
   expect(api.ran).toEqual([])
   expect(api.sent[1].message).toBe(AI_REJECTED)
   const sql = chat.entries.find(isSql)
@@ -322,4 +420,88 @@ class BrokenApi {
   async askClaude(): Promise<ClaudeReply> {
     throw 'Claude Code: There is an issue with the selected model (claude-bogus-1).'
   }
+}
+
+test('files can be added and removed, and the limits hold', function () {
+  const files = new AiAttachments()
+  const image: Attachment = { name: 'a.png', mediaType: 'image/png', data: 'x', rows: 0 }
+  const csv: Attachment = { name: 'u.csv', mediaType: 'text/csv', data: 'a', rows: 1 }
+  for (let index = 0; index < AI_MAX_IMAGES; index += 1) {
+    files.add(image)
+  }
+  expect(throws(files, image)).toContain(`${AI_MAX_IMAGES} images`)
+  for (let index = 0; index < AI_MAX_CSV_FILES; index += 1) {
+    files.add(csv)
+  }
+  expect(throws(files, csv)).toContain(`${AI_MAX_CSV_FILES} CSV`)
+  expect(files.items.length).toBe(AI_MAX_IMAGES + AI_MAX_CSV_FILES)
+  files.remove(0)
+  expect(files.items.length).toBe(AI_MAX_IMAGES + AI_MAX_CSV_FILES - 1)
+  files.add(image)
+  expect(files.take().length).toBe(AI_MAX_IMAGES + AI_MAX_CSV_FILES)
+  expect(files.items).toEqual([])
+  expect(AiAttachments.toBase64(new Uint8Array([104, 105]))).toBe('aGk=')
+})
+
+test('files go with the question only, and the history keeps no content', async function () {
+  const api = new FakeApi()
+  api.replies = [reply('SELECT 1', true)]
+  const chat = chatWith(api, new FakePrompt())
+  await chat.attachFile('users.csv')
+  await chat.attachFile('shot.png')
+
+  await chat.ask(ID, 'add these users', ASK)
+
+  expect(api.files[0].length).toBe(2)
+  expect(api.files[1]).toEqual([])
+  expect(chat.attachments.items).toEqual([])
+  expect(chat.entries[0].files?.[0]).toEqual({
+    name: 'users.csv',
+    mediaType: 'text/csv',
+    rows: 2,
+    kept: true,
+  })
+  const saved = JSON.stringify(chat.snapshot('c', 'd'))
+  expect(saved).not.toContain('secret@x.com')
+  expect(saved).not.toContain('iVBORw0KGgo=')
+  expect(saved).toContain('"kept":false')
+})
+
+test('a production connection asks once, and a Yes is remembered', async function () {
+  const storage = new ProfileStorage(new FakeStorage() as unknown as Storage, '')
+  const asker = new FakeAsker()
+  const store = new AiStore(storage)
+
+  expect(await store.allowSend('dev-db', 'dev', asker)).toBe(true)
+  expect(asker.questions).toBe(0)
+
+  asker.answer = false
+  expect(await store.allowSend('prod-db', 'prod', asker)).toBe(false)
+  asker.answer = true
+  expect(await store.allowSend('prod-db', 'prod', asker)).toBe(true)
+  expect(asker.questions).toBe(2)
+
+  expect(await new AiStore(storage).allowSend('prod-db', 'prod', asker)).toBe(true)
+  expect(asker.questions).toBe(2)
+  expect(await store.allowSend('other-prod', 'prod', asker)).toBe(true)
+  expect(asker.questions).toBe(3)
+})
+
+class FakeAsker {
+  answer = true
+  questions = 0
+
+  async confirm(): Promise<boolean> {
+    this.questions += 1
+    return this.answer
+  }
+}
+
+function throws(files: AiAttachments, file: Attachment): string {
+  try {
+    files.add(file)
+  } catch (error) {
+    return String(error)
+  }
+  return ''
 }

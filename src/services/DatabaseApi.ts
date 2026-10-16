@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
   AiOptions,
+  Attachment,
   BrowseRequest,
   ClaudeReply,
   ColumnInfo,
@@ -82,8 +83,32 @@ export class DatabaseApi {
     message: string,
     sessionId: string | null,
     options: AiOptions,
+    attachments: Attachment[] = [],
   ): Promise<ClaudeReply> {
-    return invoke('ask_claude', { id, message, sessionId, options })
+    return invoke('ask_claude', { id, message, sessionId, options, attachments })
+  }
+
+  /**
+   * Runs a read of the AI in a guard that blocks writes and keeps nothing.
+   * It refuses to run while the tab has an open transaction.
+   */
+  runAiRead(id: string, sql: string): Promise<ResultSet[]> {
+    return invoke('run_ai_read', { id, sql })
+  }
+
+  /** True when SQL only reads. The same check as for the SQL of the AI. */
+  isReadSql(sql: string): Promise<boolean> {
+    return invoke('is_read_sql', { sql })
+  }
+
+  /** Reads a file for the AI. The backend checks its type and size. */
+  readAttachment(path: string): Promise<Attachment> {
+    return invoke('read_attachment', { path })
+  }
+
+  /** Checks an image pasted from the clipboard. `data` is base64. */
+  attachmentFromBase64(name: string, data: string): Promise<Attachment> {
+    return invoke('attachment_from_base64', { name, data })
   }
 
   /** Stops the Claude run of connection `id`. */

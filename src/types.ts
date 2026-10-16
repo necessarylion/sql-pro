@@ -197,6 +197,31 @@ export interface ChatEntry {
   outcome?: string
   /** For `sql`: true when the outcome is an error or a rejection. For `note`: an error. */
   failed?: boolean
+  /** For `sql`: a write that waits for the user. The chat shows an approval card. */
+  pending?: boolean
+  /** For `user`: the attached files. Only names and types, never the content. */
+  files?: ChatFile[]
+}
+
+/**
+ * A file for the AI: a PNG, JPEG or WebP image, or a CSV file. The backend checks it.
+ * `data` is base64 for an image and the text for a CSV file.
+ */
+export interface Attachment {
+  name: string
+  mediaType: string
+  data: string
+  /** The lines of a CSV file, with the header. 0 for an image. */
+  rows: number
+}
+
+/** An attached file as the chat shows and saves it. */
+export interface ChatFile {
+  name: string
+  mediaType: string
+  rows: number
+  /** False in a chat from the history: the content was not saved. */
+  kept: boolean
 }
 
 /**

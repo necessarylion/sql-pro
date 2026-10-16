@@ -4,12 +4,21 @@ import {
   AI_MAX_CHATS,
   AI_MODEL_PATTERN,
   AI_PROVIDERS,
+  AI_PRODUCTION_MESSAGE,
+  AI_PRODUCTION_TITLE,
   AI_SETTINGS_STORAGE_KEY,
+  AI_TRUSTED_STORAGE_KEY,
   type AiChoice,
   type AiProvider,
 } from '../constants/ai'
 import type { AiMode, AiOptions, ConnectionConfig, SavedChat } from '../types'
+import { Environment } from './Environment'
 import type { ProfileStorage } from './ProfileStorage'
+
+/** Asks a yes or no question. The Session is one. */
+interface Asker {
+  confirm(message: string, title: string): Promise<boolean>
+}
 
 /** The last choices in Ask AI, and the saved chats. Both are kept through `ProfileStorage`. */
 export class AiStore {
@@ -20,6 +29,8 @@ export class AiStore {
   mode: AiMode = 'ask'
   /** Newest first. */
   chats: SavedChat[] = []
+  /** The production connections the user said Yes for. See `allowSend`. */
+  trusted: string[] = []
   private storage: ProfileStorage
 
   constructor(storage: ProfileStorage) {
@@ -34,6 +45,24 @@ export class AiStore {
     this.fixChoices()
     const chats = this.read(AI_CHATS_STORAGE_KEY)
     this.chats = Array.isArray(chats) ? (chats as SavedChat[]) : []
+    const trusted = this.read(AI_TRUSTED_STORAGE_KEY)
+    this.trusted = Array.isArray(trusted) ? (trusted as string[]) : []
+  }
+
+  /**
+   * True when data of this connection may go to the AI. A production connection
+   * asks once. A Yes is saved for the connection, so it never asks again.
+   */
+  async allowSend(connection: string, environment: string, asker: Asker): Promise<boolean> {
+    if (Environment.kind(environment) !== 'prod' || this.trusted.includes(connection)) {
+      return true
+    }
+    if (!(await asker.confirm(AI_PRODUCTION_MESSAGE, AI_PRODUCTION_TITLE))) {
+      return false
+    }
+    this.trusted = [...this.trusted, connection]
+    this.storage.setItem(AI_TRUSTED_STORAGE_KEY, JSON.stringify(this.trusted))
+    return true
   }
 
   /** Names a server, so a chat shows only with tabs of the same server. No password. */

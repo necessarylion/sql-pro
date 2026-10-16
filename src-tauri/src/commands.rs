@@ -9,10 +9,10 @@ use tauri::State;
 
 use crate::error::AppResult;
 use crate::model::{
-    AccessLevel, AiOptions, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec, ConnectionConfig,
-    CsvImport, CsvPreview, DbObject, Diagram, ExportRequest, NewColumn, NewForeignKey, NewIndex,
-    NewUser, ResultSet, RowUpdate, RowsExport, SaveResult, TableKeys, TablePage, TableRef,
-    UserList, Values,
+    AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
+    ConnectionConfig, CsvImport, CsvPreview, DbObject, Diagram, ExportRequest, NewColumn,
+    NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult, TableKeys,
+    TablePage, TableRef, UserList, Values,
 };
 use crate::repository::PasswordRepository;
 use crate::service::ConnectionService;
@@ -71,6 +71,34 @@ pub async fn cancel_query(service: Service<'_>, id: String) -> AppResult<()> {
     service.cancel_query(&id).await
 }
 
+/// Reads and checks a file for the AI. Async, so a big file is not read on the main thread.
+#[tauri::command]
+pub async fn read_attachment(path: PathBuf) -> AppResult<Attachment> {
+    ConnectionService::read_attachment(&path)
+}
+
+/// Checks an image pasted from the clipboard. `data` is base64.
+#[tauri::command]
+pub async fn attachment_from_base64(name: String, data: String) -> AppResult<Attachment> {
+    ConnectionService::attachment_from_base64(&name, &data)
+}
+
+/// Runs a read of the AI in the read-only guard. See `ConnectionService::run_ai_read`.
+#[tauri::command]
+pub async fn run_ai_read(
+    service: Service<'_>,
+    id: String,
+    sql: String,
+) -> AppResult<Vec<ResultSet>> {
+    service.run_ai_read(&id, &sql).await
+}
+
+/// True when SQL only reads. The same check as for the SQL of the AI.
+#[tauri::command]
+pub fn is_read_sql(sql: String) -> bool {
+    ConnectionService::is_read_sql(&sql)
+}
+
 #[tauri::command]
 pub async fn ask_claude(
     service: Service<'_>,
@@ -78,9 +106,10 @@ pub async fn ask_claude(
     message: String,
     session_id: Option<String>,
     options: AiOptions,
+    attachments: Vec<Attachment>,
 ) -> AppResult<ClaudeReply> {
     service
-        .ask_claude(&id, &message, session_id.as_deref(), &options)
+        .ask_claude(&id, &message, session_id.as_deref(), &options, &attachments)
         .await
 }
 

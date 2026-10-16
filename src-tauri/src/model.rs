@@ -267,6 +267,20 @@ pub struct AiOptions {
     pub read_only: bool,
 }
 
+/// A file for the AI: a PNG, JPEG or WebP image, or a CSV file.
+/// `data` is base64 for an image and the text for a CSV file.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub name: String,
+    /// `image/png`, `image/jpeg`, `image/webp` or `text/csv`.
+    pub media_type: String,
+    pub data: String,
+    /// The number of lines of a CSV file, with the header. 0 for an image.
+    #[serde(default)]
+    pub rows: usize,
+}
+
 /// One reply of Claude in the "Ask Claude" view.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

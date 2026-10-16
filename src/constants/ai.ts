@@ -94,3 +94,32 @@ export const AI_MAX_CHATS = 50
 
 /** The title of a saved chat is its first question, cut to this many characters. */
 export const AI_TITLE_MAX = 60
+
+/** Shown in the Ask AI view. The rows of each result go to the AI with the next message. */
+export const AI_PRIVACY_NOTE =
+  'Query results (up to 50 rows) and attachments are sent to the AI provider.'
+
+/** The question before the first message about a production connection. */
+export const AI_PRODUCTION_TITLE = 'Send production data to the AI?'
+export const AI_PRODUCTION_MESSAGE =
+  'This is a production connection. The table names, query results (up to 50 rows) and attachments are sent to the AI provider. SQL Pro asks only once for this connection.'
+
+/** The connections the user said Yes for. */
+export const AI_TRUSTED_STORAGE_KEY = 'sql-pro.ai-trusted-connections'
+
+/** The most images, and the most CSV files, in one message. The backend checks the same. */
+export const AI_MAX_IMAGES = 5
+export const AI_MAX_CSV_FILES = 5
+
+/** The file types the open dialog offers. The backend checks the type again. */
+export const AI_FILE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'csv']
+
+/** The file name of a pasted image, by its type. Other types are refused. */
+export const AI_PASTE_NAMES: Record<string, string> = {
+  'image/png': 'pasted-image.png',
+  'image/jpeg': 'pasted-image.jpg',
+  'image/webp': 'pasted-image.webp',
+}
+
+/** What the AI is told when the user changed its SQL before it ran. */
+export const AI_EDITED_NOTE = 'The user edited the SQL before it ran. This SQL ran instead:'
