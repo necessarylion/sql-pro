@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { XIcon } from 'lucide-vue-next'
+import { computed, shallowRef } from 'vue'
+import { CalendarIcon, ClockIcon, XIcon } from 'lucide-vue-next'
 import { BINARY_TYPE_PATTERN } from '../constants'
-import { FieldValue } from '../services/FieldValue'
+import { FieldValue, type PickerType } from '../services/FieldValue'
 import { LAYOUT_SERVICE, SHORTCUTS, injectRequired } from '../services/keys'
-import type { GridColumn, Row } from '../types'
+import type { Driver, GridColumn, Row } from '../types'
+import DateTimePopover from './DateTimePopover.vue'
 import PaneResizer from './PaneResizer.vue'
 
 // The panel on the right of the Content view. It shows one row as a form, one line per column.
@@ -21,6 +22,8 @@ const props = defineProps<{
   changed: number[]
   /** Like "New row" or "Marked for delete". '' = a plain row. */
   tag: string
+  /** The database. It decides if a `timestamp` column is a date (not on SQL Server). */
+  driver?: Driver
 }>()
 
 const emit = defineEmits<{
@@ -44,6 +47,8 @@ interface Field {
   /** The pretty printed JSON, when it differs from the value. null = no Format button. */
   json: string | null
   changed: boolean
+  /** The native date or time picker of the column. null = no picker button. */
+  picker: PickerType | null
 }
 
 const fields = computed(toFields)
@@ -70,6 +75,7 @@ function toFields(): Field[] {
       multiline: FieldValue.multiline(value),
       json: json === value ? null : json,
       changed: props.changed.includes(index),
+      picker: FieldValue.pickerType(type, props.driver),
     })
   }
   return fields
@@ -91,6 +97,28 @@ function commit(field: Field, event: Event): void {
 
 function setNull(field: Field): void {
   emit('edit', field.row, field.column, null)
+}
+
+/** The field with an open date or time popover, and the line it opens under. null = closed. */
+const popover = shallowRef<{ field: Field; anchor: HTMLElement } | null>(null)
+
+function openPicker(field: Field, event: MouseEvent): void {
+  const anchor = (event.currentTarget as HTMLElement).parentElement
+  if (anchor) {
+    popover.value = { field, anchor }
+  }
+}
+
+/** Writes the picked value to the field, like a typed edit. */
+function pick(text: string): void {
+  const field = popover.value?.field
+  if (field && text !== field.value) {
+    emit('edit', field.row, field.column, text)
+  }
+}
+
+function closePicker(): void {
+  popover.value = null
 }
 
 function format(field: Field): void {
@@ -147,23 +175,45 @@ function format(field: Field): void {
           spellcheck="false"
           @change="commit(field, $event)"
         />
-        <input
-          v-else
-          :class="{ modified: field.changed }"
-          :value="field.value ?? ''"
-          :placeholder="field.value === null ? 'NULL' : ''"
-          :readonly="!field.editable"
-          spellcheck="false"
-          @change="commit(field, $event)"
-        />
+        <div v-else class="line">
+          <input
+            :class="{ modified: field.changed, 'has-picker': field.picker !== null }"
+            :value="field.value ?? ''"
+            :placeholder="field.value === null ? 'NULL' : ''"
+            :readonly="!field.editable"
+            spellcheck="false"
+            @change="commit(field, $event)"
+          />
+          <button
+            v-if="field.picker !== null"
+            class="icon"
+            :title="field.picker === 'time' ? 'Pick a time' : 'Pick a date'"
+            :disabled="!field.editable"
+            @click="openPicker(field, $event)"
+          >
+            <ClockIcon v-if="field.picker === 'time'" :size="12" />
+            <CalendarIcon v-else :size="12" />
+          </button>
+        </div>
       </div>
     </div>
+    <DateTimePopover
+      v-if="popover && popover.field.picker"
+      :picker="popover.field.picker"
+      :value="popover.field.value"
+      :anchor="popover.anchor"
+      @set="pick"
+      @close="closePicker"
+    />
   </aside>
 </template>
 
 <style scoped>
 .detail {
   position: relative;
+  /* Above the grid header (z-index 2), below menus and dialogs (100). */
+  z-index: 3;
+  box-shadow: var(--panel-shadow);
   display: flex;
   flex: none;
   flex-direction: column;
@@ -181,11 +231,17 @@ function format(field: Field): void {
   flex: none;
   gap: 6px;
   align-items: center;
-  height: 26px;
+  /* Same height as the grid header next to it (28px header in DataGrid.vue), so the bottom borders line up. */
+  height: 28px;
   padding: 0 4px 0 10px;
-  background: var(--header);
+  background: var(--detail-header);
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
+}
+
+.head button.icon {
+  width: 18px;
+  height: 18px;
 }
 
 .title {
@@ -256,6 +312,33 @@ textarea {
 
 input {
   height: 22px;
+}
+
+.line {
+  position: relative;
+}
+
+/* Room for the picker button inside the field, so text never runs under it. */
+.line input.has-picker {
+  padding-right: 26px;
+}
+
+/* The picker button sits inside the text field, at the right, centered. */
+.line button.icon {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  transform: translateY(-50%);
+}
+
+.line button.icon:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text);
 }
 
 /* A long value grows the box up to a limit. Then it scrolls. */

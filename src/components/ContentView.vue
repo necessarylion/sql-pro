@@ -28,7 +28,8 @@ const layout = injectRequired(LAYOUT_SERVICE)
 
 const selected = ref<number[]>([])
 // Where the export menu is open. null = closed.
-const menu = ref<{ x: number; y: number } | null>(null)
+// `row` is the right-clicked row, or -1 when the menu was opened from the bottom bar.
+const menu = ref<{ x: number; y: number; row: number } | null>(null)
 
 const gridColumns = computed(toGridColumns)
 const rangeText = computed(describeRange)
@@ -127,8 +128,23 @@ function rowsToExport(): Row[] {
   return props.session.pickRows(props.session.page?.rows ?? [], selected.value)
 }
 
-function openMenu(event: MouseEvent): void {
-  menu.value = { x: event.clientX, y: event.clientY }
+function openMenu(event: MouseEvent, rowIndex = -1): void {
+  menu.value = { x: event.clientX, y: event.clientY, row: rowIndex }
+}
+
+/**
+ * Opens the detail panel on the right-clicked row. The panel shows the last selected row,
+ * so that row moves to the end of the selection. The selected rows stay the same.
+ */
+function showDetail(rowIndex: number): void {
+  const others: number[] = []
+  for (const index of selected.value) {
+    if (index !== rowIndex) {
+      others.push(index)
+    }
+  }
+  selected.value = [...others, rowIndex]
+  layout.openDetail()
 }
 
 function closeMenu(): void {
@@ -212,6 +228,7 @@ function deleteSelected(): void {
       :editable="detailEditable"
       :changed="detailChanged"
       :tag="detailTag"
+      :driver="session.config?.driver"
       @edit="edit"
     />
   </div>
@@ -224,7 +241,15 @@ function deleteSelected(): void {
     :rows="exportRows"
     :table="session.table"
     @close="closeMenu"
-  />
+  >
+    <template v-if="menu.row >= 0">
+      <button role="menuitem" @click="showDetail(menu.row)">
+        Show row details
+        <span class="hint">{{ shortcuts.hint('I') }}</span>
+      </button>
+      <span class="menu-line" />
+    </template>
+  </ExportRowsMenu>
 
   <BottomBar :session="session">
     <button class="icon" title="Add row" :disabled="!session.editable" @click="session.addRow()">

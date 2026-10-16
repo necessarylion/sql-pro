@@ -43,7 +43,7 @@ const emit = defineEmits<{
   sort: [column: string]
   edit: [rowIndex: number, columnIndex: number, value: string | null]
   /** A right-click on a row. The selection is already updated. */
-  menu: [event: MouseEvent]
+  menu: [event: MouseEvent, rowIndex: number]
 }>()
 
 const selected = defineModel<number[]>('selected')
@@ -428,7 +428,7 @@ function openMenu(rowIndex: number, event: MouseEvent): void {
   if (!isSelected(rowIndex)) {
     selected.value = [rowIndex]
   }
-  emit('menu', event)
+  emit('menu', event, rowIndex)
 }
 
 function isEditing(rowIndex: number, columnIndex: number): boolean {
@@ -523,14 +523,16 @@ function onEnter(event: KeyboardEvent): void {
               @dblclick.stop="resetWidth(column.name)"
             />
           </th>
+          <th class="filler" />
         </tr>
       </thead>
       <tbody>
         <tr class="sizer" aria-hidden="true">
           <td v-for="(value, columnIndex) in widest" :key="columnIndex">{{ value }}</td>
+          <td class="filler" />
         </tr>
         <tr v-if="start > 0" class="spacer">
-          <td :colspan="columns.length" :style="{ height: `${start * GRID_ROW_HEIGHT}px` }" />
+          <td :colspan="columns.length + 1" :style="{ height: `${start * GRID_ROW_HEIGHT}px` }" />
         </tr>
         <tr
           v-for="rowIndex in drawnRows"
@@ -580,10 +582,11 @@ function onEnter(event: KeyboardEvent): void {
             <span v-else-if="value === null" class="null">NULL</span>
             <template v-else>{{ preview(value) }}</template>
           </td>
+          <td class="filler" />
         </tr>
         <tr v-if="end < rows.length" class="spacer">
           <td
-            :colspan="columns.length"
+            :colspan="columns.length + 1"
             :style="{ height: `${(rows.length - end) * GRID_ROW_HEIGHT}px` }"
           />
         </tr>
@@ -606,14 +609,16 @@ function onEnter(event: KeyboardEvent): void {
   outline: none;
 }
 
+/* The table is at least as wide as the grid, so the header and the rows reach the right edge. */
 table {
+  min-width: 100%;
   border-spacing: 0;
 }
 
-/* The height is GRID_ROW_HEIGHT. The row windowing counts on it. */
+/* Body rows are GRID_ROW_HEIGHT. The row windowing counts on it. The header sets its own height (th below). */
 th,
 td {
-  height: 22px;
+  height: 23px;
   max-width: 320px;
   padding: 0 8px;
   overflow: hidden;
@@ -626,11 +631,24 @@ th {
   position: sticky;
   top: 0;
   z-index: 2;
+  height: 28px;
+  text-align: center;
   background: var(--header);
-  border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   color: var(--text-2);
   font-weight: 600;
+}
+
+/* A short column line that stops 7px from the top and bottom, like macOS table headers. */
+th::after {
+  position: absolute;
+  top: 7px;
+  right: 0;
+  bottom: 7px;
+  width: 1px;
+  background: var(--border);
+  content: '';
+  pointer-events: none;
 }
 
 th.sortable {
@@ -643,6 +661,7 @@ th.sortable {
   top: 0;
   right: 0;
   bottom: 0;
+  z-index: 1;
   width: 6px;
   cursor: col-resize;
 }
@@ -677,8 +696,27 @@ td {
   user-select: text;
 }
 
-.numeric {
+td.numeric {
   text-align: right;
+}
+
+/*
+  An empty last column that takes the space the columns leave free. A 100% column
+  keeps the other columns at their content width. When the columns are wider than
+  the grid, it gets no width, so the scroll stays the same.
+*/
+.filler {
+  width: 100%;
+  max-width: none;
+  padding: 0;
+}
+
+th.filler::after {
+  content: none;
+}
+
+td.filler {
+  border-right: 0;
 }
 
 /* The last row gets a bottom line, so a short table does not look open. */

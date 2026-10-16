@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, useTemplateRef, watch } from 'vue
 import { CopyIcon, LockIcon, PencilIcon } from 'lucide-vue-next'
 import { OBJECT_KIND_LABELS } from '../constants'
 import type { Session } from '../services/Session'
+import { SchemaName } from '../services/SchemaName'
 import { SqlEditor } from '../services/SqlEditor'
 import BottomBar from './BottomBar.vue'
 
@@ -20,8 +21,7 @@ function describe(): string {
   if (!object) {
     return ''
   }
-  const name =
-    object.schema && object.schema !== 'public' ? `${object.schema}.${object.name}` : object.name
+  const name = SchemaName.label(object.schema, object.name)
   const table = object.table ? ` on ${object.table}` : ''
   return `${OBJECT_KIND_LABELS[object.kind]} "${name}"${table}`
 }

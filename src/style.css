@@ -10,7 +10,9 @@
   --border: #3d3e44;
   --border-soft: #2f3035;
   --header: #2b2c30;
-  --row-alt: #232428;
+  /* The header of the row detail panel. It differs from the grid header, so the panel stands apart. */
+  --detail-header: #323338;
+  --row-alt: #27282d;
   --text: #e7e7ea;
   --text-2: #a6a7ad;
   --text-3: #787980;
@@ -21,6 +23,10 @@
   --added: #17392a;
   --deleted: #4a2020;
   --danger: #ff8078;
+  /* Soft shadow on the left side of a panel that lies over the grid. */
+  --panel-shadow: -6px 0 14px -6px rgba(0, 0, 0, 0.55);
+  /* Shadow of a small popover, like the date picker of the row detail panel. */
+  --popover-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
   --success: #3fb950;
   --success-text: #86e3a6;
   --warn: #f2b45c;
@@ -39,6 +45,11 @@
   --folder-green: #3fb950;
   --folder-blue: #78aaff;
   --folder-purple: #b794f6;
+  /* Sidebar icon colour per object kind. They use the folder colours, so they follow the theme. */
+  --icon-table: var(--folder-blue);
+  --icon-view: var(--folder-purple);
+  --icon-trigger: var(--folder-orange);
+  --icon-routine: var(--folder-green);
   --font-ui: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, Menlo, Consolas, monospace;
   /* The zoom factor of the window, 1 for 100%. ZoomService sets it on this element. */
@@ -96,7 +107,8 @@
   --border: #d0d1d6;
   --border-soft: #e6e7ea;
   --header: #eff0f2;
-  --row-alt: #f7f8fa;
+  --detail-header: #e6e7eb;
+  --row-alt: #f2f3f5;
   --text: #1d1d1f;
   --text-2: #5f6066;
   --text-3: #8c8d93;
@@ -107,6 +119,8 @@
   --added: #dcf5df;
   --deleted: #fde2e2;
   --danger: #c8261b;
+  --panel-shadow: -6px 0 14px -6px rgba(0, 0, 0, 0.15);
+  --popover-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
   --success: #1f9d55;
   --success-text: #14663a;
   --warn: #a75a00;
@@ -233,6 +247,11 @@ button.icon {
   padding: 0;
   border: 0;
   background: none;
+}
+
+/* A delete button. */
+button.danger {
+  color: var(--danger);
 }
 
 /* Toolbar, filter bar and the bottom bars. */

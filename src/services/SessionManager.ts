@@ -1,6 +1,7 @@
 import type { TableRef } from '../types'
 import type { DatabaseApi } from './DatabaseApi'
 import type { DiscardPrompt } from './DiscardPrompt'
+import type { LayoutService } from './LayoutService'
 import { Session } from './Session'
 
 /** The list of open tabs. There is always at least one. */
@@ -9,10 +10,12 @@ export class SessionManager {
   activeId = ''
   private api: DatabaseApi
   private prompt: DiscardPrompt
+  private layout: Pick<LayoutService, 'closeDetail'>
 
-  constructor(api: DatabaseApi, prompt: DiscardPrompt) {
+  constructor(api: DatabaseApi, prompt: DiscardPrompt, layout: Pick<LayoutService, 'closeDetail'>) {
     this.api = api
     this.prompt = prompt
+    this.layout = layout
     this.open()
   }
 
@@ -30,6 +33,7 @@ export class SessionManager {
     const session = new Session(this.api, this.prompt)
     this.sessions.push(session)
     this.activeId = session.id
+    this.layout.closeDetail()
   }
 
   activate(session: Session): void {
@@ -49,6 +53,7 @@ export class SessionManager {
     tab.title = source.title
     tab.opening = true
     this.activeId = tab.id
+    this.layout.closeDetail()
     try {
       await tab.cloneFrom(source)
     } catch (error) {
@@ -76,6 +81,7 @@ export class SessionManager {
       return
     }
     this.sessions.splice(index, 1)
+    this.layout.closeDetail()
     if (this.sessions.length === 0) {
       this.open()
     } else if (this.activeId === session.id) {

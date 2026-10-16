@@ -2,6 +2,7 @@
 import { computed, reactive, useTemplateRef } from 'vue'
 import { open as openFolder, save } from '@tauri-apps/plugin-dialog'
 import type { Session } from '../services/Session'
+import { SchemaName } from '../services/SchemaName'
 import type { ExportFormat, ExportRequest, TableRef } from '../types'
 
 // The export dialog. Two kinds:
@@ -27,7 +28,7 @@ const ready = computed(canExport)
 
 /** Shows the schema only when it is not the default one. */
 function label(table: TableRef): string {
-  return table.schema && table.schema !== 'public' ? `${table.schema}.${table.name}` : table.name
+  return SchemaName.label(table.schema, table.name)
 }
 
 /** Opens the export of many tables. `checked` are checked at the start. */

@@ -47,6 +47,8 @@ function close(): void {
 
 <template>
   <ContextMenu :x="x" :y="y" @close="close">
+    <!-- The parent can put its own items above the export items. -->
+    <slot />
     <button role="menuitem" :disabled="rows.length === 0" @click="exportAs('csv')">
       Export {{ rows.length.toLocaleString() }} {{ rows.length === 1 ? 'row' : 'rows' }} as CSV…
     </button>

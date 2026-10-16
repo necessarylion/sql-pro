@@ -70,6 +70,14 @@ class FakeApi {
   }
 }
 
+class FakeLayout {
+  closed = 0
+
+  closeDetail(): void {
+    this.closed += 1
+  }
+}
+
 async function connected(): Promise<{
   api: FakeApi
   manager: SessionManager
@@ -78,7 +86,8 @@ async function connected(): Promise<{
 }> {
   const api = new FakeApi()
   const prompt = new FakePrompt()
-  const manager = new SessionManager(api as unknown as DatabaseApi, prompt)
+  const layout = new FakeLayout()
+  const manager = new SessionManager(api as unknown as DatabaseApi, prompt, layout)
   const first = manager.sessions[0]
   await first.connect(CONFIG, 'Shop', 'prod')
   return { api, manager, first, prompt }
