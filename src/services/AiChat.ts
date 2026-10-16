@@ -201,7 +201,12 @@ export class AiChat {
     }
     const list: ChatFile[] = []
     for (const file of files) {
-      list.push({ name: file.name, mediaType: file.mediaType, rows: file.rows, kept })
+      const item: ChatFile = { name: file.name, mediaType: file.mediaType, rows: file.rows, kept }
+      // An image keeps its data in memory for the preview. The history never gets it.
+      if (kept && file.data && !AiAttachments.isCsv(file)) {
+        item.data = file.data
+      }
+      list.push(item)
     }
     return list
   }

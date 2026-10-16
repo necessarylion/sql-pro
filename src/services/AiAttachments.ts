@@ -45,8 +45,8 @@ export class AiAttachments {
   }
 
   /** A small picture of an image for its chip. */
-  static preview(file: { mediaType: string; data: string }): string {
-    return `data:${file.mediaType};base64,${file.data}`
+  static preview(file: { mediaType: string; data?: string }): string {
+    return `data:${file.mediaType};base64,${file.data ?? ''}`
   }
 
   static isCsv(file: { mediaType: string }): boolean {

@@ -30,6 +30,7 @@ import type { Session } from '../services/Session'
 import type { ChatEntry, GridColumn, SavedChat } from '../types'
 import BottomBar from './BottomBar.vue'
 import DataGrid from './DataGrid.vue'
+import ImagePreview from './ImagePreview.vue'
 import PaneResizer from './PaneResizer.vue'
 
 const props = defineProps<{ session: Session }>()
@@ -37,6 +38,7 @@ const store = injectRequired(AI_STORE)
 const formatter = injectRequired(CHAT_FORMATTER)
 const fileDrop = injectRequired(FILE_DROP)
 const root = useTemplateRef<HTMLDivElement>('root')
+const preview = useTemplateRef<InstanceType<typeof ImagePreview>>('preview')
 /** True while files are dragged over this view. It shows the drop overlay. */
 const dropping = ref(false)
 
@@ -178,6 +180,17 @@ async function attachPasted(name: string, file: File): Promise<void> {
 /** Like "users.csv · 120 rows". An old chat did not keep the file. */
 function fileLabel(file: { name: string; rows: number; mediaType: string }): string {
   return AiAttachments.isCsv(file) ? `${file.name} · ${file.rows} rows` : file.name
+}
+
+/** True when the chip can open a large preview: an image whose data is still here. */
+function canPreview(file: { mediaType: string; data?: string }): boolean {
+  return !AiAttachments.isCsv(file) && Boolean(file.data)
+}
+
+function showPreview(file: { name: string; mediaType: string; data?: string }): void {
+  if (file.data && canPreview(file)) {
+    preview.value?.open({ name: file.name, mediaType: file.mediaType, data: file.data })
+  }
 }
 
 /** The approval card of a write: run the SQL as it is in the box now. */
@@ -396,8 +409,16 @@ watch([entryCount, working, phase, hasResult], scrollDown)
         <div v-else :class="['entry', entry.kind, { failed: entry.failed }]">
           {{ entry.text }}
           <span v-if="entry.files" class="files">
-            <span v-for="file in entry.files" :key="file.name" class="chip" :title="file.name">
-              <FileTextIcon :size="10" />
+            <span
+              v-for="file in entry.files"
+              :key="file.name"
+              class="chip"
+              :class="{ openable: canPreview(file) }"
+              :title="canPreview(file) ? `${file.name}. Click to view.` : file.name"
+              @click="showPreview(file)"
+            >
+              <img v-if="canPreview(file)" :src="AiAttachments.preview(file)" alt="" />
+              <FileTextIcon v-else :size="10" />
               <span class="chip-name">
                 {{ fileLabel(file) }}{{ file.kept ? '' : ' (not saved)' }}
               </span>
@@ -425,7 +446,9 @@ watch([entryCount, working, phase, hasResult], scrollDown)
         v-for="(file, index) in session.chat.attachments.items"
         :key="index"
         class="chip"
-        :title="fileLabel(file)"
+        :class="{ openable: canPreview(file) }"
+        :title="canPreview(file) ? `${file.name}. Click to view.` : fileLabel(file)"
+        @click="showPreview(file)"
       >
         <img v-if="!AiAttachments.isCsv(file)" :src="AiAttachments.preview(file)" alt="" />
         <FileTextIcon v-else :size="11" />
@@ -433,7 +456,7 @@ watch([entryCount, working, phase, hasResult], scrollDown)
         <button
           class="icon chip-remove"
           :title="`Remove ${file.name}`"
-          @click="session.chat.attachments.remove(index)"
+          @click.stop="session.chat.attachments.remove(index)"
         >
           <XIcon :size="11" />
         </button>
@@ -514,6 +537,7 @@ watch([entryCount, working, phase, hasResult], scrollDown)
       <UploadIcon :size="22" />
       Drop images or CSV files to attach them
     </div>
+    <ImagePreview ref="preview" />
   </div>
 </template>
 
@@ -589,6 +613,15 @@ watch([entryCount, working, phase, hasResult], scrollDown)
 
 .chip > :not(.chip-name) {
   flex-shrink: 0;
+}
+
+/* An image chip opens a large preview. */
+.chip.openable {
+  cursor: pointer;
+}
+
+.chip.openable:hover {
+  border-color: var(--accent);
 }
 
 /* A long name is cut. The full name is in the title. */

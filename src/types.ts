@@ -222,6 +222,8 @@ export interface ChatFile {
   rows: number
   /** False in a chat from the history: the content was not saved. */
   kept: boolean
+  /** The base64 data of an image, only while this session runs. Never saved. */
+  data?: string
 }
 
 /**
