@@ -10,7 +10,7 @@ mod updater;
 
 use std::sync::Arc;
 
-use constants::{MAIN_WINDOW, PROFILE, PROFILE_GLOBAL, PROFILE_PLUGIN};
+use constants::{CLAUDE_FOLDER, MAIN_WINDOW, PROFILE, PROFILE_GLOBAL, PROFILE_PLUGIN};
 use repository::{OsKeychain, PasswordRepository, RepositoryFactory};
 use service::ConnectionService;
 use tauri::Manager as _;
@@ -51,6 +51,13 @@ pub fn run() {
             commands::browse,
             commands::run_query,
             commands::cancel_query,
+            commands::ask_claude,
+            commands::run_ai_read,
+            commands::is_read_sql,
+            commands::read_attachment,
+            commands::attachment_from_base64,
+            commands::parse_csv,
+            commands::stop_claude,
             commands::update_row,
             commands::insert_row,
             commands::save_changes,
@@ -154,6 +161,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "macos"))]
     add_tray(app);
     updater::start(app.handle());
+    // Claude finds an old session by the folder it runs in. The temp folder gets cleaned.
+    if let Ok(data) = app.path().app_data_dir() {
+        app.state::<ConnectionService>()
+            .set_claude_folder(data.join(CLAUDE_FOLDER));
+    }
     Ok(())
 }
 

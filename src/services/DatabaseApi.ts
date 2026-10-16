@@ -1,6 +1,9 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
+  AiOptions,
+  Attachment,
   BrowseRequest,
+  ClaudeReply,
   ColumnInfo,
   ColumnSpec,
   ConnectionConfig,
@@ -68,6 +71,54 @@ export class DatabaseApi {
 
   runQuery(id: string, sql: string): Promise<ResultSet[]> {
     return invoke('run_query', { id, sql })
+  }
+
+  /**
+   * Sends a message to Claude about the database of connection `id`.
+   * With no `sessionId`, a new conversation starts with the tables of the database.
+   * The backend checks the provider, model and effort in `options` against fixed lists.
+   */
+  askClaude(
+    id: string,
+    message: string,
+    sessionId: string | null,
+    options: AiOptions,
+    attachments: Attachment[] = [],
+  ): Promise<ClaudeReply> {
+    return invoke('ask_claude', { id, message, sessionId, options, attachments })
+  }
+
+  /**
+   * Runs a read of the AI in a guard that blocks writes and keeps nothing.
+   * It refuses to run while the tab has an open transaction.
+   */
+  runAiRead(id: string, sql: string): Promise<ResultSet[]> {
+    return invoke('run_ai_read', { id, sql })
+  }
+
+  /** True when SQL only reads. The same check as for the SQL of the AI. */
+  isReadSql(sql: string): Promise<boolean> {
+    return invoke('is_read_sql', { sql })
+  }
+
+  /** Reads a file for the AI. The backend checks its type and size. */
+  readAttachment(path: string): Promise<Attachment> {
+    return invoke('read_attachment', { path })
+  }
+
+  /** The rows of CSV text, read like the CSV import reads them. */
+  parseCsv(text: string): Promise<string[][]> {
+    return invoke('parse_csv', { text })
+  }
+
+  /** Checks an image pasted from the clipboard. `data` is base64. */
+  attachmentFromBase64(name: string, data: string): Promise<Attachment> {
+    return invoke('attachment_from_base64', { name, data })
+  }
+
+  /** Stops the Claude run of connection `id`. */
+  stopClaude(id: string): Promise<void> {
+    return invoke('stop_claude', { id })
   }
 
   /**

@@ -21,6 +21,7 @@ import {
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
+  SparklesIcon,
   SquareFunctionIcon,
   TableIcon,
   TablePropertiesIcon,
@@ -43,6 +44,7 @@ import { Session } from '../services/Session'
 import { SchemaName } from '../services/SchemaName'
 import { TableSelection } from '../services/TableSelection'
 import type { DbObject, DbObjectKind, SessionView, TableRef } from '../types'
+import AskAiView from './AskAiView.vue'
 import ContentView from './ContentView.vue'
 import ContextMenu from './ContextMenu.vue'
 import DefinitionView from './DefinitionView.vue'
@@ -66,6 +68,7 @@ const VIEW_ICONS: Record<SessionView, Component> = {
   structure: TablePropertiesIcon,
   content: TableIcon,
   query: TerminalIcon,
+  ask: SparklesIcon,
   users: UsersIcon,
   diagram: WorkflowIcon,
 }
@@ -729,7 +732,10 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
         <div v-show="session.view === 'query'" class="query">
           <QueryView :session="session" />
         </div>
-        <template v-if="session.view !== 'query'">
+        <div v-show="session.view === 'ask'" class="query">
+          <AskAiView :session="session" />
+        </div>
+        <template v-if="session.view !== 'query' && session.view !== 'ask'">
           <!-- The Users view needs no table. It has its own bottom bar for errors. -->
           <UsersView v-if="session.view === 'users'" :session="session" />
           <!-- The diagram shows all tables. It has its own bottom bar too. -->

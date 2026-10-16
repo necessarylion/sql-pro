@@ -34,6 +34,8 @@ sqlx-sqlserver = { git = "https://github.com/necessarylion/sqlx-sqlserver", bran
 chrono = { version = "0.4", default-features = false }
 # Builds the SQL Server connection URL, so a password with `@` or `/` still works.
 percent-encoding = "2"
+# Images for the AI go to the Claude CLI as base64.
+base64 = "0.22"
 async-trait = "0.1"
 futures-util = "0.3"
 thiserror = "2"

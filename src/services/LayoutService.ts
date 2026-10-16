@@ -1,4 +1,5 @@
 import {
+  AI_RESULT_DEFAULT_HEIGHT,
   DETAIL_DEFAULT_WIDTH,
   EDITOR_DEFAULT_HEIGHT,
   KEYS_SECTION_STORAGE_KEYS,
@@ -18,6 +19,7 @@ export class LayoutService {
   sidebarWidth = SIDEBAR_DEFAULT_WIDTH
   editorHeight = EDITOR_DEFAULT_HEIGHT
   detailWidth = DETAIL_DEFAULT_WIDTH
+  aiResultHeight = AI_RESULT_DEFAULT_HEIGHT
   /** True when the row detail panel of the Content view is open. Not saved: every start is hidden. */
   detailOpen = false
   /** True when the columns section of the Structure view is open. Saved. */

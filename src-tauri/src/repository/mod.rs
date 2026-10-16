@@ -1,5 +1,6 @@
 //! Database access. One repository per driver, all behind the same trait.
 
+mod claude;
 mod dump;
 mod mssql;
 mod mysql;
@@ -23,6 +24,7 @@ use sqlx::{
     Pool, Row as _, Type,
 };
 
+pub use claude::ClaudeCli;
 pub use dump::DumpRepository;
 pub use password::{Keychain, OsKeychain, PasswordRepository};
 pub use tunnel::SshTunnel;
@@ -261,6 +263,19 @@ pub trait Repository: Send + Sync {
     /// `ordering` is empty or ` ORDER BY ...`.
     fn page_sql(&self, ordering: &str, limit: usize, offset: u64) -> String {
         format!("{ordering} LIMIT {limit} OFFSET {offset}")
+    }
+
+    /// The SQL around one read of the AI: the start makes the connection read-only,
+    /// the end always undoes everything. See `ConnectionService::run_ai_read`.
+    /// The default is a read-only transaction that is rolled back.
+    fn read_only_guard(&self) -> (&'static str, &'static str) {
+        ("START TRANSACTION READ ONLY", "ROLLBACK")
+    }
+
+    /// SQL that gives one cell: not `0` when a transaction is open on this connection.
+    /// `None` when the database cannot tell, or the guard does not touch transactions.
+    fn open_transaction_sql(&self) -> Option<&'static str> {
+        None
     }
 
     /// The words that make a primary key column number its rows itself.

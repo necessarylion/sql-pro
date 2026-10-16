@@ -10,6 +10,7 @@ import { DIAGRAM_SAVED_STATUS_MS } from '../constants/diagram'
 import { RAW_FILTER_COLUMN, VALUELESS_OPERATORS } from '../constants/filters'
 import { ACCESS_LABELS } from '../constants/users'
 import type {
+  AiOptions,
   ColumnInfo,
   ColumnSpec,
   ConnectionConfig,
@@ -37,6 +38,7 @@ import type {
   TableRef,
   Values,
 } from '../types'
+import { AiChat } from './AiChat'
 import type { DatabaseApi } from './DatabaseApi'
 import type { DiscardPrompt } from './DiscardPrompt'
 import { Environment } from './Environment'
@@ -110,6 +112,8 @@ export class Session {
   diagram: Diagram | null = null
   /** Goes up by one on each press of the export shortcut. The workspace then opens the export dialog. */
   exportAsked = 0
+  /** The Ask AI chat of this tab. */
+  chat: AiChat
   /** The timer that removes the "Diagram saved" status. */
   private statusTimer: ReturnType<typeof setTimeout> | undefined
   private api: DatabaseApi
@@ -118,6 +122,7 @@ export class Session {
   constructor(api: DatabaseApi, prompt: DiscardPrompt) {
     this.api = api
     this.prompt = prompt
+    this.chat = new AiChat(api, prompt)
   }
 
   /** True when rows of the open table can be changed. */
@@ -356,8 +361,9 @@ export class Session {
     await this.loadTables()
     // Access is per database, so the list is different now.
     await this.loadUsers()
-    // The old diagram is of the other database.
+    // The old diagram and chat are about the other database.
     this.diagram = null
+    this.chat.clear()
     if (this.view === 'diagram') {
       await this.loadDiagram()
     }
@@ -438,7 +444,7 @@ export class Session {
     }
     this.clearTable()
     this.table = table
-    if (this.view === 'query' || this.view === 'users' || this.view === 'diagram') {
+    if (this.view !== 'content' && this.view !== 'structure') {
       this.view = 'content'
     }
     await this.loadPage()
@@ -457,7 +463,7 @@ export class Session {
       await this.loadUsers()
     } else if (this.view === 'diagram') {
       await this.loadDiagram()
-    } else if (this.view !== 'query') {
+    } else if (this.view !== 'query' && this.view !== 'ask') {
       await this.reload()
     }
   }
@@ -1161,6 +1167,29 @@ export class Session {
     }
     // The query may have created or dropped tables.
     await this.loadTables()
+  }
+
+  /** Asks a yes or no question in a dialog. */
+  confirm(message: string, title: string): Promise<boolean> {
+    return this.prompt.ask(message, title)
+  }
+
+  /**
+   * Puts SQL into the Query editor and shows the Query view.
+   * Text that is in the editor already stays: the SQL goes on a new line at the end.
+   */
+  openInQuery(sql: string): void {
+    const current = this.sql.trimEnd()
+    this.sql = current ? `${current}\n\n${sql}` : sql
+    this.view = 'query'
+  }
+
+  /** Asks the AI about this database. Its SQL may create or drop tables, so the list is reloaded after a write. */
+  async askAi(question: string, options: AiOptions): Promise<void> {
+    await this.chat.ask(this.id, question, options)
+    if (this.chat.wrote) {
+      await this.loadTables()
+    }
   }
 
   /** The database name. For SQLite the file name without its folder and its ending. */

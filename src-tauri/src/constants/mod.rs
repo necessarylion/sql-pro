@@ -180,6 +180,115 @@ pub const FUNCTION: &str = "function";
 /// A smaller number reacts faster but makes every query a little slower.
 pub const SQLITE_CANCEL_CHECK_STEPS: i32 = 1000;
 
+/// Where `claude` may be, inside the home folder. Tried first on macOS and Linux.
+pub const CLAUDE_HOME_PATHS: [&str; 3] = [
+    ".claude/local/claude",
+    ".local/bin/claude",
+    ".npm-global/bin/claude",
+];
+
+/// Where `claude.exe` may be on Windows, after `where claude`.
+/// Each entry is an environment variable and the path inside that folder.
+pub const CLAUDE_WINDOWS_PATHS: [(&str, &str); 3] = [
+    ("USERPROFILE", r".local\bin\claude.exe"),
+    ("LOCALAPPDATA", r"Programs\claude\claude.exe"),
+    ("APPDATA", r"npm\claude.cmd"),
+];
+
+/// The script of the npm package, next to the npm `claude.cmd` shim. We run it with
+/// `node`, because a `.cmd` file cannot take our long arguments safely.
+pub const CLAUDE_NPM_SCRIPT: &str = r"node_modules\@anthropic-ai\claude-code\cli.js";
+
+/// The error on Windows when only the npm shim is there and `node` or its script is missing.
+pub const CLAUDE_NEEDS_NATIVE: &str = "Claude Code was found only as an npm script that SQL Pro cannot run. Install the native build from https://claude.com/claude-code (claude.exe).";
+
+/// How long one answer of the AI may take. Then the run is killed like a stop.
+pub const CLAUDE_TIMEOUT_SECONDS: u64 = 300;
+
+/// The error when the AI did not answer in `CLAUDE_TIMEOUT_SECONDS`.
+pub const CLAUDE_TIMEOUT: &str = "The AI did not answer in 5 minutes.";
+
+/// The error when an AI read would run while the tab has an open transaction.
+/// The read-only guard would end (MySQL: commit, others: roll back) the user's work.
+pub const OPEN_TRANSACTION: &str = "Finish the open transaction in the Query view first.";
+
+/// The largest image the AI may get, in bytes.
+pub const AI_IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
+
+/// The largest CSV file the AI may get, in bytes. A bigger one is refused, never cut.
+pub const AI_CSV_MAX_BYTES: usize = 200 * 1024;
+
+/// The most images, and the most CSV files, in one message.
+pub const AI_MAX_IMAGES: usize = 5;
+pub const AI_MAX_CSV_FILES: usize = 5;
+
+/// The error for a file type the AI may not get.
+pub const AI_FILE_TYPES: &str = "Only PNG, JPEG and WebP images and CSV files can be attached.";
+
+/// The error when SQL that is not a read is sent to the read-only path.
+pub const NOT_A_READ: &str = "This SQL is not a read, so it cannot run as one.";
+
+/// The error when the Claude Code CLI cannot be found.
+pub const CLAUDE_NOT_FOUND: &str = "Claude Code is not installed. Install it from https://claude.com/claude-code, then run `claude` once in a terminal to log in.";
+
+/// The error of a Claude run that the user stopped.
+pub const CLAUDE_STOPPED: &str = "Stopped";
+
+/// The longest database description we send to Claude, in characters.
+pub const CLAUDE_SCHEMA_MAX_CHARS: usize = 40_000;
+
+/// The shape every reply of Claude must have. The CLI checks it (`--json-schema`).
+pub const CLAUDE_REPLY_SCHEMA: &str = r#"{"type":"object","properties":{"sql":{"type":["string","null"]},"message":{"type":"string"}},"required":["sql","message"]}"#;
+
+/// The rules for Claude. The database kind and tables come with the first question.
+pub const CLAUDE_SYSTEM_PROMPT: &str = "You help a user work with one SQL database inside a desktop SQL client. \
+You cannot run anything yourself. The app runs SQL for you.\n\
+Always reply with JSON only: {\"sql\": string or null, \"message\": string}.\n\
+- To look at or change data, put exactly ONE SQL statement in \"sql\". Use the exact SQL dialect of the database you are told. \
+The app runs it and sends you the result (or the error) in the next message. Then reply again.\n\
+- Look data up with SELECT before you change it. For example, find a user by email before you block that user.\n\
+- Change only what the user asked for. The user must confirm every change.\n\
+- When you have the answer, or nothing more needs to run, set \"sql\" to null and answer the user in \"message\".\n\
+- \"message\" is short, plain English for the user. Say what the SQL does when you send SQL.\n\
+- If a query was rejected by the user, do not try to run it again in another way. Ask what they want.";
+
+/// The AI tools the app can run. Only Claude Code for now.
+pub const AI_PROVIDERS: [&str; 1] = ["claude"];
+
+/// The `--model` aliases of `claude`. A full model id is checked with `MODEL_ID_MAX` and
+/// the allowed characters instead. No value means the default model.
+pub const CLAUDE_MODEL_ALIASES: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
+
+/// The longest model id we pass to `claude`.
+pub const MODEL_ID_MAX: usize = 80;
+
+/// The `--effort` values we pass to `claude`. No value means the default effort.
+pub const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Goes in front of every message in read-only mode.
+pub const CLAUDE_READ_ONLY_NOTE: &str = "This session is READ-ONLY. Only reads (SELECT and the like) will run. \
+Write queries are not allowed in read-only mode, so do not send them.";
+
+/// The error when `--resume` cannot find the session any more. The frontend knows this text.
+pub const CLAUDE_SESSION_GONE: &str = "The AI session is gone";
+
+/// The folder in the app data folder that `claude` runs in. `--resume` finds a session
+/// by this folder, so it must stay. A debug build has its own folder.
+pub const CLAUDE_FOLDER: &str = if cfg!(debug_assertions) {
+    "claude-dev"
+} else {
+    "claude"
+};
+
+/// A statement that starts with one of these words can be a read.
+pub const READ_KEYWORDS: [&str; 6] = ["SELECT", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "WITH"];
+
+/// A read may not hold any of these words. Each one can change data or settings.
+pub const WRITE_KEYWORDS: [&str; 17] = [
+    "INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE", "ALTER", "DROP", "CREATE", "TRUNCATE",
+    "GRANT", "REVOKE", "INTO", "CALL", "EXEC", "EXECUTE", "SET", "LOCK",
+];
+
 #[cfg(test)]
 mod tests {
     use super::{KEYCHAIN_SERVICE, PROFILE};

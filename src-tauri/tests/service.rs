@@ -1922,3 +1922,91 @@ async fn mssql() {
     service.disconnect(ID).await;
     exercise(config).await;
 }
+
+/// The guard of AI reads: a read runs, an open transaction blocks it, and nothing stays open.
+/// On `PostgreSQL` it also blocks `nextval`, a write that looks like a read.
+async fn ai_read_guard(config: ConnectionConfig) {
+    let driver = config.driver;
+    let service = ConnectionService::new(RepositoryFactory);
+    let id = "ai-guard";
+    service
+        .connect(id.to_owned(), config)
+        .await
+        .expect("connect");
+    let sets = service
+        .run_ai_read(id, "SELECT 1 AS one;")
+        .await
+        .expect("read");
+    assert_eq!(sets.len(), 1);
+    assert_eq!(sets[0].rows, vec![vec![Some("1".to_owned())]]);
+
+    let begin = if driver == Driver::Mssql {
+        "BEGIN TRAN"
+    } else {
+        "BEGIN"
+    };
+    service.run_query(id, begin).await.expect("begin");
+    let error = service
+        .run_ai_read(id, "SELECT 1")
+        .await
+        .expect_err("open transaction");
+    assert_eq!(error.to_string(), sql_pro_lib::constants::OPEN_TRANSACTION);
+    service.run_query(id, "ROLLBACK").await.expect("rollback");
+    service
+        .run_ai_read(id, "SELECT 1")
+        .await
+        .expect("read after rollback");
+
+    if driver == Driver::Mysql {
+        service
+            .run_query(id, "SET autocommit = 0")
+            .await
+            .expect("autocommit off");
+        assert!(service.run_ai_read(id, "SELECT 1").await.is_err());
+        service
+            .run_query(id, "SET autocommit = 1")
+            .await
+            .expect("autocommit on");
+    }
+    if driver == Driver::Postgres {
+        service
+            .run_query(
+                id,
+                "DROP SEQUENCE IF EXISTS sqlpro_ai_seq; CREATE SEQUENCE sqlpro_ai_seq",
+            )
+            .await
+            .expect("sequence");
+        let error = service
+            .run_ai_read(id, "SELECT nextval('sqlpro_ai_seq')")
+            .await;
+        assert!(
+            error
+                .expect_err("read-only")
+                .to_string()
+                .contains("read-only")
+        );
+        // The failed read left no transaction behind.
+        service
+            .run_ai_read(id, "SELECT 1")
+            .await
+            .expect("read after error");
+        service
+            .run_query(id, "DROP SEQUENCE sqlpro_ai_seq")
+            .await
+            .expect("drop");
+    }
+    service.disconnect(id).await;
+}
+
+#[tokio::test]
+async fn ai_read_guard_on_servers() {
+    for (name, driver) in [
+        ("SQLPRO_TEST_MYSQL", Driver::Mysql),
+        ("SQLPRO_TEST_POSTGRES", Driver::Postgres),
+        ("SQLPRO_TEST_MSSQL", Driver::Mssql),
+    ] {
+        if let Some(config) = config_from_env(name, driver) {
+            ai_read_guard(config).await;
+        }
+    }
+}

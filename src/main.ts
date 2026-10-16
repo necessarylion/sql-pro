@@ -1,5 +1,8 @@
 import { createApp, reactive } from 'vue'
 import App from './App.vue'
+import { AiStore } from './services/AiStore'
+import { ChatFormatter } from './services/ChatFormatter'
+import { FileDrop } from './services/FileDrop'
 import { ConnectionTransfer } from './services/ConnectionTransfer'
 import { DatabaseApi } from './services/DatabaseApi'
 import { DiagramLayoutStore } from './services/DiagramLayoutStore'
@@ -7,6 +10,9 @@ import { FavoriteStore } from './services/FavoriteStore'
 import { LIGHT_SCHEME_QUERY } from './constants/theme'
 import { DiscardPrompt } from './services/DiscardPrompt'
 import {
+  AI_STORE,
+  CHAT_FORMATTER,
+  FILE_DROP,
   CONNECTION_TRANSFER,
   DIAGRAM_LAYOUTS,
   FAVORITE_STORE,
@@ -66,6 +72,9 @@ createApp(App)
   .provide(QUERY_HISTORY, queryHistory)
   .provide(DIAGRAM_LAYOUTS, new DiagramLayoutStore(storage))
   .provide(PINNED_TABLES, pinnedTables)
+  .provide(CHAT_FORMATTER, new ChatFormatter())
+  .provide(FILE_DROP, new FileDrop())
+  .provide(AI_STORE, reactive(new AiStore(storage)) as AiStore)
   .provide(THEME_SERVICE, themeService)
   .provide(LAYOUT_SERVICE, layoutService)
   .provide(ZOOM_SERVICE, zoomService)
