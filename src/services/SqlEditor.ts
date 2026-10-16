@@ -1,6 +1,6 @@
 import { autocompletion, completionKeymap } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { MySQL, PostgreSQL, SQLite, sql, type SQLDialect } from '@codemirror/lang-sql'
+import { MSSQL, MySQL, PostgreSQL, SQLite, sql, type SQLDialect } from '@codemirror/lang-sql'
 import { HighlightStyle, bracketMatching, syntaxHighlighting } from '@codemirror/language'
 import { Compartment, EditorState, Prec, type Extension } from '@codemirror/state'
 import {
@@ -19,6 +19,7 @@ import type { Driver, TableRef } from '../types'
 const DIALECTS: Record<Driver, SQLDialect> = {
   mysql: MySQL,
   postgres: PostgreSQL,
+  mssql: MSSQL,
   sqlite: SQLite,
 }
 

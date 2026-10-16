@@ -33,6 +33,15 @@ test('the default port and user switch to the new defaults', function () {
   expect(back).toEqual(mysql())
 })
 
+test('to sql server takes port 1433 and user sa, and keeps the rest', function () {
+  const changed = DriverChange.apply(mysql(), 'mssql')
+  expect(changed.port).toBe(1433)
+  expect(changed.user).toBe('sa')
+  expect(changed.host).toBe('db.example.com')
+  expect(changed.database).toBe('shop')
+  expect(DriverChange.apply(changed, 'mysql')).toEqual(mysql())
+})
+
 test('a custom port and user stay', function () {
   const changed = DriverChange.apply({ ...mysql(), port: 3307, user: 'app' }, 'postgres')
   expect(changed.port).toBe(3307)
@@ -49,6 +58,7 @@ test('to sqlite and from sqlite give the defaults', function () {
   const file = { ...DEFAULT_CONFIGS.sqlite, database: '/data/app.db' }
   expect(DriverChange.apply(file, 'postgres')).toEqual(DEFAULT_CONFIGS.postgres)
   expect(DriverChange.apply(file, 'mysql')).toEqual(DEFAULT_CONFIGS.mysql)
+  expect(DriverChange.apply(file, 'mssql')).toEqual(DEFAULT_CONFIGS.mssql)
 })
 
 test('the defaults are copied, not shared', function () {

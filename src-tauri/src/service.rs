@@ -11,8 +11,8 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::constants::{
-    ANY_HOST, CANNOT_MANAGE_USERS, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS, NO_USER_ACCOUNTS,
-    PRIMARY_KEY_NOT_DROPPED, VIEW,
+    ANY_HOST, CANNOT_MANAGE_USERS, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS, MSSQL_NO_USER_ACCOUNTS,
+    NO_USER_ACCOUNTS, PRIMARY_KEY_NOT_DROPPED, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -248,9 +248,15 @@ impl ConnectionService {
         };
 
         let limit = request.limit.min(MAX_QUERY_ROWS);
-        let offset = request.offset;
-        let rows_sql =
-            format!("SELECT * FROM {table}{condition}{ordering} LIMIT {limit} OFFSET {offset}");
+        let mut select = Vec::with_capacity(columns.len());
+        for column in &columns {
+            select.push(repository.select_column(column));
+        }
+        let rows_sql = format!(
+            "SELECT {} FROM {table}{condition}{}",
+            select.join(", "),
+            repository.page_sql(&ordering, limit, request.offset)
+        );
         if let Some(total) = request.total {
             let rows = repository
                 .query(&rows_sql)
@@ -391,11 +397,8 @@ impl ConnectionService {
         column: &ColumnSpec,
     ) -> AppResult<()> {
         let repository = self.repository(id)?;
-        let sql = format!(
-            "ALTER TABLE {} ADD COLUMN {}",
-            repository.table_name(table),
-            Self::column_definition(repository.as_ref(), column, column.nullable)?
-        );
+        let definition = Self::column_definition(repository.as_ref(), column, column.nullable)?;
+        let sql = repository.add_column_sql(&repository.table_name(table), &definition);
         repository.query(&sql).await?;
         Ok(())
     }
@@ -455,9 +458,9 @@ impl ConnectionService {
         if table.kind == VIEW {
             return Err("Only a table can be renamed here, not a view".into());
         }
-        let sql =
-            repository.rename_table_sql(&repository.table_name(&table), &repository.quote(name));
-        repository.query(&sql).await?;
+        repository
+            .query(&repository.rename_table_sql(&table, name))
+            .await?;
         Ok(())
     }
 
@@ -466,12 +469,9 @@ impl ConnectionService {
         let repository = self.repository(id)?;
         let columns = repository.columns(table).await?;
         let column = Self::column(&columns, name)?;
-        let sql = format!(
-            "ALTER TABLE {} DROP COLUMN {}",
-            repository.table_name(table),
-            repository.quote(&column.name)
-        );
-        repository.query(&sql).await?;
+        repository
+            .query(&repository.drop_column_sql(table, &column.name))
+            .await?;
         Ok(())
     }
 
@@ -492,12 +492,7 @@ impl ConnectionService {
         let old = Self::column(&columns, name)?;
         let mut statements = repository.modify_column_sql(table, old, column).await?;
         if column.name != old.name {
-            statements.push(format!(
-                "ALTER TABLE {} RENAME COLUMN {} TO {}",
-                repository.table_name(table),
-                repository.quote(&old.name),
-                repository.quote(&column.name)
-            ));
+            statements.push(repository.rename_column_sql(table, &old.name, &column.name));
         }
         for statement in statements {
             repository.query(&statement).await?;
@@ -751,8 +746,10 @@ impl ConnectionService {
     /// The repository of a tab and its accounts, as the database lists them now.
     async fn user_list(&self, id: &str) -> AppResult<(Arc<dyn Repository>, UserList)> {
         let connection = self.connection(id)?;
-        if connection.config.driver == Driver::Sqlite {
-            return Err(NO_USER_ACCOUNTS.into());
+        match connection.config.driver {
+            Driver::Sqlite => return Err(NO_USER_ACCOUNTS.into()),
+            Driver::Mssql => return Err(MSSQL_NO_USER_ACCOUNTS.into()),
+            Driver::Mysql | Driver::Postgres => {}
         }
         let list = connection.repository.users().await?;
         Ok((connection.repository, list))
@@ -932,7 +929,9 @@ impl ConnectionService {
         if joined.is_empty() {
             return Ok(String::new());
         }
-        Ok(format!(" WHERE {joined}"))
+        // The newline ends a `--` comment the user may have typed in the filter.
+        // Without it the comment would also hide the ORDER BY and the paging after it.
+        Ok(format!(" WHERE {joined}\n"))
     }
 
     /// Builds the SQL condition of one filter rule.
@@ -984,7 +983,8 @@ impl ConnectionService {
     ) -> String {
         let mut pattern = String::from(before);
         for character in value.chars() {
-            if matches!(character, '%' | '_' | LIKE_ESCAPE) {
+            // `[` starts a set of characters in SQL Server. The others take `![` as a plain `[`.
+            if matches!(character, '%' | '_' | '[' | LIKE_ESCAPE) {
                 pattern.push(LIKE_ESCAPE);
             }
             pattern.push(character);

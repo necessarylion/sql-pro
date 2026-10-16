@@ -407,8 +407,12 @@ impl Repository for MysqlRepository {
         "() VALUES ()"
     }
 
-    fn rename_table_sql(&self, table: &str, new_name: &str) -> String {
-        format!("RENAME TABLE {table} TO {new_name}")
+    fn rename_table_sql(&self, table: &TableRef, new_name: &str) -> String {
+        format!(
+            "RENAME TABLE {} TO {}",
+            self.table_name(table),
+            self.quote(new_name)
+        )
     }
 
     fn auto_increment(&self) -> &'static str {

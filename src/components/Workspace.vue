@@ -552,7 +552,9 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
       <button class="icon" title="Refresh tables" @click="session.run(session.loadTables())">
         <RefreshCwIcon :size="13" />
       </button>
+      <!-- The app cannot back up SQL Server yet. -->
       <button
+        v-if="session.config?.driver !== 'mssql'"
         class="icon"
         :title="backupBlocked ? 'Choose a database first' : 'Back up this database to a SQL file'"
         :disabled="backupBlocked"

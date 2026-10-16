@@ -1,9 +1,10 @@
 //! One end-to-end check of the service against real databases.
 //!
-//! `SQLite` always runs. `MySQL` and `PostgreSQL` run only when these are set:
+//! `SQLite` always runs. `MySQL`, `PostgreSQL` and SQL Server run only when these are set:
 //! `SQLPRO_TEST_MYSQL=host:port:user:password:database`
 //! `SQLPRO_TEST_POSTGRES=host:port:user:password:database`
-//! Add `SQLPRO_TEST_SSH=host:port:user:password` to run both through an SSH tunnel.
+//! `SQLPRO_TEST_MSSQL=host:port:user:password:database` (the database is created when missing)
+//! Add `SQLPRO_TEST_SSH=host:port:user:password` to run them through an SSH tunnel.
 
 use sql_pro_lib::model::DbObject;
 use sql_pro_lib::model::{
@@ -51,7 +52,7 @@ fn text(value: &str) -> Option<String> {
     Some(value.to_owned())
 }
 
-/// Set `SQLPRO_TEST_SSH=host:port:user:password` to run MySQL and PostgreSQL through a tunnel.
+/// Set `SQLPRO_TEST_SSH=host:port:user:password` to run the servers through a tunnel.
 fn ssh_from_env() -> Option<SshConfig> {
     let raw = std::env::var("SQLPRO_TEST_SSH").ok()?;
     let parts: Vec<&str> = raw.splitn(4, ':').collect();
@@ -377,12 +378,18 @@ async fn keys(service: &ConnectionService, driver: Driver) {
     let primary = primary.name.clone();
     assert!(service.drop_index(ID, &child, &primary).await.is_err());
 
+    // SQL Server refuses a second cascade path from the same parent.
+    let (on_delete, delete_rule) = if driver == Driver::Mssql {
+        (ReferentialAction::NoAction, "NO ACTION")
+    } else {
+        (ReferentialAction::SetNull, "SET NULL")
+    };
     let key = NewForeignKey {
         name: "sqlpro_k_second".to_owned(),
         columns: names(&["code"]),
         ref_table: parent.clone(),
         ref_columns: names(&["code"]),
-        on_delete: ReferentialAction::SetNull,
+        on_delete,
         on_update: ReferentialAction::Cascade,
     };
     let result = service.add_foreign_key(ID, &child, &key).await;
@@ -404,7 +411,7 @@ async fn keys(service: &ConnectionService, driver: Driver) {
         assert_eq!(second[0].ref_columns, ["code"]);
         assert_eq!(
             (second[0].on_delete.as_str(), second[0].on_update.as_str()),
-            ("SET NULL", "CASCADE")
+            (delete_rule, "CASCADE")
         );
 
         let mut wrong = NewForeignKey {
@@ -446,10 +453,12 @@ async fn drop_and_truncate(service: &ConnectionService) {
     let setup = format!(
         "DROP VIEW IF EXISTS {EXTRA_VIEW}; DROP TABLE IF EXISTS {EXTRA}; \
         CREATE TABLE {EXTRA} (id INTEGER PRIMARY KEY); \
-        INSERT INTO {EXTRA} (id) VALUES (1); INSERT INTO {EXTRA} (id) VALUES (2); \
-        CREATE VIEW {EXTRA_VIEW} AS SELECT id FROM {EXTRA}"
+        INSERT INTO {EXTRA} (id) VALUES (1); INSERT INTO {EXTRA} (id) VALUES (2)"
     );
     service.run_query(ID, &setup).await.expect("extra table");
+    // SQL Server wants a CREATE VIEW alone in its batch.
+    let view_sql = format!("CREATE VIEW {EXTRA_VIEW} AS SELECT id FROM {EXTRA}");
+    service.run_query(ID, &view_sql).await.expect("extra view");
     let table = listed(service, EXTRA).await.expect("extra is listed");
     let view = listed(service, EXTRA_VIEW).await.expect("view is listed");
     assert_eq!(view.kind, "view");
@@ -545,6 +554,13 @@ async fn objects(service: &ConnectionService, driver: Driver) {
         Driver::Sqlite => {
             format!("CREATE TRIGGER {TRIGGER} AFTER INSERT ON {TABLE} BEGIN SELECT 1; END")
         }
+        // Each CREATE must be alone in its batch, so they run one by one below.
+        Driver::Mssql => [
+            format!("CREATE TRIGGER {TRIGGER} ON {TABLE} AFTER INSERT AS SET NOCOUNT ON"),
+            format!("CREATE PROCEDURE {PROCEDURE} AS SELECT 1"),
+            format!("CREATE FUNCTION {ROUTINE}(@a INT) RETURNS INT AS BEGIN RETURN @a + 1 END"),
+        ]
+        .join("\n;;\n"),
         Driver::Mysql => format!(
             "CREATE TRIGGER {TRIGGER} BEFORE INSERT ON {TABLE} FOR EACH ROW SET NEW.note = NEW.note; \
             CREATE PROCEDURE {PROCEDURE}() SELECT 1; \
@@ -561,7 +577,12 @@ async fn objects(service: &ConnectionService, driver: Driver) {
         ),
     };
     let view_sql = format!("CREATE VIEW {OBJECT_VIEW} AS SELECT id FROM {TABLE}");
-    service.run_query(ID, &setup).await.expect("objects setup");
+    for statement in setup.split("\n;;\n") {
+        service
+            .run_query(ID, statement)
+            .await
+            .expect("objects setup");
+    }
     service.run_query(ID, &view_sql).await.expect("view setup");
 
     // A view shows its CREATE statement.
@@ -724,6 +745,15 @@ async fn create_and_rename(service: &ConnectionService) {
 async fn dump(service: &ConnectionService, driver: Driver) {
     let folder = std::env::temp_dir();
     let path = folder.join(format!("sqlpro-dump-{}-{driver:?}.sql", std::process::id()));
+    if driver == Driver::Mssql {
+        let error = service
+            .dump_database(ID, &path)
+            .await
+            .expect_err("no backup");
+        assert!(error.to_string().contains("not supported"), "{error}");
+        assert!(!path.exists());
+        return;
+    }
     match service.dump_database(ID, &path).await {
         Err(error) if error.to_string().contains("was not found") => {
             println!("NOTE: the dump check for {driver:?} is skipped: {error}");
@@ -968,10 +998,11 @@ async fn diagram(service: &ConnectionService, driver: Driver) {
             PRIMARY KEY (book_id, number), \
             FOREIGN KEY (book_id) REFERENCES sqlpro_d_book (id)); \
         CREATE TABLE sqlpro_d_page (id INTEGER PRIMARY KEY, number INTEGER, book_id INTEGER, \
-            FOREIGN KEY (book_id, number) REFERENCES sqlpro_d_edition (book_id, number)); \
-        CREATE VIEW sqlpro_d_view AS SELECT id FROM sqlpro_d_book"
+            FOREIGN KEY (book_id, number) REFERENCES sqlpro_d_edition (book_id, number))"
     );
     service.run_query(ID, &setup).await.expect("diagram tables");
+    let view = "CREATE VIEW sqlpro_d_view AS SELECT id FROM sqlpro_d_book";
+    service.run_query(ID, view).await.expect("diagram view");
     if driver == Driver::Sqlite {
         // No parent column, and the parent name in other letters.
         let short = "CREATE TABLE sqlpro_d_short (id INTEGER PRIMARY KEY, \
@@ -1129,7 +1160,8 @@ async fn rights(
     (can_read, can_write)
 }
 
-/// `SQLite` has no accounts: an empty list, and every change is an error.
+/// `SQLite` has no accounts, and the app does not manage SQL Server accounts yet:
+/// an empty list, and every change is an error.
 async fn no_users(service: &ConnectionService) {
     let list = service.list_users(ID).await.expect("list users");
     assert!(!list.can_manage);
@@ -1294,7 +1326,7 @@ async fn passwords(service: &ConnectionService, config: &ConnectionConfig, me: &
 /// Creates, changes and drops accounts. Expects the test table with two rows.
 async fn users(service: &ConnectionService, config: &ConnectionConfig, table: &TableRef) {
     let driver = config.driver;
-    if driver == Driver::Sqlite {
+    if matches!(driver, Driver::Sqlite | Driver::Mssql) {
         no_users(service).await;
         return;
     }
@@ -1574,6 +1606,92 @@ async fn custom_sql(service: &ConnectionService) {
     assert!(service.run_query(ID, "SELEC nonsense").await.is_err());
 }
 
+/// Every SQL Server type comes back as the text SQL Server itself writes.
+/// Types the driver cannot read still show when a table is browsed.
+async fn mssql_types(service: &ConnectionService) {
+    let sql = "SELECT CAST(1 AS bit), CAST(255 AS tinyint), CAST(-5 AS smallint), \
+        CAST(-7 AS int), CAST(9000000000 AS bigint), CAST(12.50 AS decimal(10,2)), \
+        CAST(-0.005 AS numeric(5,3)), CAST(-1.5 AS money), CAST(12.34 AS smallmoney), \
+        CAST(1.5 AS float), CAST(0.25 AS real), \
+        CAST('6F9619FF-8B86-D011-B42D-00C04FC964FF' AS uniqueidentifier), \
+        CAST(0x00FF AS varbinary(10)), CAST('2020-01-31' AS date), \
+        CAST('13:14:15.5' AS time(3)), CAST('2020-01-31 13:14:15.123' AS datetime), \
+        CAST('2020-01-31 13:14:15.1234567' AS datetime2), \
+        CAST('2020-01-31 13:14:00' AS smalldatetime), \
+        CAST('2020-01-31 13:14:15 +02:00' AS datetimeoffset(0)), CAST('abc' AS char(4)), \
+        CAST(N'äö€' AS nvarchar(10)), CAST('café' AS varchar(10)), CAST(NULL AS int)";
+    let sets = service.run_query(ID, sql).await.expect("types");
+    let expected = [
+        "1",
+        "255",
+        "-5",
+        "-7",
+        "9000000000",
+        "12.50",
+        "-0.005",
+        "-1.5000",
+        "12.3400",
+        "1.5",
+        "0.25",
+        "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+        "0x00ff",
+        "2020-01-31",
+        "13:14:15.500",
+        "2020-01-31 13:14:15.123",
+        "2020-01-31 13:14:15.1234567",
+        "2020-01-31 13:14:00",
+        "2020-01-31 13:14:15 +02:00",
+        "abc ",
+        "äö€",
+        "café",
+    ];
+    let mut wanted: Vec<Option<String>> = expected.iter().map(|value| text(value)).collect();
+    wanted.push(None);
+    assert_eq!(sets[0].rows[0], wanted);
+
+    let setup = "DROP TABLE IF EXISTS sqlpro_types; \
+        CREATE TABLE sqlpro_types (id INT PRIMARY KEY, x XML, t TEXT, n NTEXT, i IMAGE, \
+            v SQL_VARIANT, g GEOGRAPHY, h HIERARCHYID, b VARBINARY(10)); \
+        INSERT INTO sqlpro_types VALUES (1, '<a>1</a>', 'old', N'new', 0x0A0B, 7, \
+            geography::Point(1, 2, 4326), hierarchyid::Parse('/1/'), NULL)";
+    service.run_query(ID, setup).await.expect("types table");
+    let table = listed(service, "sqlpro_types").await.expect("types table");
+    // A binary value is typed as `0x…` text.
+    let changes = values(&[("b", Some("0x0102"))]);
+    let updated = service.update_row(ID, &table, values(&[("id", Some("1"))]), changes);
+    assert_eq!(updated.await.expect("binary update"), 1);
+    let row = &page(service, &table).await.rows[0];
+    let shown = [
+        "1",
+        "<a>1</a>",
+        "old",
+        "new",
+        "0x0a0b",
+        "7",
+        "POINT (2 1)",
+        "/1/",
+        "0x0102",
+    ];
+    let shown: Vec<Option<String>> = shown.iter().map(|value| text(value)).collect();
+    assert_eq!(*row, shown);
+    // The free query editor gives an error for such a type, not a panic.
+    let error = service.run_query(ID, "SELECT x FROM sqlpro_types").await;
+    let error = error.expect_err("xml").to_string();
+    assert!(
+        error.contains("type Xml") && error.contains("CAST("),
+        "{error}"
+    );
+    let sets = service
+        .run_query(ID, "SELECT 1")
+        .await
+        .expect("query after it");
+    assert_eq!(sets[0].rows[0], vec![text("1")]);
+    service
+        .run_query(ID, "DROP TABLE sqlpro_types")
+        .await
+        .expect("drop types table");
+}
+
 /// Drops the test table and closes the tab. A closed tab cannot be used.
 async fn clean_up(service: &ConnectionService) {
     service
@@ -1589,6 +1707,7 @@ async fn cancel(service: &ConnectionService, driver: Driver) {
     let slow = match driver {
         Driver::Mysql => "SELECT SLEEP(5)",
         Driver::Postgres => "SELECT pg_sleep(5)",
+        Driver::Mssql => "WAITFOR DELAY '00:00:05'",
         // Counts to one billion. That takes far longer than the test waits.
         Driver::Sqlite => {
             "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000000000) \
@@ -1628,6 +1747,7 @@ async fn cancel(service: &ConnectionService, driver: Driver) {
     assert_eq!(sets[0].rows[0], vec![text("2")]);
 }
 
+#[allow(clippy::too_many_lines, reason = "one end-to-end flow")]
 async fn exercise(config: ConnectionConfig) {
     let driver = config.driver;
     let service = ConnectionService::new(RepositoryFactory);
@@ -1738,6 +1858,9 @@ async fn exercise(config: ConnectionConfig) {
     save_image();
 
     custom_sql(&service).await;
+    if driver == Driver::Mssql {
+        mssql_types(&service).await;
+    }
 
     clean_up(&service).await;
 }
@@ -1771,4 +1894,31 @@ async fn postgres() {
     if let Some(config) = config_from_env("SQLPRO_TEST_POSTGRES", Driver::Postgres) {
         exercise(config).await;
     }
+}
+
+/// The SQL Server image has no setting for a first database, so the test makes it.
+#[tokio::test]
+async fn mssql() {
+    let Some(config) = config_from_env("SQLPRO_TEST_MSSQL", Driver::Mssql) else {
+        return;
+    };
+    let mut master = config.clone();
+    "master".clone_into(&mut master.database);
+    let service = ConnectionService::new(RepositoryFactory);
+    // A wrong password fails, and the error never shows it.
+    let mut wrong = master.clone();
+    "Wrong-Pass-9@/x".clone_into(&mut wrong.password);
+    let error = service.connect(ID.to_owned(), wrong).await;
+    let error = error.expect_err("wrong password").to_string();
+    assert!(!error.contains("Wrong-Pass"), "{error}");
+    service
+        .connect(ID.to_owned(), master)
+        .await
+        .expect("connect to master");
+    let literal = config.database.replace('\'', "''");
+    let name = config.database.replace(']', "]]");
+    let create = format!("IF DB_ID(N'{literal}') IS NULL CREATE DATABASE [{name}]");
+    service.run_query(ID, &create).await.expect("test database");
+    service.disconnect(ID).await;
+    exercise(config).await;
 }

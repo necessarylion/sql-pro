@@ -44,6 +44,14 @@ test('mariadb is mysql and postgresql is postgres', function () {
   expect(ConnectionString.parse('POSTGRES://u:p@h/db').driver).toBe('postgres')
 })
 
+test('mssql and sqlserver are SQL Server, with its defaults', function () {
+  expect(ConnectionString.parse('sqlserver://u:p@h/db').driver).toBe('mssql')
+  expect(ConnectionString.parse('mssql://db.example.com')).toEqual({
+    ...DEFAULT_CONFIGS.mssql,
+    host: 'db.example.com',
+  })
+})
+
 test('missing parts keep the defaults', function () {
   expect(ConnectionString.parse('mysql://db.example.com')).toEqual({
     ...DEFAULT_CONFIGS.mysql,

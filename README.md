@@ -5,7 +5,7 @@
 <h1 align="center">SQL Pro</h1>
 
 <p align="center">
-  A small desktop SQL client, like Sequel Pro. It works with MySQL, PostgreSQL and SQLite.
+  A small desktop SQL client, like Sequel Pro. It works with MySQL, PostgreSQL, SQL Server and SQLite.
 </p>
 
 <p align="center">

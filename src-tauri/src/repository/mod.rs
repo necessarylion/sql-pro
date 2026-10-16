@@ -1,6 +1,7 @@
 //! Database access. One repository per driver, all behind the same trait.
 
 mod dump;
+mod mssql;
 mod mysql;
 mod password;
 mod postgres;
@@ -217,9 +218,49 @@ pub trait Repository: Send + Sync {
         format!("TRUNCATE TABLE {table}")
     }
 
-    /// The statement that renames a table. Both names are already quoted.
-    fn rename_table_sql(&self, table: &str, new_name: &str) -> String {
-        format!("ALTER TABLE {table} RENAME TO {new_name}")
+    /// The statement that renames a table. `new_name` is not quoted yet.
+    fn rename_table_sql(&self, table: &TableRef, new_name: &str) -> String {
+        format!(
+            "ALTER TABLE {} RENAME TO {}",
+            self.table_name(table),
+            self.quote(new_name)
+        )
+    }
+
+    /// The statement that renames a column. The names are not quoted yet.
+    fn rename_column_sql(&self, table: &TableRef, old: &str, new: &str) -> String {
+        format!(
+            "ALTER TABLE {} RENAME COLUMN {} TO {}",
+            self.table_name(table),
+            self.quote(old),
+            self.quote(new)
+        )
+    }
+
+    /// The statement that adds a column. `table` is quoted, `definition` is the full
+    /// column definition.
+    fn add_column_sql(&self, table: &str, definition: &str) -> String {
+        format!("ALTER TABLE {table} ADD COLUMN {definition}")
+    }
+
+    /// The SQL that drops a column. `column` is not quoted yet.
+    fn drop_column_sql(&self, table: &TableRef, column: &str) -> String {
+        format!(
+            "ALTER TABLE {} DROP COLUMN {}",
+            self.table_name(table),
+            self.quote(column)
+        )
+    }
+
+    /// One column in the select list of a browse or an export.
+    fn select_column(&self, column: &ColumnInfo) -> String {
+        self.quote(&column.name)
+    }
+
+    /// The end of a SELECT that reads one page of rows.
+    /// `ordering` is empty or ` ORDER BY ...`.
+    fn page_sql(&self, ordering: &str, limit: usize, offset: u64) -> String {
+        format!("{ordering} LIMIT {limit} OFFSET {offset}")
     }
 
     /// The words that make a primary key column number its rows itself.
@@ -281,6 +322,7 @@ impl RepositoryFactory {
             Driver::Mysql => Arc::new(mysql::MysqlRepository::connect(config).await?),
             Driver::Postgres => Arc::new(postgres::PostgresRepository::connect(config).await?),
             Driver::Sqlite => Arc::new(sqlite::SqliteRepository::connect(config).await?),
+            Driver::Mssql => Arc::new(mssql::MssqlRepository::connect(config).await?),
         };
         Ok((repository, tunnel))
     }
@@ -713,9 +755,14 @@ fn password_safe(error: AppError, password: &str) -> AppError {
 
 /// Shows bytes as text when they are valid UTF-8, else as hex.
 fn bytes_to_text(bytes: &[u8]) -> String {
-    if let Ok(text) = std::str::from_utf8(bytes) {
-        return text.to_owned();
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_owned(),
+        Err(_) => hex(bytes),
     }
+}
+
+/// Shows bytes as hex, like `0x00ff`.
+fn hex(bytes: &[u8]) -> String {
     let mut hex = String::with_capacity(2 + bytes.len() * 2);
     hex.push_str("0x");
     for byte in bytes {

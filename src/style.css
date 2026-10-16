@@ -30,6 +30,7 @@
   --on-accent: #ffffff;
   --mysql: #b95c00;
   --postgres: #336791;
+  --mssql: #a4262c;
   --sqlite: #0f766e;
   /* The six folder colours. A folder saves the name, like `red`. */
   --folder-grey: #a6a7ad;

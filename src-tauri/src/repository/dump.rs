@@ -11,7 +11,9 @@ use tokio::process::Command;
 
 #[cfg(unix)]
 use crate::constants::{HOMEBREW_OPT_DIR, TOOL_DIRS};
-use crate::constants::{MYSQL_PASSWORD_ENV, PARTIAL_DUMP_SUFFIX, POSTGRES_PASSWORD_ENV};
+use crate::constants::{
+    MSSQL_NO_BACKUP, MYSQL_PASSWORD_ENV, PARTIAL_DUMP_SUFFIX, POSTGRES_PASSWORD_ENV,
+};
 use crate::error::{AppError, AppResult};
 use crate::model::{ConnectionConfig, Driver};
 
@@ -24,6 +26,9 @@ impl DumpRepository {
     /// `config` must hold the host and port we really connect to. With an SSH
     /// tunnel that is the local end of the tunnel.
     pub async fn dump(config: &ConnectionConfig, path: &Path) -> AppResult<()> {
+        if config.driver == Driver::Mssql {
+            return Err(MSSQL_NO_BACKUP.into());
+        }
         // The tool writes to a side file first. So a dump that fails leaves no
         // half file, and does not harm an older backup that is already at `path`.
         let mut partial = OsString::from(path);
@@ -47,6 +52,7 @@ impl DumpRepository {
             Driver::Mysql => Self::mysql(config, output).await?,
             Driver::Postgres => Self::postgres(config, output)?,
             Driver::Sqlite => Self::sqlite(config, output)?,
+            Driver::Mssql => return Err(MSSQL_NO_BACKUP.into()),
         };
         super::hide_console(&mut command);
         command
