@@ -26,7 +26,7 @@ export const DETAIL_LINE_LENGTH = 80
 /** The spaces of one indent level when the row detail panel formats JSON. */
 export const JSON_INDENT = 2
 
-/** The type of the `id` column that a new table starts with. All three databases know it. */
+/** The type of the `id` column that a new table starts with. All databases know it. */
 export const ID_COLUMN_TYPE = 'INTEGER'
 
 export const FAVORITES_STORAGE_KEY = 'sql-pro.favorites'
@@ -34,6 +34,7 @@ export const FAVORITES_STORAGE_KEY = 'sql-pro.favorites'
 export const DRIVER_LABELS: Record<Driver, string> = {
   mysql: 'MySQL',
   postgres: 'PostgreSQL',
+  mssql: 'SQL Server',
   sqlite: 'SQLite',
 }
 
@@ -41,6 +42,7 @@ export const DRIVER_LABELS: Record<Driver, string> = {
 export const DRIVER_BADGES: Record<Driver, string> = {
   mysql: 'MY',
   postgres: 'PG',
+  mssql: 'MS',
   sqlite: 'SL',
 }
 
@@ -63,6 +65,15 @@ export const DEFAULT_CONFIGS: Record<Driver, ConnectionConfig> = {
     database: 'postgres',
     ssh: null,
   },
+  mssql: {
+    driver: 'mssql',
+    host: '127.0.0.1',
+    port: 1433,
+    user: 'sa',
+    password: '',
+    database: 'master',
+    ssh: null,
+  },
   sqlite: { driver: 'sqlite', host: '', port: 0, user: '', password: '', database: '', ssh: null },
 }
 
@@ -72,6 +83,8 @@ export const CONNECTION_STRING_DRIVERS: Record<string, Driver> = {
   mariadb: 'mysql',
   postgres: 'postgres',
   postgresql: 'postgres',
+  mssql: 'mssql',
+  sqlserver: 'mssql',
   sqlite: 'sqlite',
   file: 'sqlite',
 }

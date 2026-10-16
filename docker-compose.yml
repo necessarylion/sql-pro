@@ -1,5 +1,5 @@
-# Local test databases for SQL Pro. Both give full admin access.
-# Host ports are 5433 and 3307, so they do not clash with a local Postgres or MySQL.
+# Local test databases for SQL Pro. All of them give full admin access.
+# Host ports are 5433, 3307 and 1434, so they do not clash with a local Postgres, MySQL or SQL Server.
 # Ports are open on 127.0.0.1 only, because the passwords are weak.
 services:
   postgres:
@@ -23,6 +23,20 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
 
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    # Microsoft only builds this image for x86. Apple silicon runs it through Rosetta.
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: "Y"
+      # SQL Server needs upper case, lower case and a digit. "sa" is the admin.
+      MSSQL_SA_PASSWORD: Root1234!
+    ports:
+      - "127.0.0.1:1434:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+
 volumes:
   postgres_data:
   mysql_data:
+  sqlserver_data:

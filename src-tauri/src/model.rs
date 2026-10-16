@@ -12,6 +12,8 @@ pub enum Driver {
     Mysql,
     Postgres,
     Sqlite,
+    /// Microsoft SQL Server.
+    Mssql,
 }
 
 /// How to reach one database. For `SQLite`, `database` is the file path.
@@ -40,7 +42,7 @@ pub struct SshConfig {
     pub key_path: String,
 }
 
-/// A table or a view. Only `PostgreSQL` fills `schema`.
+/// A table or a view. Only `PostgreSQL` and SQL Server fill `schema`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TableRef {
     pub schema: Option<String>,
@@ -50,7 +52,7 @@ pub struct TableRef {
 }
 
 /// A view, trigger, procedure or function. `kind` is one of those four words.
-/// Only `PostgreSQL` fills `schema` and `args`.
+/// Only `PostgreSQL` and SQL Server fill `schema`. Only `PostgreSQL` fills `args`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DbObject {
     pub kind: String,

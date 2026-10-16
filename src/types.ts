@@ -1,6 +1,6 @@
 // Shared types. They match the Tauri backend commands.
 
-export type Driver = 'mysql' | 'postgres' | 'sqlite'
+export type Driver = 'mysql' | 'postgres' | 'mssql' | 'sqlite'
 
 /** For sqlite, `database` is the file path. The other fields are empty or 0. */
 export interface ConnectionConfig {
@@ -23,7 +23,7 @@ export interface SshConfig {
   keyPath: string
 }
 
-/** `schema` is set only for postgres. */
+/** `schema` is set only for postgres and mssql. */
 export interface TableRef {
   schema: string | null
   name: string
@@ -199,7 +199,7 @@ export interface DiagramTable {
 /** One foreign key. `table` holds the key columns. `refTable` is the table they point at. */
 export interface Relation {
   name: string
-  /** The schema of `table`. Set only for postgres. */
+  /** The schema of `table`. Set only for postgres and mssql. */
   schema: string | null
   table: string
   columns: string[]

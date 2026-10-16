@@ -78,8 +78,10 @@ impl<'run> Exporter<'run> {
             return Ok(());
         }
         let mut names = Vec::with_capacity(chosen.len());
+        let mut select = Vec::with_capacity(chosen.len());
         for column in &chosen {
             names.push(repository.quote(&column.name));
+            select.push(repository.select_column(column));
         }
         let name = repository.table_name(table);
         let insert = format!("INSERT INTO {name} ({}) VALUES (", names.join(", "));
@@ -106,11 +108,12 @@ impl<'run> Exporter<'run> {
         // ponytail: LIMIT/OFFSET pages get slower deep into a very large table, and a
         // table without a primary key has no fixed order between pages. Page by key
         // ranges, or stream the rows, if that hurts.
-        let mut offset = 0;
+        let mut offset: u64 = 0;
         loop {
             let select = format!(
-                "SELECT {} FROM {name}{ordering} LIMIT {MAX_QUERY_ROWS} OFFSET {offset}",
-                names.join(", ")
+                "SELECT {} FROM {name}{}",
+                select.join(", "),
+                repository.page_sql(&ordering, MAX_QUERY_ROWS, offset)
             );
             let rows = repository
                 .query(&select)
@@ -129,7 +132,7 @@ impl<'run> Exporter<'run> {
             if rows.len() < MAX_QUERY_ROWS {
                 break;
             }
-            offset += MAX_QUERY_ROWS;
+            offset += MAX_QUERY_ROWS as u64;
         }
         if sql {
             writeln!(out)?;

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-SQL Pro is a compact desktop SQL client (like Sequel Pro) for MySQL/MariaDB, PostgreSQL and SQLite.
+SQL Pro is a compact desktop SQL client (like Sequel Pro) for MySQL/MariaDB, PostgreSQL, SQL Server and SQLite.
 Stack: Rust + Tauri v2 backend, Vue 3 + TypeScript frontend, `bun` as package manager.
 
 ## Commands
@@ -29,14 +29,19 @@ cargo test --test service  # the end-to-end flow only
 cargo fmt
 ```
 
-Backend tests run on SQLite by default. MySQL and PostgreSQL run only when these are set
-(`docker-compose.yml` starts local test servers on ports 3307 and 5433, password `root`):
+Backend tests run on SQLite by default. MySQL, PostgreSQL and SQL Server run only when these are set
+(`docker-compose.yml` starts local test servers on ports 3307 and 5433 with password `root`, and SQL Server on
+port 1434 with user `sa` and password `Root1234!`):
 
 ```sh
 SQLPRO_TEST_MYSQL=host:port:user:password:database
 SQLPRO_TEST_POSTGRES=host:port:user:password:database
-SQLPRO_TEST_SSH=host:port:user:password      # optional, runs both through an SSH tunnel
+SQLPRO_TEST_MSSQL=host:port:user:password:database   # the test creates the database when it is missing
+SQLPRO_TEST_SSH=host:port:user:password      # optional, runs them through an SSH tunnel
 ```
+
+The PostgreSQL backup check needs a `pg_dump` with the same major version as the server (17 for Docker).
+With Homebrew: `PATH="/opt/homebrew/opt/libpq@17/bin:$PATH" cargo test`.
 
 Format only the files you changed (`bunx prettier --write <files>`). `bun run format` rewrites the whole repo.
 
@@ -51,7 +56,7 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
 - **No ORM.** All SQL is written by hand with sqlx 0.9. sqlx only takes dynamic SQL inside
   `AssertSqlSafe`.
 - **`Repository` trait** (`repository/mod.rs`) has one implementation per database (`mysql.rs`, `postgres.rs`,
-  `sqlite.rs`). Shared SQL building lives in `service.rs`; the trait only holds what differs per database
+  `mssql.rs`, `sqlite.rs`). Shared SQL building lives in `service.rs`; the trait only holds what differs per database
   (quoting, placeholders, catalog queries, `ALTER` syntax).
 - **Reads use `sqlx::raw_sql`** (text protocol), so every value comes back as `Option<String>`. This is how one
   grid can show any column type. **Writes use `sqlx::query`** with bound `Option<String>` values. PostgreSQL
@@ -65,6 +70,21 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
   are raw SQL from the user by design; only names are quoted.
 - **SSH tunnels** (`tunnel.rs`) run the system `ssh -N -L`. A password travels only in the environment of the
   ssh process (askpass helper), never on a command line. Unix only for passwords.
+- **SQL Server** (`mssql.rs`) uses our own fork of the driver: `https://github.com/necessarylion/sqlx-sqlserver`,
+  a git dependency on branch `main` (`Cargo.lock` pins the commit). Fix driver bugs in the fork (local clone
+  `../sqlx-sqlserver`), push `main`, then run `cargo update -p sqlx-sqlserver`. Never open PRs upstream.
+  Limits of the driver and how the app works around them:
+  - It cannot read `xml`, `text`, `ntext`, `image`, `sql_variant` or CLR types (`geography`, ...). Browse and
+    export cast them on the server (`Repository::select_column`). The query editor shows an error with a hint.
+  - It gives no values as `Option<String>`. `MssqlRepository::text` turns each type into the text SQL Server
+    itself writes (decimals keep their scale, binary is `0x…`, GUIDs in upper case).
+  - It has no cancel. Cancel runs `KILL <spid>` from a second connection. That ends the session, so the tab
+    opens a new connection for its next query.
+  - It reads its settings only from a URL. `encrypt=mandatory&trust_server_certificate=true`: encrypted, but the
+    certificate is not checked, like the other drivers. `PRINT` messages are dropped.
+  - Paging is `OFFSET … FETCH` (`Repository::page_sql`). Rename uses `sp_rename`. A default is a constraint, so
+    changing or dropping a column drops its default first.
+  - Backup and the Users view are not there for SQL Server yet. See `TODO.md`.
 - **Backups** (`dump.rs`) run `mysqldump` / `pg_dump` or copy the SQLite file. Passwords go through
   `MYSQL_PWD` / `PGPASSWORD`.
 - **Saved passwords** (`password.rs`) live in the OS keychain, all in one item (a JSON vault), so macOS asks

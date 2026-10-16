@@ -1,7 +1,7 @@
 [package]
 name = "sql-pro"
 version = "0.6.1"
-description = "A compact SQL client for MySQL, PostgreSQL and SQLite"
+description = "A compact SQL client for MySQL, PostgreSQL, SQL Server and SQLite"
 authors = ["Zin Kyaw Kyaw"]
 edition = "2024"
 rust-version = "1.99"
@@ -28,6 +28,12 @@ sqlx = { version = "0.9", default-features = false, features = [
     "postgres",
     "sqlite",
 ] }
+# SQL Server. Our own fork of the driver, used straight from git. Cargo.lock pins the commit.
+sqlx-sqlserver = { git = "https://github.com/necessarylion/sqlx-sqlserver", branch = "main", features = ["runtime-tokio", "chrono"] }
+# Reads the date and time values of SQL Server.
+chrono = { version = "0.4", default-features = false }
+# Builds the SQL Server connection URL, so a password with `@` or `/` still works.
+percent-encoding = "2"
 async-trait = "0.1"
 futures-util = "0.3"
 thiserror = "2"

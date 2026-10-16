@@ -29,6 +29,10 @@ defineProps<{ driver: Driver }>()
   background: var(--postgres);
 }
 
+.mssql {
+  background: var(--mssql);
+}
+
 .sqlite {
   background: var(--sqlite);
 }

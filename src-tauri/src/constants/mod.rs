@@ -123,6 +123,10 @@ pub const CANNOT_MANAGE_USERS: &str = "Your account is not allowed to manage use
 /// The error for a database kind that has no accounts.
 pub const NO_USER_ACCOUNTS: &str = "SQLite has no user accounts";
 
+/// The errors for features that SQL Server does not have in the app yet.
+pub const MSSQL_NO_USER_ACCOUNTS: &str = "User accounts are not supported for SQL Server yet";
+pub const MSSQL_NO_BACKUP: &str = "Backups are not supported for SQL Server yet";
+
 /// The error for a foreign key change on `SQLite`.
 pub const SQLITE_FOREIGN_KEYS_FIXED: &str =
     "SQLite cannot add or drop a foreign key of an existing table";
