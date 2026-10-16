@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type {
   AiOptions,
   Attachment,
@@ -28,6 +29,7 @@ import type {
   UserList,
   Values,
 } from '../types'
+import { OPEN_FILES_EVENT } from '../constants/files'
 
 /**
  * Thin wrappers around the Tauri backend commands.
@@ -288,5 +290,15 @@ export class DatabaseApi {
 
   deletePassword(id: string): Promise<void> {
     return invoke('delete_password', { id })
+  }
+
+  /** The files the OS asked the app to open. Each path comes only once. */
+  takeOpenedFiles(): Promise<string[]> {
+    return invoke('take_opened_files')
+  }
+
+  /** Calls `handler` when the OS gives the app more files to open. Call the result to stop. */
+  onOpenedFiles(handler: () => void): Promise<UnlistenFn> {
+    return listen(OPEN_FILES_EVENT, handler)
   }
 }

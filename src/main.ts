@@ -3,6 +3,7 @@ import App from './App.vue'
 import { AiStore } from './services/AiStore'
 import { ChatFormatter } from './services/ChatFormatter'
 import { FileDrop } from './services/FileDrop'
+import { FileOpener } from './services/FileOpener'
 import { ConnectionTransfer } from './services/ConnectionTransfer'
 import { DatabaseApi } from './services/DatabaseApi'
 import { DiagramLayoutStore } from './services/DiagramLayoutStore'
@@ -58,6 +59,9 @@ const layoutService = reactive(
 const sessionManager = reactive(
   new SessionManager(api, new DiscardPrompt(), layoutService),
 ) as SessionManager
+
+// SQLite files opened from the OS ("Open With" or a double click) get their own tab.
+void new FileOpener(api, sessionManager).start()
 
 const zoomService = new ZoomService(storage, new WebviewZoom(), document.documentElement)
 
