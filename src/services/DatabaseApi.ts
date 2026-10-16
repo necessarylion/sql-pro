@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
+  AiOptions,
   BrowseRequest,
+  ClaudeReply,
   ColumnInfo,
   ColumnSpec,
   ConnectionConfig,
@@ -68,6 +70,25 @@ export class DatabaseApi {
 
   runQuery(id: string, sql: string): Promise<ResultSet[]> {
     return invoke('run_query', { id, sql })
+  }
+
+  /**
+   * Sends a message to Claude about the database of connection `id`.
+   * With no `sessionId`, a new conversation starts with the tables of the database.
+   * The backend checks the provider, model and effort in `options` against fixed lists.
+   */
+  askClaude(
+    id: string,
+    message: string,
+    sessionId: string | null,
+    options: AiOptions,
+  ): Promise<ClaudeReply> {
+    return invoke('ask_claude', { id, message, sessionId, options })
+  }
+
+  /** Stops the Claude run of connection `id`. */
+  stopClaude(id: string): Promise<void> {
+    return invoke('stop_claude', { id })
   }
 
   /**

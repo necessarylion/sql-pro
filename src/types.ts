@@ -148,7 +148,56 @@ export interface SaveResult {
   deleted: number
 }
 
-export type SessionView = 'structure' | 'content' | 'query' | 'users' | 'diagram'
+export type SessionView = 'structure' | 'content' | 'query' | 'ask' | 'users' | 'diagram'
+
+/** One reply of Claude Code in the Ask AI view. */
+export interface ClaudeReply {
+  /** Send it with the next message to go on in the same conversation. */
+  sessionId: string
+  message: string
+  /** One SQL statement Claude wants to run. null when Claude is done. */
+  sql: string | null
+  /** True when `sql` surely only reads. Else the user must confirm it first. */
+  isRead: boolean
+}
+
+/** What Ask AI does with SQL that can change data: ask first, or never run it. */
+export type AiMode = 'ask' | 'readOnly'
+
+/** The choices sent with each message. null = the tool's own default. */
+export interface AiOptions {
+  provider: string
+  model: string | null
+  effort: string | null
+  readOnly: boolean
+}
+
+/** One saved Ask AI chat. The result rows are never saved: they can hold private data. */
+export interface SavedChat {
+  id: string
+  /** The first question, cut short. */
+  title: string
+  provider: string
+  /** Which server the chat is about. See `AiStore.connectionKey`. */
+  connection: string
+  database: string
+  /** The session of the AI tool, for `--resume`. */
+  sessionId: string | null
+  /** Times in milliseconds since 1970. */
+  created: number
+  updated: number
+  entries: ChatEntry[]
+}
+
+/** One line of the Ask AI chat. */
+export interface ChatEntry {
+  kind: 'user' | 'ai' | 'sql' | 'note'
+  text: string
+  /** For `sql`: what happened, like "3 rows" or "Rejected". */
+  outcome?: string
+  /** For `sql`: true when the outcome is an error or a rejection. For `note`: an error. */
+  failed?: boolean
+}
 
 /**
  * What a user may do on the current database.

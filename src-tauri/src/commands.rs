@@ -9,9 +9,10 @@ use tauri::State;
 
 use crate::error::AppResult;
 use crate::model::{
-    AccessLevel, BrowseRequest, ColumnInfo, ColumnSpec, ConnectionConfig, CsvImport, CsvPreview,
-    DbObject, Diagram, ExportRequest, NewColumn, NewForeignKey, NewIndex, NewUser, ResultSet,
-    RowUpdate, RowsExport, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
+    AccessLevel, AiOptions, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec, ConnectionConfig,
+    CsvImport, CsvPreview, DbObject, Diagram, ExportRequest, NewColumn, NewForeignKey, NewIndex,
+    NewUser, ResultSet, RowUpdate, RowsExport, SaveResult, TableKeys, TablePage, TableRef,
+    UserList, Values,
 };
 use crate::repository::PasswordRepository;
 use crate::service::ConnectionService;
@@ -68,6 +69,25 @@ pub async fn run_query(service: Service<'_>, id: String, sql: String) -> AppResu
 #[tauri::command]
 pub async fn cancel_query(service: Service<'_>, id: String) -> AppResult<()> {
     service.cancel_query(&id).await
+}
+
+#[tauri::command]
+pub async fn ask_claude(
+    service: Service<'_>,
+    id: String,
+    message: String,
+    session_id: Option<String>,
+    options: AiOptions,
+) -> AppResult<ClaudeReply> {
+    service
+        .ask_claude(&id, &message, session_id.as_deref(), &options)
+        .await
+}
+
+#[tauri::command]
+pub async fn stop_claude(service: Service<'_>, id: String) -> AppResult<()> {
+    service.stop_claude(&id);
+    Ok(())
 }
 
 #[tauri::command]

@@ -26,14 +26,26 @@ export const DETAIL_MAX_WIDTH = 2000
 export const DETAIL_WIDTH_STORAGE_KEY = 'sql-pro.detail-width'
 export const DETAIL_WIDTH_PROPERTY = '--detail-width'
 
+/** The height of the result grid in the Ask AI view, in pixels. One height for all tabs. */
+export const AI_RESULT_DEFAULT_HEIGHT = 200
+export const AI_RESULT_MIN_HEIGHT = 80
+// Only stops a wrong saved value. The CSS keeps the chat log at least 120px tall. See AskAiView.vue.
+export const AI_RESULT_MAX_HEIGHT = 2000
+
+export const AI_RESULT_HEIGHT_STORAGE_KEY = 'sql-pro.ai-result-height'
+export const AI_RESULT_HEIGHT_PROPERTY = '--ai-result-height'
+
 /** The sizes the user can drag. Each name is also a field of LayoutService. */
-export type LayoutSize = 'sidebarWidth' | 'editorHeight' | 'detailWidth'
+export type LayoutSize = 'sidebarWidth' | 'editorHeight' | 'detailWidth' | 'aiResultHeight'
 
 /** The sizes whose drag handle lies on the left edge of the pane. The pane grows to the left. */
 export const LEFT_EDGE_SIZES: LayoutSize[] = ['detailWidth']
 
 /** The sizes that are heights. Their handle is a horizontal line. */
-export const HEIGHT_SIZES: LayoutSize[] = ['editorHeight']
+export const HEIGHT_SIZES: LayoutSize[] = ['editorHeight', 'aiResultHeight']
+
+/** The heights whose drag handle lies on the top edge of the pane. The pane grows upwards. */
+export const TOP_EDGE_SIZES: LayoutSize[] = ['aiResultHeight']
 
 export interface LayoutSizeRule {
   fallback: number
@@ -64,6 +76,13 @@ export const LAYOUT_SIZES: Record<LayoutSize, LayoutSizeRule> = {
     max: DETAIL_MAX_WIDTH,
     storageKey: DETAIL_WIDTH_STORAGE_KEY,
     property: DETAIL_WIDTH_PROPERTY,
+  },
+  aiResultHeight: {
+    fallback: AI_RESULT_DEFAULT_HEIGHT,
+    min: AI_RESULT_MIN_HEIGHT,
+    max: AI_RESULT_MAX_HEIGHT,
+    storageKey: AI_RESULT_HEIGHT_STORAGE_KEY,
+    property: AI_RESULT_HEIGHT_PROPERTY,
   },
 }
 

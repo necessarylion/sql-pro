@@ -1,6 +1,6 @@
 import { autocompletion, completionKeymap } from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { MSSQL, MySQL, PostgreSQL, SQLite, sql, type SQLDialect } from '@codemirror/lang-sql'
+import { sql } from '@codemirror/lang-sql'
 import { HighlightStyle, bracketMatching, syntaxHighlighting } from '@codemirror/language'
 import { Compartment, EditorState, Prec, type Extension } from '@codemirror/state'
 import {
@@ -14,14 +14,8 @@ import {
   type ViewUpdate,
 } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
+import { SQL_DIALECTS } from '../constants/sql'
 import type { Driver, TableRef } from '../types'
-
-const DIALECTS: Record<Driver, SQLDialect> = {
-  mysql: MySQL,
-  postgres: PostgreSQL,
-  mssql: MSSQL,
-  sqlite: SQLite,
-}
 
 // All colours are CSS variables, so the editor follows the theme of the app.
 const HIGHLIGHT = HighlightStyle.define([
@@ -136,7 +130,7 @@ export class SqlEditor {
     for (const table of tables) {
       schema[table.schema ? `${table.schema}.${table.name}` : table.name] = []
     }
-    const dialect = driver ? DIALECTS[driver] : undefined
+    const dialect = driver ? SQL_DIALECTS[driver] : undefined
     const language: Extension = sql({ dialect, schema, defaultSchema: 'public' })
     this.view.dispatch({ effects: this.language.reconfigure(language) })
   }

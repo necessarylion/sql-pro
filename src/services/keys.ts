@@ -1,4 +1,6 @@
 import { inject, type InjectionKey } from 'vue'
+import type { AiStore } from './AiStore'
+import type { ChatFormatter } from './ChatFormatter'
 import type { ConnectionTransfer } from './ConnectionTransfer'
 import type { DiagramLayoutStore } from './DiagramLayoutStore'
 import type { FavoriteStore } from './FavoriteStore'
@@ -20,6 +22,8 @@ export const ZOOM_SERVICE: InjectionKey<ZoomService> = Symbol('ZoomService')
 export const SHORTCUTS: InjectionKey<Shortcuts> = Symbol('Shortcuts')
 export const QUERY_HISTORY: InjectionKey<QueryHistory> = Symbol('QueryHistory')
 export const DIAGRAM_LAYOUTS: InjectionKey<DiagramLayoutStore> = Symbol('DiagramLayoutStore')
+export const AI_STORE: InjectionKey<AiStore> = Symbol('AiStore')
+export const CHAT_FORMATTER: InjectionKey<ChatFormatter> = Symbol('ChatFormatter')
 export const PINNED_TABLES: InjectionKey<PinnedTables> = Symbol('PinnedTables')
 
 /** Like `inject`, but fails loudly when main.ts did not provide the object. */

@@ -113,6 +113,7 @@ export const VIEW_LABELS: Record<SessionView, string> = {
   structure: 'Structure',
   content: 'Content',
   query: 'Query',
+  ask: 'Ask AI',
   users: 'Users',
   diagram: 'Diagram',
 }

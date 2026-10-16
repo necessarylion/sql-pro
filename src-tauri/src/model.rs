@@ -254,6 +254,33 @@ pub struct ResultSet {
     pub truncated: bool,
 }
 
+/// The choices of the user for one message to Claude. `None` means the default.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiOptions {
+    /// Which AI tool runs. One of `AI_PROVIDERS`.
+    pub provider: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// Claude is told that writes will not run.
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+/// One reply of Claude in the "Ask Claude" view.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeReply {
+    /// Send it with the next message to go on in the same conversation.
+    pub session_id: String,
+    /// Plain text for the user.
+    pub message: String,
+    /// One SQL statement Claude wants to run. `None` when Claude is done.
+    pub sql: Option<String>,
+    /// True when `sql` surely only reads. Else the user must confirm it first.
+    pub is_read: bool,
+}
+
 /// One page of table data, with the table's columns.
 #[derive(Debug, Serialize)]
 pub struct TablePage {

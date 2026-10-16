@@ -1,0 +1,363 @@
+//! The logic of "Ask Claude": what we tell Claude about the database, how we read
+//! its reply, and whether its SQL only reads.
+
+use std::fmt::Write as _;
+
+use crate::constants::{
+    AI_PROVIDERS, CLAUDE_EFFORTS, CLAUDE_MODEL_ALIASES, CLAUDE_SCHEMA_MAX_CHARS, MODEL_ID_MAX,
+    READ_KEYWORDS, WRITE_KEYWORDS,
+};
+use crate::error::{AppError, AppResult};
+use crate::model::{AiOptions, ColumnInfo, Driver, TableRef};
+
+/// Checks the model and effort against fixed lists. They go on the command line,
+/// so free text must never get through.
+pub(super) fn check_options(options: &AiOptions) -> AppResult<()> {
+    if !AI_PROVIDERS.contains(&options.provider.as_str()) {
+        return Err(AppError::Message(format!(
+            "Unknown AI provider: {}",
+            options.provider
+        )));
+    }
+    if let Some(model) = &options.model
+        && !is_model_id(model)
+    {
+        return Err(AppError::Message(format!(
+            "Not a valid AI model id: {model}"
+        )));
+    }
+    if let Some(effort) = &options.effort
+        && !CLAUDE_EFFORTS.contains(&effort.as_str())
+    {
+        return Err(AppError::Message(format!("Unknown AI effort: {effort}")));
+    }
+    Ok(())
+}
+
+/// True for a known alias, or an id like `claude-opus-5-5` or `claude-opus-5-5[1m]`:
+/// lower case letters, digits, `.`, `-`, `[` and `]`, at most `MODEL_ID_MAX` long.
+/// It never starts with `-`, so it cannot be read as a flag. It goes to `claude` as
+/// its own argument, never through a shell.
+pub(super) fn is_model_id(model: &str) -> bool {
+    if CLAUDE_MODEL_ALIASES.contains(&model) {
+        return true;
+    }
+    let mut chars = model.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    model.len() <= MODEL_ID_MAX
+        && (first.is_ascii_lowercase() || first.is_ascii_digit())
+        && chars.all(|char| {
+            char.is_ascii_lowercase()
+                || char.is_ascii_digit()
+                || matches!(char, '.' | '-' | '[' | ']')
+        })
+}
+
+/// The name of the database kind, as Claude knows it.
+pub(super) fn dialect(driver: Driver) -> &'static str {
+    match driver {
+        Driver::Mysql => "MySQL / MariaDB",
+        Driver::Postgres => "PostgreSQL",
+        Driver::Sqlite => "SQLite",
+        Driver::Mssql => "Microsoft SQL Server (T-SQL)",
+    }
+}
+
+/// The first message of a conversation: the database, its tables, then the question.
+/// The table list is cut at `CLAUDE_SCHEMA_MAX_CHARS`.
+pub(super) fn first_prompt(
+    driver: Driver,
+    database: &str,
+    tables: &[(TableRef, Vec<ColumnInfo>)],
+    question: &str,
+) -> String {
+    let mut schema = String::new();
+    for (table, columns) in tables {
+        let mut line = String::new();
+        if let Some(schema) = &table.schema {
+            let _ = write!(line, "{schema}.");
+        }
+        let _ = write!(line, "{}", table.name);
+        if !table.kind.is_empty() && table.kind != "table" {
+            let _ = write!(line, " [{}]", table.kind);
+        }
+        let mut parts = Vec::with_capacity(columns.len());
+        for column in columns {
+            let key = if column.primary_key { " PK" } else { "" };
+            parts.push(format!("{} {}{key}", column.name, column.data_type));
+        }
+        let _ = writeln!(line, "({})", parts.join(", "));
+        if schema.len() + line.len() > CLAUDE_SCHEMA_MAX_CHARS {
+            schema.push_str("(more tables are not listed)\n");
+            break;
+        }
+        schema.push_str(&line);
+    }
+    format!(
+        "Database kind: {}\nCurrent database: {database}\nTables (name(column type, ...)):\n{schema}\nQuestion: {question}",
+        dialect(driver)
+    )
+}
+
+/// Reads Claude's reply text as `{"sql": ..., "message": ...}`.
+/// The JSON may sit in a Markdown code block or between other text. When it is not JSON,
+/// the whole text is the message and there is no SQL.
+pub(super) fn parse_reply(text: &str) -> (Option<String>, String) {
+    let start = text.find('{');
+    let end = text.rfind('}');
+    if let (Some(start), Some(end)) = (start, end)
+        && start < end
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(&text[start..=end])
+        && let Some(message) = value.get("message").and_then(serde_json::Value::as_str)
+    {
+        return (sql_of(&value), message.to_owned());
+    }
+    (None, text.trim().to_owned())
+}
+
+/// The `sql` field of a reply. Blank SQL counts as none.
+pub(super) fn sql_of(value: &serde_json::Value) -> Option<String> {
+    let sql = value.get("sql")?.as_str()?.trim();
+    (!sql.is_empty()).then(|| sql.to_owned())
+}
+
+/// True when `sql` surely only reads. Anything we are not sure about counts as a write,
+/// so the user is asked first. A wrong "write" only costs one click. A wrong "read" can lose data.
+///
+/// A read is one statement (one `;` at the end is fine) that starts with a word of
+/// `READ_KEYWORDS` and holds no word of `WRITE_KEYWORDS` outside strings and comments.
+///
+/// ponytail: no real SQL parser. Text we cannot read for sure counts as a write:
+/// backslashes, `#`, `$`, `--` with no space after it, `/*!` and nested comments.
+/// A SELECT that calls a function with side effects (like `nextval`) still counts as a read.
+pub fn is_read_only(sql: &str) -> bool {
+    let Some(code) = code_only(sql) else {
+        return false;
+    };
+    let code = code.trim_end();
+    let code = code.strip_suffix(';').unwrap_or(code);
+    if code.contains(';') {
+        return false;
+    }
+    let mut words = code
+        .split(|char: char| !(char.is_ascii_alphanumeric() || char == '_'))
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_uppercase);
+    let Some(first) = words.next() else {
+        return false;
+    };
+    READ_KEYWORDS.contains(&first.as_str())
+        && !words.any(|word| WRITE_KEYWORDS.contains(&word.as_str()))
+}
+
+/// `sql` with strings, quoted names and comments turned into spaces.
+/// `None` when the text has something we cannot read for sure.
+fn code_only(sql: &str) -> Option<String> {
+    // Backslash escapes depend on the database and its settings. `$` starts a
+    // PostgreSQL string. `#` starts a MySQL comment. Not worth the risk.
+    if sql.contains(['\\', '$', '#']) {
+        return None;
+    }
+    let chars: Vec<char> = sql.chars().collect();
+    let mut code = String::with_capacity(sql.len());
+    let mut index = 0;
+    while index < chars.len() {
+        let char = chars[index];
+        let next = chars.get(index + 1).copied();
+        let end = match (char, next) {
+            ('\'' | '"' | '`', _) => close(&chars, index + 1, char)?,
+            ('[', _) => close(&chars, index + 1, ']')?,
+            ('-', Some('-')) => {
+                // MySQL reads `--` as a comment only when a space follows. `1--1` is math there.
+                if !chars
+                    .get(index + 2)
+                    .is_none_or(|after| after.is_whitespace())
+                {
+                    return None;
+                }
+                chars[index..]
+                    .iter()
+                    .position(|&c| c == '\n')
+                    .map_or(chars.len(), |at| index + at + 1)
+            }
+            ('/', Some('*')) => {
+                let body = index + 2;
+                let close = (body..chars.len().saturating_sub(1))
+                    .find(|&at| chars[at] == '*' && chars[at + 1] == '/')?;
+                // MySQL runs the code in `/*! */`. PostgreSQL nests comments.
+                let inner: String = chars[body..close].iter().collect();
+                if inner.starts_with('!') || inner.contains("/*") {
+                    return None;
+                }
+                close + 2
+            }
+            _ => {
+                code.push(char);
+                index += 1;
+                continue;
+            }
+        };
+        code.push(' ');
+        index = end;
+    }
+    Some(code)
+}
+
+/// The index after the `quote` that closes a string or name. A doubled quote stays inside.
+/// `None` when it never closes.
+fn close(chars: &[char], mut index: usize, quote: char) -> Option<usize> {
+    while index < chars.len() {
+        if chars[index] == quote {
+            if chars.get(index + 1) == Some(&quote) {
+                index += 2;
+                continue;
+            }
+            return Some(index + 1);
+        }
+        index += 1;
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_options, is_model_id, is_read_only, parse_reply};
+    use crate::model::AiOptions;
+
+    #[test]
+    fn only_known_options_pass() {
+        let options = |model: Option<&str>, effort: Option<&str>| AiOptions {
+            provider: "claude".to_owned(),
+            model: model.map(str::to_owned),
+            effort: effort.map(str::to_owned),
+            read_only: false,
+        };
+        assert!(check_options(&options(None, None)).is_ok());
+        assert!(check_options(&options(Some("opus"), Some("max"))).is_ok());
+        assert!(check_options(&options(Some("claude-opus-5-5"), Some("low"))).is_ok());
+        assert!(check_options(&options(Some("--dangerously-skip-permissions"), None)).is_err());
+        assert!(check_options(&options(None, Some("huge"))).is_err());
+        assert!(check_options(&options(None, Some(""))).is_err());
+    }
+
+    #[test]
+    fn model_ids() {
+        for good in [
+            "opus",
+            "fable",
+            "claude-opus-5-5",
+            "claude-sonnet-4-6",
+            "claude-opus-5-5[1m]",
+            "my.model-1",
+            "4o",
+            &"a".repeat(80),
+        ] {
+            assert!(is_model_id(good), "should pass: {good}");
+        }
+        for bad in [
+            "",
+            "-x",
+            "--foo",
+            "--dangerously-skip-permissions",
+            "opus ",
+            "claude opus",
+            "a;rm -rf /",
+            "a$(x)",
+            "a|b",
+            "Claude-Opus",
+            "a\nb",
+            ".hidden",
+            "[1m]",
+            &"a".repeat(81),
+        ] {
+            assert!(!is_model_id(bad), "should fail: {bad}");
+        }
+    }
+
+    #[test]
+    fn unknown_provider_is_rejected() {
+        for provider in ["codex", "", "Claude", "claude --model x"] {
+            let options = AiOptions {
+                provider: provider.to_owned(),
+                ..AiOptions::default()
+            };
+            let error = check_options(&options).expect_err(provider).to_string();
+            assert!(error.contains("Unknown AI provider"), "{error}");
+        }
+    }
+
+    #[test]
+    fn reads() {
+        for sql in [
+            "SELECT * FROM users",
+            "select count(*) from users;",
+            "  SELECT 1 ;  ",
+            "WITH a AS (SELECT 1) SELECT * FROM a",
+            "SHOW TABLES",
+            "EXPLAIN SELECT 1",
+            "DESCRIBE users",
+            "DESC users",
+            "SELECT 'drop table x; delete' FROM t",
+            "SELECT \"update\" FROM t",
+            "SELECT [set] FROM t",
+            "SELECT 1 -- delete everything\nFROM t",
+            "SELECT /* insert */ 1",
+            "SELECT 'it''s' FROM t",
+            "SELECT updated_at, user_set FROM t",
+        ] {
+            assert!(is_read_only(sql), "should read: {sql}");
+        }
+    }
+
+    #[test]
+    fn writes() {
+        for sql in [
+            "",
+            "   ",
+            "DELETE FROM users",
+            "UPDATE users SET blocked = 1 WHERE id = 3",
+            "INSERT INTO t VALUES (1)",
+            "SELECT 1; DELETE FROM t",
+            "SELECT 1; SELECT 2",
+            "SELECT * INTO backup FROM t",
+            "SELECT * FROM t FOR UPDATE",
+            "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
+            "EXPLAIN ANALYZE DELETE FROM t",
+            "SET @a = 1",
+            "CALL p()",
+            "EXEC sp_who",
+            "TRUNCATE t",
+            "DROP TABLE t",
+            "VACUUM",
+            "PRAGMA journal_mode = wal",
+            "SELECT 'a\\'b'; DELETE FROM t; SELECT 'c'",
+            "SELECT 1 # x'\n; DELETE FROM t; -- '",
+            "SELECT 1--1; DELETE FROM t",
+            "SELECT $$'$$; DELETE FROM t; SELECT $$'$$",
+            "SELECT /*! 1; DELETE FROM t */",
+            "SELECT /* a /* b */ ' */ ; DELETE FROM t; --'",
+            "SELECT 'never closed",
+            "SELECT /* never closed",
+            "SELECT 1 /* x */ ; LOCK TABLES t WRITE",
+        ] {
+            assert!(!is_read_only(sql), "should be a write: {sql}");
+        }
+    }
+
+    #[test]
+    fn parses_replies() {
+        let (sql, message) = parse_reply(r#"{"sql": "SELECT 1", "message": "Counting"}"#);
+        assert_eq!(sql.as_deref(), Some("SELECT 1"));
+        assert_eq!(message, "Counting");
+
+        let fenced = "Here:\n```json\n{\"sql\": null, \"message\": \"There are 3.\"}\n```";
+        assert_eq!(parse_reply(fenced), (None, "There are 3.".to_owned()));
+
+        let blank = r#"{"sql": "  ", "message": "Done"}"#;
+        assert_eq!(parse_reply(blank), (None, "Done".to_owned()));
+
+        assert_eq!(parse_reply(" just text "), (None, "just text".to_owned()));
+    }
+}

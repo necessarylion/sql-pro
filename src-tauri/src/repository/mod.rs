@@ -1,5 +1,6 @@
 //! Database access. One repository per driver, all behind the same trait.
 
+mod claude;
 mod dump;
 mod mssql;
 mod mysql;
@@ -23,6 +24,7 @@ use sqlx::{
     Pool, Row as _, Type,
 };
 
+pub use claude::ClaudeCli;
 pub use dump::DumpRepository;
 pub use password::{Keychain, OsKeychain, PasswordRepository};
 pub use tunnel::SshTunnel;

@@ -1,5 +1,6 @@
 //! Business logic: open connections and the SQL for browsing and changing rows.
 
+mod claude;
 mod export;
 mod import;
 mod spare;
@@ -11,18 +12,18 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use crate::constants::{
-    ANY_HOST, CANNOT_MANAGE_USERS, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS, MSSQL_NO_USER_ACCOUNTS,
-    NO_USER_ACCOUNTS, PRIMARY_KEY_NOT_DROPPED, VIEW,
+    ANY_HOST, CANNOT_MANAGE_USERS, CLAUDE_READ_ONLY_NOTE, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS,
+    MSSQL_NO_USER_ACCOUNTS, NO_USER_ACCOUNTS, PRIMARY_KEY_NOT_DROPPED, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, BrowseRequest, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser,
-    Diagram, DiagramTable, Driver, ExportRequest, FilterOperator, FilterRule, NewColumn,
-    NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult, TableKeys,
-    TablePage, TableRef, UserList, Values,
+    AccessLevel, AiOptions, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec, ConnectionConfig,
+    DbObject, DbUser, Diagram, DiagramTable, Driver, ExportRequest, FilterOperator, FilterRule,
+    NewColumn, NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult,
+    TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::repository::{
-    DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, not_saved,
+    ClaudeCli, DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, not_saved,
 };
 use spare::Spare;
 
@@ -44,6 +45,7 @@ struct Connection {
 pub struct ConnectionService {
     factory: RepositoryFactory,
     connections: Mutex<HashMap<String, Connection>>,
+    claude: ClaudeCli,
 }
 
 impl ConnectionService {
@@ -51,6 +53,7 @@ impl ConnectionService {
         Self {
             factory,
             connections: Mutex::new(HashMap::new()),
+            claude: ClaudeCli::default(),
         }
     }
 
@@ -144,6 +147,68 @@ impl ConnectionService {
     /// So this never waits for the running query.
     pub async fn cancel_query(&self, id: &str) -> AppResult<()> {
         self.repository(id)?.cancel().await
+    }
+
+    /// Sends `message` to Claude about the database of tab `id`, and gives the reply.
+    /// With no `session`, a new conversation starts. Then the database kind and all
+    /// tables with their columns go first. No password is ever sent.
+    pub async fn ask_claude(
+        &self,
+        id: &str,
+        message: &str,
+        session: Option<&str>,
+        options: &AiOptions,
+    ) -> AppResult<ClaudeReply> {
+        claude::check_options(options)?;
+        let mut prompt = if session.is_some() {
+            message.to_owned()
+        } else {
+            let Connection {
+                config, repository, ..
+            } = self.connection(id)?;
+            let mut tables = Vec::new();
+            for table in repository.tables().await? {
+                let columns = repository.columns(&table).await?;
+                tables.push((table, columns));
+            }
+            claude::first_prompt(config.driver, &config.database, &tables, message)
+        };
+        if options.read_only {
+            prompt = format!("{CLAUDE_READ_ONLY_NOTE}\n\n{prompt}");
+        }
+        // `check_options` allows only known providers. A new one gets its own arm here.
+        let output = match options.provider.as_str() {
+            "claude" => self.claude.ask(id, &prompt, session, options).await?,
+            other => return Err(AppError::Message(format!("Unknown AI provider: {other}"))),
+        };
+        let (sql, message) = match &output.structured_output {
+            Some(value) => (
+                claude::sql_of(value),
+                value
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            ),
+            None => claude::parse_reply(&output.result),
+        };
+        let is_read = sql.as_deref().is_some_and(claude::is_read_only);
+        Ok(ClaudeReply {
+            session_id: output.session_id,
+            message,
+            sql,
+            is_read,
+        })
+    }
+
+    /// Sets the folder `claude` runs in. See `CLAUDE_FOLDER`.
+    pub fn set_claude_folder(&self, folder: std::path::PathBuf) {
+        self.claude.set_folder(folder);
+    }
+
+    /// Stops the Claude run of tab `id`. Does nothing when none runs.
+    pub fn stop_claude(&self, id: &str) {
+        self.claude.stop(id);
     }
 
     /// The tables of the current database with their columns, and the foreign keys
