@@ -14,6 +14,7 @@ use crate::model::{
     NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult, TableKeys,
     TablePage, TableRef, UserList, Values,
 };
+use crate::open_file::OpenedFiles;
 use crate::repository::PasswordRepository;
 use crate::service::ConnectionService;
 
@@ -412,4 +413,10 @@ pub async fn load_password(passwords: Passwords<'_>, id: String) -> AppResult<St
 #[tauri::command]
 pub async fn delete_password(passwords: Passwords<'_>, id: String) -> AppResult<()> {
     passwords.delete(&id)
+}
+
+/// The files the OS asked the app to open, that the frontend has not taken yet.
+#[tauri::command]
+pub fn take_opened_files(files: State<'_, OpenedFiles>) -> Vec<PathBuf> {
+    files.take()
 }

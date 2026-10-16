@@ -4,6 +4,7 @@ mod commands;
 pub mod constants;
 pub mod error;
 pub mod model;
+mod open_file;
 pub mod repository;
 pub mod service;
 mod updater;
@@ -28,8 +29,11 @@ pub fn run() {
     // This plugin must be the first one. A debug build leaves it out, so a dev
     // build and the installed app can run side by side.
     #[cfg(all(not(target_os = "macos"), not(debug_assertions)))]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
         show_main_window(app);
+        // The first argument is the program itself.
+        let files = open_file::file_args(args.into_iter().skip(1), std::path::Path::new(&cwd));
+        open_file::receive(app, files);
     }));
     #[cfg(target_os = "macos")]
     let builder = builder.menu(app_menu);
@@ -41,6 +45,7 @@ pub fn run() {
         .plugin(profile_plugin())
         .manage(ConnectionService::new(RepositoryFactory))
         .manage(PasswordRepository::new(Arc::new(OsKeychain)))
+        .manage(open_file::OpenedFiles::default())
         .invoke_handler(tauri::generate_handler![
             commands::connect,
             commands::disconnect,
@@ -95,6 +100,7 @@ pub fn run() {
             commands::save_password,
             commands::load_password,
             commands::delete_password,
+            commands::take_opened_files,
         ])
         .build(tauri::generate_context!())
         .expect("error while running SQL Pro");
@@ -126,7 +132,7 @@ fn hide_instead_of_close(window: &tauri::Window, event: &tauri::WindowEvent) {
 }
 
 /// Shows the main window again and gives it the keyboard.
-fn show_main_window(app: &tauri::AppHandle) {
+pub(crate) fn show_main_window(app: &tauri::AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
         return;
     };
@@ -137,15 +143,17 @@ fn show_main_window(app: &tauri::AppHandle) {
 }
 
 /// macOS: a click on the Dock icon brings the hidden window back.
+/// A file opened from the Finder comes in here too.
 #[cfg(target_os = "macos")]
 #[allow(clippy::needless_pass_by_value)] // Tauri hands the event over by value.
 fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
-    if let tauri::RunEvent::Reopen {
-        has_visible_windows: false,
-        ..
-    } = event
-    {
-        show_main_window(app);
+    match event {
+        tauri::RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } => show_main_window(app),
+        tauri::RunEvent::Opened { urls } => open_file::receive(app, open_file::file_urls(&urls)),
+        _ => {}
     }
 }
 
@@ -161,6 +169,11 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "macos"))]
     add_tray(app);
     updater::start(app.handle());
+    // Windows and Linux start the app with the file to open as an argument.
+    if let Ok(cwd) = std::env::current_dir() {
+        let files = open_file::file_args(std::env::args_os().skip(1), &cwd);
+        open_file::receive(app.handle(), files);
+    }
     // Claude finds an old session by the folder it runs in. The temp folder gets cleaned.
     if let Ok(data) = app.path().app_data_dir() {
         app.state::<ConnectionService>()

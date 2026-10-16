@@ -91,6 +91,11 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
   for permission once.
 - **Closing the window hides it** (`lib.rs`). The app keeps running. macOS brings it back on Dock click;
   Windows and Linux have a tray icon and single-instance (those dependencies are non-macOS only).
+- **Open a SQLite file from the OS** (`open_file.rs`, `bundle.fileAssociations`). macOS sends the paths in
+  `RunEvent::Opened`. Windows and Linux pass them as program arguments, or to the single-instance callback.
+  The paths wait in `OpenedFiles` until the frontend takes them (`take_opened_files`). The `open-files` event
+  tells a page that already runs. `FileOpener` opens each file in a tab, without saving it as a connection.
+  The file types are only registered by an installed build, so this does not work in `tauri dev`.
 
 ### Debug and release must never share data
 

@@ -143,6 +143,10 @@ pub const DEV_APP_NAME: &str = "SQL Pro";
 /// The label of the one window of the app. Tauri gives it this name.
 pub const MAIN_WINDOW: &str = "main";
 
+/// The event that tells the frontend that the OS gave the app files to open.
+/// The frontend then takes them with the `take_opened_files` command.
+pub const OPEN_FILES_EVENT: &str = "open-files";
+
 /// The id of the tray icon. Windows and Linux only: macOS has the Dock.
 pub const TRAY_ID: &str = "main";
 

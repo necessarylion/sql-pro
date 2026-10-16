@@ -1,3 +1,5 @@
+import { DEFAULT_CONFIGS } from '../constants'
+import { DEFAULT_ENVIRONMENT } from '../constants/environment'
 import type { TableRef } from '../types'
 import type { DatabaseApi } from './DatabaseApi'
 import type { DiscardPrompt } from './DiscardPrompt'
@@ -73,6 +75,25 @@ export class SessionManager {
     }
     // A table that does not load shows its error in the new tab.
     await tab.run(tab.selectTable(table))
+  }
+
+  /**
+   * Connects to the SQLite file at `path` and shows its tables. It is not saved as a connection.
+   * An empty start tab is used for it. Else it gets a new tab. An error shows in that tab.
+   */
+  async openFile(path: string): Promise<void> {
+    const reuse = this.active
+    if (!reuse || reuse.config || reuse.busy || reuse.opening) {
+      this.open()
+    }
+    const tab = this.active
+    if (!tab) {
+      return
+    }
+    const name = path.split(/[\\/]/).pop() || path
+    await tab.run(
+      tab.connect({ ...DEFAULT_CONFIGS.sqlite, database: path }, name, DEFAULT_ENVIRONMENT),
+    )
   }
 
   async close(session: Session): Promise<void> {
