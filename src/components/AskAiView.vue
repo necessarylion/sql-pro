@@ -30,7 +30,7 @@ import type { Session } from '../services/Session'
 import type { ChatEntry, GridColumn, SavedChat } from '../types'
 import BottomBar from './BottomBar.vue'
 import DataGrid from './DataGrid.vue'
-import ImagePreview from './ImagePreview.vue'
+import AttachmentPreview from './AttachmentPreview.vue'
 import PaneResizer from './PaneResizer.vue'
 
 const props = defineProps<{ session: Session }>()
@@ -38,7 +38,7 @@ const store = injectRequired(AI_STORE)
 const formatter = injectRequired(CHAT_FORMATTER)
 const fileDrop = injectRequired(FILE_DROP)
 const root = useTemplateRef<HTMLDivElement>('root')
-const preview = useTemplateRef<InstanceType<typeof ImagePreview>>('preview')
+const preview = useTemplateRef<InstanceType<typeof AttachmentPreview>>('preview')
 /** True while files are dragged over this view. It shows the drop overlay. */
 const dropping = ref(false)
 
@@ -182,15 +182,27 @@ function fileLabel(file: { name: string; rows: number; mediaType: string }): str
   return AiAttachments.isCsv(file) ? `${file.name} · ${file.rows} rows` : file.name
 }
 
-/** True when the chip can open a large preview: an image whose data is still here. */
-function canPreview(file: { mediaType: string; data?: string }): boolean {
-  return !AiAttachments.isCsv(file) && Boolean(file.data)
+/** True when the chip can open a large preview: its data is still in memory. */
+function canPreview(file: { data?: string }): boolean {
+  return Boolean(file.data)
 }
 
+/** An image shows large. A CSV file shows as a table. */
 function showPreview(file: { name: string; mediaType: string; data?: string }): void {
-  if (file.data && canPreview(file)) {
-    preview.value?.open({ name: file.name, mediaType: file.mediaType, data: file.data })
+  if (!file.data) {
+    return
   }
+  const shown = { name: file.name, mediaType: file.mediaType, data: file.data }
+  if (AiAttachments.isCsv(file)) {
+    props.session.run(showCsv(shown))
+  } else {
+    preview.value?.open(shown)
+  }
+}
+
+async function showCsv(file: { name: string; mediaType: string; data: string }): Promise<void> {
+  const records = await props.session.chat.parseCsv(file.data)
+  preview.value?.openCsv(file, records)
 }
 
 /** The approval card of a write: run the SQL as it is in the box now. */
@@ -417,7 +429,11 @@ watch([entryCount, working, phase, hasResult], scrollDown)
               :title="canPreview(file) ? `${file.name}. Click to view.` : file.name"
               @click="showPreview(file)"
             >
-              <img v-if="canPreview(file)" :src="AiAttachments.preview(file)" alt="" />
+              <img
+                v-if="canPreview(file) && !AiAttachments.isCsv(file)"
+                :src="AiAttachments.preview(file)"
+                alt=""
+              />
               <FileTextIcon v-else :size="10" />
               <span class="chip-name">
                 {{ fileLabel(file) }}{{ file.kept ? '' : ' (not saved)' }}
@@ -537,7 +553,7 @@ watch([entryCount, working, phase, hasResult], scrollDown)
       <UploadIcon :size="22" />
       Drop images or CSV files to attach them
     </div>
-    <ImagePreview ref="preview" />
+    <AttachmentPreview ref="preview" />
   </div>
 </template>
 

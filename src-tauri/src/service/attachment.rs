@@ -49,7 +49,8 @@ pub(super) fn check(name: &str, bytes: &[u8]) -> AppResult<Attachment> {
         let text = std::str::from_utf8(bytes)
             .map_err(|_| AppError::Message(format!("{name} is not UTF-8 text.")))?;
         let text = text.trim_start_matches('\u{feff}');
-        let rows = text.lines().filter(|line| !line.trim().is_empty()).count();
+        // The same parser as the CSV import, so quoted line breaks count right.
+        let rows = super::import::CsvParser::parse(text)?.len();
         return Ok(Attachment {
             name: name.to_owned(),
             media_type: CSV.to_owned(),

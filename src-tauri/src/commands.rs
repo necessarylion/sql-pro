@@ -77,6 +77,12 @@ pub async fn read_attachment(path: PathBuf) -> AppResult<Attachment> {
     ConnectionService::read_attachment(&path)
 }
 
+/// The rows of CSV text, for the preview of an attached CSV file.
+#[tauri::command]
+pub async fn parse_csv(text: String) -> AppResult<Vec<Vec<String>>> {
+    ConnectionService::parse_csv(&text)
+}
+
 /// Checks an image pasted from the clipboard. `data` is base64.
 #[tauri::command]
 pub async fn attachment_from_base64(name: String, data: String) -> AppResult<Attachment> {

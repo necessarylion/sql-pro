@@ -455,11 +455,13 @@ test('files go with the question only, and the history keeps no content', async 
   expect(api.files[0].length).toBe(2)
   expect(api.files[1]).toEqual([])
   expect(chat.attachments.items).toEqual([])
+  // The live chat keeps the data in memory for the preview. The saved chat does not.
   expect(chat.entries[0].files?.[0]).toEqual({
     name: 'users.csv',
     mediaType: 'text/csv',
     rows: 2,
     kept: true,
+    data: 'email\nsecret@x.com',
   })
   const saved = JSON.stringify(chat.snapshot('c', 'd'))
   expect(saved).not.toContain('secret@x.com')
@@ -505,3 +507,18 @@ function throws(files: AiAttachments, file: Attachment): string {
   }
   return ''
 }
+
+test('CSV rows become a grid, with short and long rows', function () {
+  const table = AiAttachments.csvTable([
+    ['email', 'name'],
+    ['a@x.com'],
+    ['b@x.com', 'Bob', 'extra'],
+  ])
+
+  expect(table.columns).toEqual(['email', 'name', 'Column 3'])
+  expect(table.rows).toEqual([
+    ['a@x.com', '', ''],
+    ['b@x.com', 'Bob', 'extra'],
+  ])
+  expect(AiAttachments.csvTable([])).toEqual({ columns: [], rows: [] })
+})

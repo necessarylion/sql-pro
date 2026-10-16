@@ -106,6 +106,11 @@ export class DatabaseApi {
     return invoke('read_attachment', { path })
   }
 
+  /** The rows of CSV text, read like the CSV import reads them. */
+  parseCsv(text: string): Promise<string[][]> {
+    return invoke('parse_csv', { text })
+  }
+
   /** Checks an image pasted from the clipboard. `data` is base64. */
   attachmentFromBase64(name: string, data: string): Promise<Attachment> {
     return invoke('attachment_from_base64', { name, data })

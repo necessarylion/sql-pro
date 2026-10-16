@@ -56,6 +56,7 @@ pub fn run() {
             commands::is_read_sql,
             commands::read_attachment,
             commands::attachment_from_base64,
+            commands::parse_csv,
             commands::stop_claude,
             commands::update_row,
             commands::insert_row,

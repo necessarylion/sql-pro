@@ -312,6 +312,12 @@ impl ConnectionService {
         attachment::check(&name, &bytes)
     }
 
+    /// The rows of CSV text, with the same parser as the CSV import. For the preview.
+    pub fn parse_csv(text: &str) -> AppResult<Vec<Vec<String>>> {
+        let records = import::CsvParser::parse(text)?;
+        Ok(records.into_iter().map(|record| record.fields).collect())
+    }
+
     /// Checks an image that comes as base64, like one pasted from the clipboard.
     pub fn attachment_from_base64(name: &str, data: &str) -> AppResult<Attachment> {
         attachment::check_base64(name, data)

@@ -49,6 +49,31 @@ export class AiAttachments {
     return `data:${file.mediaType};base64,${file.data ?? ''}`
   }
 
+  /**
+   * CSV rows as a grid: the first row names the columns. A short row gets empty cells.
+   * A long row gets more columns, named "Column 4" and so on.
+   */
+  static csvTable(records: string[][]): { columns: string[]; rows: (string | null)[][] } {
+    let width = 0
+    for (const record of records) {
+      width = Math.max(width, record.length)
+    }
+    const header = records[0] ?? []
+    const columns: string[] = []
+    for (let index = 0; index < width; index += 1) {
+      columns.push(header[index] || `Column ${index + 1}`)
+    }
+    const rows: (string | null)[][] = []
+    for (const record of records.slice(1)) {
+      const row: (string | null)[] = []
+      for (let index = 0; index < width; index += 1) {
+        row.push(record[index] ?? '')
+      }
+      rows.push(row)
+    }
+    return { columns, rows }
+  }
+
   static isCsv(file: { mediaType: string }): boolean {
     return file.mediaType === 'text/csv'
   }

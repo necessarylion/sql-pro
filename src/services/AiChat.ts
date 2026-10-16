@@ -170,6 +170,11 @@ export class AiChat {
     this.attachments.add(await this.api.readAttachment(path))
   }
 
+  /** The rows of an attached CSV file, for its preview. */
+  parseCsv(text: string): Promise<string[][]> {
+    return this.api.parseCsv(text)
+  }
+
   /** Adds an image from the clipboard. `data` is base64. */
   async attachPasted(name: string, data: string): Promise<void> {
     this.attachments.add(await this.api.attachmentFromBase64(name, data))
@@ -202,8 +207,8 @@ export class AiChat {
     const list: ChatFile[] = []
     for (const file of files) {
       const item: ChatFile = { name: file.name, mediaType: file.mediaType, rows: file.rows, kept }
-      // An image keeps its data in memory for the preview. The history never gets it.
-      if (kept && file.data && !AiAttachments.isCsv(file)) {
+      // The data stays in memory for the preview. The history never gets it.
+      if (kept && file.data) {
         item.data = file.data
       }
       list.push(item)
