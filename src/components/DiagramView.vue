@@ -31,6 +31,7 @@ import { DiagramLayout } from '../services/DiagramLayout'
 import { DiagramRelations, type DiagramEdge } from '../services/DiagramRelations'
 import { DIAGRAM_LAYOUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
+import { SchemaName } from '../services/SchemaName'
 import type { ColumnInfo, Diagram } from '../types'
 import BottomBar from './BottomBar.vue'
 
@@ -88,7 +89,7 @@ function layoutKey(): string {
 
 /** Shows the schema only when it is not the default one. The same rule as the table list. */
 function label(schema: string | null, name: string): string {
-  return schema && schema !== 'public' ? `${schema}.${name}` : name
+  return SchemaName.label(schema, name)
 }
 
 /** The clicked table and its related tables, or null when no table is clicked. */

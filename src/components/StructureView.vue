@@ -1,8 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { LockIcon, MinusIcon, TableIcon, Trash2Icon } from 'lucide-vue-next'
+import {
+  Columns3Icon,
+  KeyRoundIcon,
+  ListTreeIcon,
+  LockIcon,
+  MinusIcon,
+  TableIcon,
+  Trash2Icon,
+} from 'lucide-vue-next'
 import { DEFAULT_REFERENTIAL_ACTION, REFERENTIAL_ACTIONS } from '../constants/keys'
+import { SECTION_MIN_HEIGHT } from '../constants/layout'
+import { LAYOUT_SERVICE, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
 import { TableDraft } from '../services/TableDraft'
 import type {
@@ -18,7 +28,8 @@ import type {
 import BottomBar from './BottomBar.vue'
 import ColumnPicker from './ColumnPicker.vue'
 import DataGrid from './DataGrid.vue'
-import PaneResizer from './PaneResizer.vue'
+import SectionHeading from './SectionHeading.vue'
+import SectionResizer from './SectionResizer.vue'
 
 // Key and Extra cannot be changed here. Default can be set to "no default" with NULL.
 const HEADERS: GridColumn[] = [
@@ -31,9 +42,18 @@ const HEADERS: GridColumn[] = [
 ]
 
 const props = defineProps<{ session: Session }>()
+const layout = injectRequired(LAYOUT_SERVICE)
 const rows = computed(structureRows)
 const rowCount = computed(describeRowCount)
 const selected = ref<number[]>([])
+
+/**
+ * A dragged section has a fixed height. Without one it is as tall as its content.
+ * It still shrinks when the window is too short, down to heading + header + one row.
+ */
+function sectionStyle(height: number | null): Record<string, string> {
+  return height === null ? {} : { flex: `0 1 ${height}px`, minHeight: `${SECTION_MIN_HEIGHT}px` }
+}
 
 // The form for a new column.
 const newName = ref('')
@@ -339,158 +359,206 @@ async function dropSelected(): Promise<void> {
       Rows are read only: {{ session.table?.kind === 'view' ? 'view' : 'no primary key' }}
     </span>
   </div>
-  <div class="section">
-    <span>Columns</span>
-    <span class="count">{{ rows.length }}</span>
-  </div>
-  <!-- Columns can be changed without a primary key. Only a view is read only. -->
-  <DataGrid
-    v-model:selected="selected"
-    :columns="HEADERS"
-    :rows="rows"
-    :editable="session.table?.kind === 'table'"
-    @edit="edit"
-  />
+  <!-- Three sections with the same build: a heading, then a body that scrolls on its own. -->
+  <div class="sections">
+    <section
+      class="part"
+      :class="{ open: layout.columnsOpen }"
+      :style="layout.columnsOpen ? sectionStyle(layout.columnsHeight) : {}"
+    >
+      <SectionHeading
+        title="Columns"
+        :count="rows.length"
+        :open="layout.columnsOpen"
+        :icon="Columns3Icon"
+        icon-color="var(--folder-blue)"
+        @toggle="layout.toggleSection('columnsOpen')"
+      />
+      <!-- Columns can be changed without a primary key. Only a view is read only. -->
+      <DataGrid
+        v-if="layout.columnsOpen"
+        v-model:selected="selected"
+        :columns="HEADERS"
+        :rows="rows"
+        :editable="session.table?.kind === 'table'"
+        @edit="edit"
+      />
+      <SectionResizer v-if="layout.columnsOpen" size="columnsHeight" />
+    </section>
 
-  <div v-if="session.table?.kind === 'table'" class="keys">
-    <PaneResizer size="keysHeight" />
-    <div class="keys-body">
-      <div class="section">
-        <span>Indexes</span>
-        <span class="count">{{ session.keys?.indexes.length ?? 0 }}</span>
-      </div>
-      <table v-if="session.keys?.indexes.length">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Columns</th>
-            <th>Unique</th>
-            <th>Primary</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="index in session.keys.indexes" :key="index.name">
-            <td>{{ index.name || '(primary key)' }}</td>
-            <td>{{ indexColumnsText(index) }}</td>
-            <td>{{ index.unique ? 'YES' : 'NO' }}</td>
-            <td>{{ index.primary ? 'YES' : 'NO' }}</td>
-            <td>
-              <button
-                v-if="!index.primary"
-                class="icon"
-                :title="`Drop index ${index.name}`"
-                @click="session.run(dropIndex(index))"
-              >
-                <Trash2Icon :size="12" />
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <div class="bar form">
-        <input
-          v-model="indexName"
-          class="key-name mono"
-          placeholder="new index name"
-          autocapitalize="off"
-          spellcheck="false"
-          @keydown.enter="addIndex"
+    <!-- A view has columns only. -->
+    <template v-if="session.table?.kind === 'table'">
+      <section
+        class="part"
+        :class="{ open: layout.indexesOpen }"
+        :style="layout.indexesOpen ? sectionStyle(layout.indexesHeight) : {}"
+      >
+        <SectionHeading
+          title="Indexes"
+          :count="session.keys?.indexes.length ?? 0"
+          :open="layout.indexesOpen"
+          :icon="ListTreeIcon"
+          icon-color="var(--folder-green)"
+          split
+          @toggle="layout.toggleSection('indexesOpen')"
         />
-        <ColumnPicker v-model="indexColumns" :options="columnNames" placeholder="add column" />
-        <label class="check" title="No two rows may have the same values">
-          <input v-model="indexUnique" type="checkbox" />
-          Unique
-        </label>
-        <button
-          class="primary"
-          :disabled="!indexName.trim() || indexColumns.length === 0"
-          @click="addIndex"
-        >
-          Add index
-        </button>
-      </div>
+        <div v-if="layout.indexesOpen" class="body">
+          <table v-if="session.keys">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Columns</th>
+                <th>Unique</th>
+                <th>Primary</th>
+                <th />
+                <th class="filler" />
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="index in session.keys.indexes" :key="index.name">
+                <td>{{ index.name || '(primary key)' }}</td>
+                <td>{{ indexColumnsText(index) }}</td>
+                <td>{{ index.unique ? 'YES' : 'NO' }}</td>
+                <td>{{ index.primary ? 'YES' : 'NO' }}</td>
+                <td>
+                  <button
+                    v-if="!index.primary"
+                    class="icon danger"
+                    :title="`Drop index ${index.name}`"
+                    @click="session.run(dropIndex(index))"
+                  >
+                    <Trash2Icon :size="12" />
+                  </button>
+                </td>
+                <td class="filler" />
+              </tr>
+            </tbody>
+          </table>
+          <div class="bar form">
+            <input
+              v-model="indexName"
+              class="key-name mono"
+              placeholder="new index name"
+              autocapitalize="off"
+              spellcheck="false"
+              @keydown.enter="addIndex"
+            />
+            <ColumnPicker v-model="indexColumns" :options="columnNames" placeholder="add column" />
+            <label class="check" title="No two rows may have the same values">
+              <input v-model="indexUnique" type="checkbox" />
+              Unique
+            </label>
+            <button
+              class="primary"
+              :disabled="!indexName.trim() || indexColumns.length === 0"
+              @click="addIndex"
+            >
+              Add index
+            </button>
+          </div>
+        </div>
+        <SectionResizer v-if="layout.indexesOpen" size="indexesHeight" />
+      </section>
 
-      <div class="section">
-        <span>Foreign keys</span>
-        <span class="count">{{ session.keys?.foreignKeys.length ?? 0 }}</span>
-      </div>
-      <table v-if="session.keys?.foreignKeys.length">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Columns</th>
-            <th>References</th>
-            <th>On delete</th>
-            <th>On update</th>
-            <th v-if="session.canChangeForeignKeys" />
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(key, position) in session.keys.foreignKeys" :key="`${position}-${key.name}`">
-            <td>{{ key.name || '(no name)' }}</td>
-            <td>{{ key.columns.join(', ') }}</td>
-            <td>{{ references(key) }}</td>
-            <td>{{ key.onDelete }}</td>
-            <td>{{ key.onUpdate }}</td>
-            <td v-if="session.canChangeForeignKeys">
-              <button
-                class="icon"
-                :title="`Drop foreign key ${key.name}`"
-                @click="session.run(dropForeignKey(key))"
+      <section
+        class="part"
+        :class="{ open: layout.foreignKeysOpen }"
+        :style="layout.foreignKeysOpen ? sectionStyle(layout.foreignKeysHeight) : {}"
+      >
+        <SectionHeading
+          title="Foreign keys"
+          :count="session.keys?.foreignKeys.length ?? 0"
+          :open="layout.foreignKeysOpen"
+          :icon="KeyRoundIcon"
+          icon-color="var(--folder-orange)"
+          split
+          @toggle="layout.toggleSection('foreignKeysOpen')"
+        />
+        <div v-if="layout.foreignKeysOpen" class="body">
+          <table v-if="session.keys">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Columns</th>
+                <th>References</th>
+                <th>On delete</th>
+                <th>On update</th>
+                <th v-if="session.canChangeForeignKeys" />
+                <th class="filler" />
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="(key, position) in session.keys.foreignKeys"
+                :key="`${position}-${key.name}`"
               >
-                <Trash2Icon :size="12" />
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-if="!session.canChangeForeignKeys" class="bar form dim">
-        Read only: SQLite cannot add or drop a foreign key of an existing table.
-      </div>
-      <div v-else class="bar form">
-        <input
-          v-model="keyName"
-          class="key-name mono"
-          placeholder="new foreign key name"
-          autocapitalize="off"
-          spellcheck="false"
-          @keydown.enter="addForeignKey"
-        />
-        <ColumnPicker v-model="keyColumns" :options="columnNames" placeholder="add column" />
-        <span class="dim">references</span>
-        <select v-model="keyRefTable" title="The table the key points at">
-          <option :value="null">table</option>
-          <option v-for="table in refTables" :key="tableLabel(table)" :value="table">
-            {{ tableLabel(table) }}
-          </option>
-        </select>
-        <ColumnPicker
-          v-model="keyRefColumns"
-          :options="refTableColumns"
-          placeholder="add referenced column"
-        />
-        <label class="rule">
-          On delete
-          <select v-model="keyOnDelete">
-            <option v-for="action in REFERENTIAL_ACTIONS" :key="action" :value="action">
-              {{ action }}
-            </option>
-          </select>
-        </label>
-        <label class="rule">
-          On update
-          <select v-model="keyOnUpdate">
-            <option v-for="action in REFERENTIAL_ACTIONS" :key="action" :value="action">
-              {{ action }}
-            </option>
-          </select>
-        </label>
-        <button class="primary" :disabled="!canAddKey" @click="addForeignKey">
-          Add foreign key
-        </button>
-      </div>
-    </div>
+                <td>{{ key.name || '(no name)' }}</td>
+                <td>{{ key.columns.join(', ') }}</td>
+                <td>{{ references(key) }}</td>
+                <td>{{ key.onDelete }}</td>
+                <td>{{ key.onUpdate }}</td>
+                <td v-if="session.canChangeForeignKeys">
+                  <button
+                    class="icon danger"
+                    :title="`Drop foreign key ${key.name}`"
+                    @click="session.run(dropForeignKey(key))"
+                  >
+                    <Trash2Icon :size="12" />
+                  </button>
+                </td>
+                <td class="filler" />
+              </tr>
+            </tbody>
+          </table>
+          <div v-if="!session.canChangeForeignKeys" class="bar form dim">
+            Read only: SQLite cannot add or drop a foreign key of an existing table.
+          </div>
+          <div v-else class="bar form">
+            <input
+              v-model="keyName"
+              class="key-name mono"
+              placeholder="new foreign key name"
+              autocapitalize="off"
+              spellcheck="false"
+              @keydown.enter="addForeignKey"
+            />
+            <ColumnPicker v-model="keyColumns" :options="columnNames" placeholder="add column" />
+            <span class="dim">references</span>
+            <select v-model="keyRefTable" title="The table the key points at">
+              <option :value="null">table</option>
+              <option v-for="table in refTables" :key="tableLabel(table)" :value="table">
+                {{ tableLabel(table) }}
+              </option>
+            </select>
+            <ColumnPicker
+              v-model="keyRefColumns"
+              :options="refTableColumns"
+              placeholder="add referenced column"
+            />
+            <label class="rule">
+              On delete
+              <select v-model="keyOnDelete">
+                <option v-for="action in REFERENTIAL_ACTIONS" :key="action" :value="action">
+                  {{ action }}
+                </option>
+              </select>
+            </label>
+            <label class="rule">
+              On update
+              <select v-model="keyOnUpdate">
+                <option v-for="action in REFERENTIAL_ACTIONS" :key="action" :value="action">
+                  {{ action }}
+                </option>
+              </select>
+            </label>
+            <button class="primary" :disabled="!canAddKey" @click="addForeignKey">
+              Add foreign key
+            </button>
+          </div>
+        </div>
+        <SectionResizer v-if="layout.foreignKeysOpen" size="foreignKeysHeight" />
+      </section>
+    </template>
   </div>
 
   <BottomBar :session="session">
@@ -528,7 +596,7 @@ async function dropSelected(): Promise<void> {
       </button>
       <span class="divider" />
       <button
-        class="icon"
+        class="icon danger"
         title="Drop the selected column"
         :disabled="selected.length !== 1"
         @click="session.run(dropSelected())"
@@ -559,74 +627,123 @@ async function dropSelected(): Promise<void> {
   font-weight: 600;
 }
 
-.section {
-  height: 24px;
-  padding: 0 10px;
-  border-bottom: 1px solid var(--border-soft);
-}
-
 .new-name {
   width: 140px;
 }
 
-/* Below the column grid. The user drags its top edge. The body scrolls on its own. */
-.keys {
-  position: relative;
-  flex: none;
-  height: var(--keys-height);
-  max-height: 80%;
-  border-top: 1px solid var(--border);
-  background: var(--bg);
+/* Holds the three sections. Takes the space down to the bottom bar. */
+.sections {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  /* Only when the window is too short for the smallest sections. */
+  overflow: auto;
 }
 
-.keys-body {
-  height: 100%;
+/*
+ * One section. Not named "section": the global .section in style.css is the
+ * uppercase sidebar title, and it would center and inset the tables here.
+ * A closed section is only its heading.
+ */
+.part {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+}
+
+/*
+ * An open section is as tall as its content. Free space stays at the bottom.
+ * When the sections do not fit, they all shrink and each body scrolls on its own.
+ * Each keeps room for the heading, the header and 3 rows.
+ */
+.part.open {
+  flex: 0 1 auto;
+  min-height: 127px;
+}
+
+/* The last section keeps its handle inside, so the handle does not make the list scroll. */
+.part:last-child > .resizer {
+  bottom: 0;
+}
+
+/* The body of the Indexes and Foreign keys sections. The DataGrid is the body of Columns. */
+.body {
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  background: var(--bg);
 }
 
 /* The same look as the DataGrid, like the Users view. */
 table {
+  min-width: 100%;
   border-spacing: 0;
   font-size: 11px;
 }
 
 th,
 td {
-  height: 22px;
+  height: 23px;
   padding: 0 8px;
   text-align: left;
   white-space: nowrap;
 }
 
-/* The section title (24px) and the table header stay on top while the body scrolls. */
-.keys-body .section {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  background: var(--bg);
-}
-
+/* The table header stays on top while the body scrolls. */
 th {
   position: sticky;
-  top: 24px;
+  top: 0;
   z-index: 2;
+  height: 28px;
+  text-align: center;
   background: var(--header);
-  border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   color: var(--text-2);
   font-weight: 600;
 }
 
+/* A short column line that stops 7px from the top and bottom, like the DataGrid header. */
+th::after {
+  position: absolute;
+  top: 7px;
+  right: 0;
+  bottom: 7px;
+  width: 1px;
+  background: var(--border);
+  content: '';
+  pointer-events: none;
+}
+
+/* An empty last column that takes the free width, like the DataGrid. The other columns keep their content width. */
+.filler {
+  width: 100%;
+  padding: 0;
+}
+
+th.filler::after {
+  content: none;
+}
+
 td {
   border-right: 1px solid var(--border-soft);
-  border-bottom: 1px solid var(--border-soft);
   font-family: var(--font-mono);
   -webkit-user-select: text;
   user-select: text;
 }
 
+/* The last row gets a bottom line, like the DataGrid. */
+tbody tr:last-child td {
+  border-bottom: 1px solid var(--border-soft);
+}
+
 tbody tr:nth-child(even) {
   background: var(--row-alt);
+}
+
+td.filler {
+  border-right: 0;
 }
 
 td button.icon {
@@ -639,8 +756,9 @@ td button.icon {
   min-height: 30px;
   flex-wrap: wrap;
   padding: 4px 10px;
+  /* No line here. The heading of the next section draws the only separator. */
+  border-bottom: 0;
   background: var(--bg);
-  border-bottom: 1px solid var(--border-soft);
 }
 
 .bar select {

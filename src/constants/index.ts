@@ -120,11 +120,22 @@ export const VIEW_LABELS: Record<SessionView, string> = {
 /** Binary values arrive as hex text. Editing them would corrupt them. */
 export const BINARY_TYPE_PATTERN = /blob|binary|bytea/i
 
+/** Date and time types with a time zone. The native picker cannot keep the zone, so they get no picker. */
+export const ZONED_TIME_TYPE_PATTERN = /with time zone|timestamptz|timetz|datetimeoffset/i
+
+/** SQL Server `timestamp` is a binary row version (`rowversion`), not a date. */
+export const ROW_VERSION_TYPE_PATTERN = /^(timestamp|rowversion)\b/i
+
+/** Column types that get a date picker in the row detail panel. */
+export const DATE_TYPE_PATTERN = /^date$/i
+export const TIME_TYPE_PATTERN = /^time\b/i
+export const DATETIME_TYPE_PATTERN = /^((small)?datetime2?|timestamp)\b/i
+
 /** Columns of these types hold numbers. The grid aligns them to the right. */
 export const NUMERIC_TYPE_PATTERN = /int|decimal|numeric|float|double|real|serial|money/i
 
 /** The height of one grid row, in pixels. The CSS of DataGrid uses the same number. */
-export const GRID_ROW_HEIGHT = 22
+export const GRID_ROW_HEIGHT = 23
 
 /**
  * The grid draws only the rows that can be seen, plus this many rows above and below.
@@ -140,3 +151,10 @@ export const UNSAVED_TITLE = 'Unsaved changes'
 
 /** The title of the question that is asked before a save deletes rows. */
 export const DELETE_ROWS_TITLE = 'Delete rows'
+
+/**
+ * The default schemas: `public` in PostgreSQL and `dbo` in SQL Server.
+ * The UI hides these in front of a table name.
+ */
+// ponytail: a user's own default schema can differ. Read it from the server if that matters.
+export const DEFAULT_SCHEMAS: readonly string[] = ['public', 'dbo']

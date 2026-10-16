@@ -84,6 +84,13 @@ function close(): void {
   text-overflow: ellipsis;
 }
 
+/* The shortcut at the right end of an item, like in a macOS menu. */
+.menu :slotted(.hint) {
+  float: right;
+  padding-left: 24px;
+  opacity: 0.6;
+}
+
 .menu :slotted(button.danger) {
   color: var(--danger);
 }

@@ -3,6 +3,7 @@ import { computed, reactive, useTemplateRef } from 'vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { CsvMapping } from '../services/CsvMapping'
 import type { Session } from '../services/Session'
+import { SchemaName } from '../services/SchemaName'
 import type { CsvImport, TableRef } from '../types'
 
 // The CSV import into one table: which CSV field fills which column, and a short preview.
@@ -31,7 +32,7 @@ const ready = computed(canImport)
 
 /** Shows the schema only when it is not the default one. */
 function label(table: TableRef): string {
-  return table.schema && table.schema !== 'public' ? `${table.schema}.${table.name}` : table.name
+  return SchemaName.label(table.schema, table.name)
 }
 
 function fileName(): string {

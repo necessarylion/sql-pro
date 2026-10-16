@@ -26,29 +26,14 @@ export const DETAIL_MAX_WIDTH = 2000
 export const DETAIL_WIDTH_STORAGE_KEY = 'sql-pro.detail-width'
 export const DETAIL_WIDTH_PROPERTY = '--detail-width'
 
-/** The height of the indexes and foreign keys area in the Structure view. One height for all tabs. */
-export const KEYS_DEFAULT_HEIGHT = 180
-export const KEYS_MIN_HEIGHT = 60
-// Only stops a wrong saved value. The CSS keeps the column grid visible. See StructureView.vue.
-export const KEYS_MAX_HEIGHT = 2000
-
-export const KEYS_HEIGHT_STORAGE_KEY = 'sql-pro.keys-height'
-export const KEYS_HEIGHT_PROPERTY = '--keys-height'
-
-/** Holds '1' when the row detail panel is open. */
-export const DETAIL_OPEN_STORAGE_KEY = 'sql-pro.detail-open'
-
 /** The sizes the user can drag. Each name is also a field of LayoutService. */
-export type LayoutSize = 'sidebarWidth' | 'editorHeight' | 'detailWidth' | 'keysHeight'
+export type LayoutSize = 'sidebarWidth' | 'editorHeight' | 'detailWidth'
 
 /** The sizes whose drag handle lies on the left edge of the pane. The pane grows to the left. */
 export const LEFT_EDGE_SIZES: LayoutSize[] = ['detailWidth']
 
-/** The sizes whose drag handle lies on the top edge of the pane. The pane grows upward. */
-export const TOP_EDGE_SIZES: LayoutSize[] = ['keysHeight']
-
 /** The sizes that are heights. Their handle is a horizontal line. */
-export const HEIGHT_SIZES: LayoutSize[] = ['editorHeight', 'keysHeight']
+export const HEIGHT_SIZES: LayoutSize[] = ['editorHeight']
 
 export interface LayoutSizeRule {
   fallback: number
@@ -80,11 +65,29 @@ export const LAYOUT_SIZES: Record<LayoutSize, LayoutSizeRule> = {
     storageKey: DETAIL_WIDTH_STORAGE_KEY,
     property: DETAIL_WIDTH_PROPERTY,
   },
-  keysHeight: {
-    fallback: KEYS_DEFAULT_HEIGHT,
-    min: KEYS_MIN_HEIGHT,
-    max: KEYS_MAX_HEIGHT,
-    storageKey: KEYS_HEIGHT_STORAGE_KEY,
-    property: KEYS_HEIGHT_PROPERTY,
-  },
 }
+
+/** The sections of the Structure view that the user can open and close. Each name is also a field of LayoutService. */
+export type KeysSection = 'columnsOpen' | 'indexesOpen' | 'foreignKeysOpen'
+
+/** Where each section saves if it is open. All start open. */
+export const KEYS_SECTION_STORAGE_KEYS: Record<KeysSection, string> = {
+  columnsOpen: 'sql-pro.columns-open',
+  indexesOpen: 'sql-pro.indexes-open',
+  foreignKeysOpen: 'sql-pro.foreign-keys-open',
+}
+
+/** The heights of the Structure view sections the user can drag. Each name is also a field of LayoutService. */
+export type SectionHeight = 'columnsHeight' | 'indexesHeight' | 'foreignKeysHeight'
+
+/** Where each section saves its height. No saved height means the section is as tall as its content. */
+export const SECTION_HEIGHT_STORAGE_KEYS: Record<SectionHeight, string> = {
+  columnsHeight: 'sql-pro.columns-height',
+  indexesHeight: 'sql-pro.indexes-height',
+  foreignKeysHeight: 'sql-pro.foreign-keys-height',
+}
+
+/** The smallest section: heading (30) + table header (28) + one row (23). */
+export const SECTION_MIN_HEIGHT = 81
+// Only stops a wrong saved value. The drag keeps a section inside the window.
+export const SECTION_MAX_HEIGHT = 4000

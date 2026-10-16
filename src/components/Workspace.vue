@@ -32,8 +32,15 @@ import {
   ZapIcon,
 } from 'lucide-vue-next'
 import { OBJECT_KIND_LABELS, VIEW_LABELS } from '../constants'
-import { SESSION_MANAGER, SHORTCUTS, injectRequired } from '../services/keys'
+import {
+  LAYOUT_SERVICE,
+  PINNED_TABLES,
+  SESSION_MANAGER,
+  SHORTCUTS,
+  injectRequired,
+} from '../services/keys'
 import { Session } from '../services/Session'
+import { SchemaName } from '../services/SchemaName'
 import { TableSelection } from '../services/TableSelection'
 import type { DbObject, DbObjectKind, SessionView, TableRef } from '../types'
 import ContentView from './ContentView.vue'
@@ -52,6 +59,8 @@ import UsersView from './UsersView.vue'
 const props = defineProps<{ session: Session }>()
 const manager = injectRequired(SESSION_MANAGER)
 const shortcuts = injectRequired(SHORTCUTS)
+const pins = injectRequired(PINNED_TABLES)
+const layout = injectRequired(LAYOUT_SERVICE)
 
 const VIEW_ICONS: Record<SessionView, Component> = {
   structure: TablePropertiesIcon,
@@ -63,7 +72,7 @@ const VIEW_ICONS: Record<SessionView, Component> = {
 
 // The size of the table menu. It keeps the menu inside the window.
 const MENU_WIDTH = 170
-const MENU_HEIGHT = 165
+const MENU_HEIGHT = 190
 // The width of the Export and Import submenus. It opens to the left when there is no room on the right.
 const SUBMENU_WIDTH = 290
 // The most table names a drop or truncate confirm lists. The rest are counted.
@@ -92,6 +101,9 @@ const importDialog = useTemplateRef<InstanceType<typeof ImportDialog>>('importDi
 const menuElement = ref<HTMLElement | null>(null)
 const filteredTables = computed(matchingTables)
 const groups = computed(tableGroups)
+/** The groups the sidebar shows: Pinned first, when it has tables. */
+const shownGroups = computed(sidebarGroups)
+const pinKey = computed(readPinKey)
 const connection = computed(describeConnection)
 const summary = computed(describeTables)
 const backupBlocked = computed(hasNoDatabase)
@@ -110,8 +122,14 @@ onMounted(listenForEscape)
 onUnmounted(stopEscape)
 
 /** Shows the schema only when it is not the default one. */
+/** Disconnects, and hides the row detail panel. */
+function disconnect(): void {
+  layout.closeDetail()
+  props.session.run(props.session.disconnect())
+}
+
 function label(table: TableRef): string {
-  return table.schema && table.schema !== 'public' ? `${table.schema}.${table.name}` : table.name
+  return SchemaName.label(table.schema, table.name)
 }
 
 function matchingTables(): TableRef[] {
@@ -126,7 +144,7 @@ function matchingTables(): TableRef[] {
 }
 
 /** The matching tables, then the matching views. Each group has its own title. */
-function tableGroups(): { title: string; icon: Component; items: TableRef[] }[] {
+function tableGroups(): { title: string; items: TableRef[] }[] {
   const tables: TableRef[] = []
   const views: TableRef[] = []
   for (const table of filteredTables.value) {
@@ -137,9 +155,49 @@ function tableGroups(): { title: string; icon: Component; items: TableRef[] }[] 
     }
   }
   return [
-    { title: 'Tables', icon: TableIcon, items: tables },
-    { title: 'Views', icon: EyeIcon, items: views },
+    { title: 'Tables', items: tables },
+    { title: 'Views', items: views },
   ]
+}
+
+/**
+ * The Pinned group, then Tables and Views. Pinned tables stay in their own group too.
+ * Pins of tables that are gone are not shown. The selection uses `groups`, so a pinned table counts once.
+ */
+function sidebarGroups(): { title: string; items: TableRef[] }[] {
+  const pinned: TableRef[] = []
+  for (const table of filteredTables.value) {
+    if (pins.has(pinKey.value, label(table))) {
+      pinned.push(table)
+    }
+  }
+  if (pinned.length === 0) {
+    return groups.value
+  }
+  return [{ title: 'Pinned', items: pinned }, ...groups.value]
+}
+
+function readPinKey(): string {
+  return props.session.config ? pins.key(props.session.config) : ''
+}
+
+function isPinned(table: TableRef): boolean {
+  return pins.has(pinKey.value, label(table))
+}
+
+/** Pins the table at the top of the sidebar, or unpins it. */
+function togglePin(table: TableRef): void {
+  closeMenu()
+  if (isPinned(table)) {
+    pins.unpin(pinKey.value, label(table))
+  } else {
+    pins.pin(pinKey.value, label(table))
+  }
+}
+
+/** The icon of one row. A pinned row keeps the icon of a table or a view. */
+function rowIcon(table: TableRef): Component {
+  return table.kind === 'view' ? EyeIcon : TableIcon
 }
 
 /** The objects of these kinds whose name matches the filter. */
@@ -164,8 +222,7 @@ function matchingRoutines(): DbObject[] {
 
 /** The name, with the schema when it is not the default one, and the argument types of a PostgreSQL routine. */
 function objectLabel(object: DbObject): string {
-  const name =
-    object.schema && object.schema !== 'public' ? `${object.schema}.${object.name}` : object.name
+  const name = SchemaName.label(object.schema, object.name)
   return object.args === null ? name : `${name}(${object.args})`
 }
 
@@ -570,7 +627,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
       >
         <UploadIcon :size="13" />
       </button>
-      <button class="icon" title="Disconnect" @click="session.run(session.disconnect())">
+      <button class="icon" title="Disconnect" @click="disconnect">
         <UnplugIcon :size="13" />
       </button>
     </div>
@@ -582,7 +639,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
           <input v-model="search" placeholder="Filter tables" spellcheck="false" />
         </div>
         <div class="tables" @click="clickList" @contextmenu.prevent="openMenu($event, null)">
-          <template v-for="group in groups" :key="group.title">
+          <template v-for="group in shownGroups" :key="group.title">
             <div class="section">
               <span>{{ group.title }}</span>
               <button
@@ -606,7 +663,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
                 @click.middle="openInNewTab(table)"
                 @contextmenu.prevent.stop="openMenu($event, table)"
               >
-                <component :is="group.icon" :size="12" />
+                <component :is="rowIcon(table)" :class="`kind-${table.kind}`" :size="12" />
                 <span class="name">{{ label(table) }}</span>
               </li>
             </ul>
@@ -626,7 +683,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
               @click="showDefinition(object)"
               @contextmenu.prevent.stop="openObjectMenu($event, object)"
             >
-              <ZapIcon :size="12" />
+              <ZapIcon class="kind-trigger" :size="12" />
               <span class="name">{{ objectLabel(object) }}</span>
             </li>
           </ul>
@@ -650,7 +707,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
                 @click="showDefinition(object)"
                 @contextmenu.prevent.stop="openObjectMenu($event, object)"
               >
-                <SquareFunctionIcon :size="12" />
+                <SquareFunctionIcon class="kind-routine" :size="12" />
                 <span class="name">{{ objectLabel(object) }}</span>
               </li>
             </ul>
@@ -737,6 +794,9 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
         <template v-else>
           <button v-if="single()" role="menuitem" @click.stop="openInNewTab(menu.table)">
             Open in new tab
+          </button>
+          <button v-if="single()" role="menuitem" @click.stop="togglePin(menu.table)">
+            {{ isPinned(menu.table) ? 'Unpin' : 'Pin to top' }}
           </button>
           <button
             v-if="single() && menu.table.kind !== 'view'"
@@ -988,6 +1048,23 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
 /* A table in the selection. It differs from the open table, which has the full accent colour. */
 .list li.picked:not(.selected) {
   background: var(--picked);
+}
+
+/* Each object kind has its own icon colour. The open row keeps the text colour. */
+.list li:not(.selected) .kind-table {
+  color: var(--icon-table);
+}
+
+.list li:not(.selected) .kind-view {
+  color: var(--icon-view);
+}
+
+.list li:not(.selected) .kind-trigger {
+  color: var(--icon-trigger);
+}
+
+.list li:not(.selected) .kind-routine {
+  color: var(--icon-routine);
 }
 
 .menu-backdrop {
