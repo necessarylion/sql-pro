@@ -554,7 +554,8 @@ watch([entryCount, working, phase, hasResult], scrollDown)
 
 .chips {
   flex: none;
-  padding: 6px 8px 0;
+  /* The same space above and below. The input row below has its own border line. */
+  padding: 6px 8px;
   background: var(--toolbar);
   border-top: 1px solid var(--border);
 }
@@ -583,7 +584,6 @@ watch([entryCount, working, phase, hasResult], scrollDown)
   color: var(--text);
   font-size: 11px;
   font-weight: 400;
-  line-height: 1;
   white-space: nowrap;
 }
 
@@ -594,6 +594,8 @@ watch([entryCount, working, phase, hasResult], scrollDown)
 /* A long name is cut. The full name is in the title. */
 .chip-name {
   min-width: 0;
+  /* As tall as the thumbnail, so all three parts share one center line. */
+  line-height: 16px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
