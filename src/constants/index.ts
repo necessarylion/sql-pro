@@ -1,4 +1,12 @@
-import type { ConnectionConfig, DbObjectKind, Driver, SessionView, SshConfig } from '../types'
+import type {
+  ConnectionConfig,
+  DbObjectKind,
+  Driver,
+  SessionView,
+  SshConfig,
+  SslConfig,
+  SslMode,
+} from '../types'
 
 /** The word for each kind of database object, as the UI shows it. */
 export const OBJECT_KIND_LABELS: Record<DbObjectKind, string> = {
@@ -94,6 +102,27 @@ export const DEFAULT_SSH_CONFIG: SshConfig = {
   keyPath: '',
 }
 
+/** `prefer` connects the same way as the app did before it had SSL settings. */
+export const DEFAULT_SSL_CONFIG: SslConfig = {
+  mode: 'prefer',
+  caPath: '',
+  certPath: '',
+  keyPath: '',
+}
+
+/** For SQL Server, `off` still encrypts the login, and `prefer` is the same as `require`. */
+export const SSL_MODE_LABELS: Record<SslMode, string> = {
+  off: 'Off',
+  prefer: 'Prefer (no certificate check)',
+  require: 'Require (no certificate check)',
+  verifyCa: 'Verify CA',
+  verifyFull: 'Verify CA and host name',
+}
+
+/** The tabs of the connection form. SSL and SSH show only for server databases. */
+export const FORM_TABS = { general: 'General', ssl: 'SSL', ssh: 'SSH' } as const
+export type FormTab = keyof typeof FORM_TABS
+
 /** Added to a favorite id to get the keychain entry of its SSH password. */
 export const SSH_PASSWORD_SUFFIX = ':ssh'
 
@@ -107,6 +136,7 @@ export const VIEW_LABELS: Record<SessionView, string> = {
   query: 'Query',
   ask: 'Ask AI',
   users: 'Users',
+  processes: 'Processes',
   diagram: 'Diagram',
 }
 

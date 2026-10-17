@@ -82,6 +82,7 @@ fn config_from_env(name: &str, driver: Driver) -> Option<ConnectionConfig> {
         password: password.to_owned(),
         database: database.to_owned(),
         ssh: ssh_from_env(),
+        ssl: sql_pro_lib::model::SslConfig::default(),
     })
 }
 
@@ -1606,6 +1607,25 @@ async fn custom_sql(service: &ConnectionService) {
     assert!(service.run_query(ID, "SELEC nonsense").await.is_err());
 }
 
+/// Explain gives a plan and never runs the statement. More than one statement,
+/// or `ANALYZE` in front, is refused.
+async fn explain(service: &ConnectionService, table: &TableRef, driver: Driver) {
+    let delete = format!("DELETE FROM {TABLE} WHERE id > 0;");
+    let plan = service.explain(ID, &delete).await;
+    if driver == Driver::Mssql {
+        assert!(plan.is_err());
+        return;
+    }
+    let before = page(service, table).await.total;
+    assert_ne!(plan.expect("plan")[0].rows.len(), 0);
+    assert_eq!(page(service, table).await.total, before);
+    let two = format!("SELECT 1; DELETE FROM {TABLE}");
+    assert!(service.explain(ID, &two).await.is_err());
+    let analyze = format!("ANALYZE DELETE FROM {TABLE}");
+    assert!(service.explain(ID, &analyze).await.is_err());
+    assert_eq!(page(service, table).await.total, before);
+}
+
 /// Every SQL Server type comes back as the text SQL Server itself writes.
 /// Types the driver cannot read still show when a table is browsed.
 async fn mssql_types(service: &ConnectionService) {
@@ -1747,6 +1767,121 @@ async fn cancel(service: &ConnectionService, driver: Driver) {
     assert_eq!(sets[0].rows[0], vec![text("2")]);
 }
 
+/// A database name that must be quoted to work.
+const NEW_DATABASE: &str = "sqlpro made \"db\"";
+
+/// Creates and drops a database. `SQLite` has none, so both must fail there.
+async fn databases(service: &ConnectionService, config: &ConnectionConfig) {
+    let driver = config.driver;
+    if driver == Driver::Sqlite {
+        assert!(service.create_database(ID, "x", "", "").await.is_err());
+        assert!(service.drop_database(ID, "x").await.is_err());
+        return;
+    }
+    // A leftover of an earlier failed run is removed first.
+    let _ = service.drop_database(ID, NEW_DATABASE).await;
+    let charset = if driver == Driver::Mysql {
+        "utf8mb4"
+    } else {
+        ""
+    };
+    let created = service.create_database(ID, NEW_DATABASE, charset, "");
+    created.await.expect("create database");
+    let listed = service.databases(ID).await.expect("databases");
+    assert!(listed.iter().any(|name| name == NEW_DATABASE));
+    if driver != Driver::Mysql {
+        let refused = service
+            .create_database(ID, "sqlpro_never", "utf8", "")
+            .await;
+        assert!(refused.is_err(), "charset is only for MySQL");
+    }
+    assert!(service.create_database(ID, "  ", "", "").await.is_err());
+
+    // The tab can visit the new database and come back.
+    service
+        .use_database(ID, NEW_DATABASE.to_owned())
+        .await
+        .expect("use new database");
+    let current = service.drop_database(ID, NEW_DATABASE).await;
+    assert!(current.is_err(), "the current database is never dropped");
+    service
+        .use_database(ID, config.database.clone())
+        .await
+        .expect("back to the test database");
+
+    service
+        .drop_database(ID, NEW_DATABASE)
+        .await
+        .expect("drop database");
+    let listed = service.databases(ID).await.expect("databases");
+    assert!(!listed.iter().any(|name| name == NEW_DATABASE));
+    assert!(service.drop_database(ID, NEW_DATABASE).await.is_err());
+}
+
+/// The id of the process that runs the connection `id`.
+async fn own_process(service: &ConnectionService, id: &str) -> i64 {
+    let listed = service.list_processes(id).await.expect("list processes");
+    let mut current = listed.iter().filter(|process| process.current);
+    let own = current.next().expect("the own connection is listed");
+    assert!(current.next().is_none(), "only one is marked as current");
+    own.id
+}
+
+/// Lists the processes and stops one. The tab cannot stop its own connection.
+/// Leaves `ID` connected.
+async fn processes(service: &ConnectionService, config: &ConnectionConfig) {
+    if config.driver == Driver::Sqlite {
+        let listed = service.list_processes(ID).await;
+        assert_eq!(
+            listed.expect_err("no processes").to_string(),
+            "SQLite has no server processes"
+        );
+        return;
+    }
+    let own = own_process(service, ID).await;
+    let refused = service.kill_process(ID, own, false).await;
+    assert!(
+        refused
+            .expect_err("own connection")
+            .to_string()
+            .contains("this tab")
+    );
+    let gone = service.kill_process(ID, i64::MAX, false).await;
+    assert_eq!(
+        gone.expect_err("unknown id").to_string(),
+        "This process is not running any more"
+    );
+
+    let connected = service.connect(CLONE_ID.to_owned(), config.clone()).await;
+    connected.expect("connect a second tab");
+    let other = own_process(service, CLONE_ID).await;
+    assert_ne!(other, own);
+    if config.driver == Driver::Mssql {
+        assert!(service.kill_process(ID, other, true).await.is_err());
+    } else {
+        // Stopping only the statement keeps the connection.
+        let stopped = service.kill_process(ID, other, true).await;
+        stopped.expect("stop the query");
+        assert_eq!(own_process(service, CLONE_ID).await, other);
+    }
+    service
+        .kill_process(ID, other, false)
+        .await
+        .expect("kill the second tab");
+    // PostgreSQL ends the process a moment after the signal.
+    let mut ended = false;
+    for _ in 0..30 {
+        let listed = service.list_processes(ID).await.expect("list processes");
+        if listed.iter().all(|process| process.id != other) {
+            ended = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(ended, "the killed process is gone");
+    service.disconnect(CLONE_ID).await;
+}
+
 #[allow(clippy::too_many_lines, reason = "one end-to-end flow")]
 async fn exercise(config: ConnectionConfig) {
     let driver = config.driver;
@@ -1817,6 +1952,7 @@ async fn exercise(config: ConnectionConfig) {
     filters(&service, &table).await;
     save_changes(&service, &table).await;
     clone_connection(&service, &config, &table).await;
+    processes(&service, &config).await;
     users(&service, &config, &table).await;
 
     // Update: only the row with the given key changes.
@@ -1855,9 +1991,11 @@ async fn exercise(config: ConnectionConfig) {
     diagram(&service, driver).await;
     keys(&service, driver).await;
     cancel(&service, driver).await;
+    databases(&service, &config).await;
     save_image();
 
     custom_sql(&service).await;
+    explain(&service, &table, driver).await;
     if driver == Driver::Mssql {
         mssql_types(&service).await;
     }
@@ -1877,6 +2015,7 @@ async fn sqlite() {
         password: String::new(),
         database: path.to_string_lossy().into_owned(),
         ssh: None,
+        ssl: sql_pro_lib::model::SslConfig::default(),
     })
     .await;
     std::fs::remove_file(&path).expect("remove temp file");

@@ -80,8 +80,12 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
     itself writes (decimals keep their scale, binary is `0x…`, GUIDs in upper case).
   - It has no cancel. Cancel runs `KILL <spid>` from a second connection. That ends the session, so the tab
     opens a new connection for its next query.
-  - It reads its settings only from a URL. `encrypt=mandatory&trust_server_certificate=true`: encrypted, but the
-    certificate is not checked, like the other drivers. `PRINT` messages are dropped.
+  - It reads its settings only from a URL. The SSL mode of the connection goes into it (`MssqlRepository::url`).
+    It has no client certificate option. `PRINT` messages are dropped.
+- **SSL** (`SslConfig` in `model.rs`): one mode for all servers (off, prefer, require, verify CA, verify full)
+  plus CA, client cert and key files. The default `prefer` encrypts but does not check the certificate, like
+  before. A connection saved without `ssl` uses the default. Through an SSH tunnel, "verify full" works only on
+  SQL Server: MySQL and PostgreSQL then check the host name against `127.0.0.1`.
   - Paging is `OFFSET … FETCH` (`Repository::page_sql`). Rename uses `sp_rename`. A default is a constraint, so
     changing or dropping a column drops its default first.
   - Backup and the Users view are not there for SQL Server yet. See `TODO.md`.

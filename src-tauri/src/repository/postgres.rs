@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, PgQueryResult, PgRow};
+use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, PgQueryResult, PgRow, PgSslMode};
 use sqlx::{AssertSqlSafe, Postgres, Row as _};
 
 use super::{
@@ -17,7 +17,7 @@ use crate::constants::{POSTGRES_ROLE_NAME_MAX, TRIGGER};
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser, ForeignKey, IndexInfo,
-    Relation, ResultSet, TableRef, UserList,
+    Relation, ResultSet, SslConfig, SslMode, TableRef, UserList,
 };
 
 const DATABASES_SQL: &str =
@@ -153,6 +153,7 @@ impl PostgresRepository {
             .port(config.port)
             .username(&config.user)
             .password(&config.password);
+        options = Self::with_ssl(options, &config.ssl);
         if !config.database.is_empty() {
             options = options.database(&config.database);
         }
@@ -176,6 +177,28 @@ impl PostgresRepository {
             options,
             server_id,
         })
+    }
+
+    /// Adds the SSL mode and the certificate files of the connection.
+    /// The mode is always set, so a `PGSSLMODE` in the environment does not change it.
+    fn with_ssl(mut options: PgConnectOptions, ssl: &SslConfig) -> PgConnectOptions {
+        options = options.ssl_mode(match ssl.mode {
+            SslMode::Off => PgSslMode::Disable,
+            SslMode::Prefer => PgSslMode::Prefer,
+            SslMode::Require => PgSslMode::Require,
+            SslMode::VerifyCa => PgSslMode::VerifyCa,
+            SslMode::VerifyFull => PgSslMode::VerifyFull,
+        });
+        if !ssl.ca_path.is_empty() {
+            options = options.ssl_root_cert(&ssl.ca_path);
+        }
+        if !ssl.cert_path.is_empty() {
+            options = options.ssl_client_cert(&ssl.cert_path);
+        }
+        if !ssl.key_path.is_empty() {
+            options = options.ssl_client_key(&ssl.key_path);
+        }
+        options
     }
 
     /// Writes a text value as an escape string: `E'value'`.
@@ -315,6 +338,10 @@ impl Repository for PostgresRepository {
 
     fn default_values(&self) -> &'static str {
         "DEFAULT VALUES"
+    }
+
+    fn explain_prefix(&self) -> Option<&'static str> {
+        Some("EXPLAIN")
     }
 
     // ponytail: identity columns need PostgreSQL 10. Use SERIAL if older servers must work.
@@ -607,6 +634,25 @@ impl Repository for PostgresRepository {
         self.run_all(&statements).await
     }
 
+    /// Only client connections. The time is how long the connection is in its state.
+    fn processes_sql(&self) -> AppResult<&'static str> {
+        Ok(
+            "SELECT pid, usename, COALESCE(client_hostname, host(client_addr)), datname, state, \
+            EXTRACT(EPOCH FROM now() - state_change)::int8, query, \
+            CASE WHEN pid = pg_backend_pid() THEN 1 ELSE 0 END \
+            FROM pg_stat_activity WHERE backend_type = 'client backend' ORDER BY pid",
+        )
+    }
+
+    fn kill_sql(&self, id: i64, query_only: bool) -> AppResult<String> {
+        let function = if query_only {
+            "pg_cancel_backend"
+        } else {
+            "pg_terminate_backend"
+        };
+        Ok(format!("SELECT {function}({id})"))
+    }
+
     async fn close(&self) {
         self.pool.close().await;
     }
@@ -619,5 +665,22 @@ impl Repository for PostgresRepository {
         // The id is a number from the server, never text from the user.
         let sql = format!("SELECT pg_cancel_backend({id})");
         run_on_new_connection::<PgConnection>(&self.options, sql).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PgConnectOptions, PgSslMode, PostgresRepository, SslConfig, SslMode};
+
+    #[test]
+    fn ssl_keeps_the_old_default_and_maps_each_mode() {
+        let options = PostgresRepository::with_ssl(PgConnectOptions::new(), &SslConfig::default());
+        assert!(matches!(options.get_ssl_mode(), PgSslMode::Prefer));
+        let ssl = SslConfig {
+            mode: SslMode::Off,
+            ..SslConfig::default()
+        };
+        let options = PostgresRepository::with_ssl(PgConnectOptions::new(), &ssl);
+        assert!(matches!(options.get_ssl_mode(), PgSslMode::Disable));
     }
 }

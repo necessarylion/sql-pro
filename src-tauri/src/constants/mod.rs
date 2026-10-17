@@ -127,6 +127,17 @@ pub const NO_USER_ACCOUNTS: &str = "SQLite has no user accounts";
 pub const MSSQL_NO_USER_ACCOUNTS: &str = "User accounts are not supported for SQL Server yet";
 pub const MSSQL_NO_BACKUP: &str = "Backups are not supported for SQL Server yet";
 
+/// The errors for creating and dropping a database.
+pub const SQLITE_NO_DATABASES: &str = "SQLite has no databases to create or drop";
+pub const CHARSET_ONLY_MYSQL: &str = "Charset and collation are only for MySQL";
+pub const DROP_CURRENT_DATABASE: &str = "Switch to another database before you drop this one";
+
+/// The error for a database kind that has no server processes.
+pub const NO_PROCESSES: &str = "SQLite has no server processes";
+
+/// The error when the process to stop is not in the list any more.
+pub const PROCESS_GONE: &str = "This process is not running any more";
+
 /// The error for a foreign key change on `SQLite`.
 pub const SQLITE_FOREIGN_KEYS_FIXED: &str =
     "SQLite cannot add or drop a foreign key of an existing table";
@@ -231,6 +242,19 @@ pub const AI_FILE_TYPES: &str = "Only PNG, JPEG and WebP images and CSV files ca
 
 /// The error when SQL that is not a read is sent to the read-only path.
 pub const NOT_A_READ: &str = "This SQL is not a read, so it cannot run as one.";
+
+/// The first words of a statement that Explain takes. Anything else is refused,
+/// so `ANALYZE` (which runs the statement) can never come first.
+pub const EXPLAIN_KEYWORDS: [&str; 9] = [
+    "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "REPLACE", "VALUES", "TABLE", "MERGE",
+];
+
+/// The error when Explain gets text that is not one plain statement.
+pub const EXPLAIN_ONE_STATEMENT: &str =
+    "Explain takes one SELECT, INSERT, UPDATE or DELETE statement.";
+
+/// The error when the database has no Explain in this app.
+pub const NO_EXPLAIN: &str = "Explain is not available for this database.";
 
 /// The error when the Claude Code CLI cannot be found.
 pub const CLAUDE_NOT_FOUND: &str = "Claude Code is not installed. Install it from https://claude.com/claude-code, then run `claude` once in a terminal to log in.";

@@ -1,6 +1,6 @@
 // Checks the export and import of saved connections, with a fake backend. Run: bun test
 import { expect, test } from 'bun:test'
-import { DEFAULT_CONFIGS, DEFAULT_SSH_CONFIG } from '../src/constants'
+import { DEFAULT_CONFIGS, DEFAULT_SSH_CONFIG, DEFAULT_SSL_CONFIG } from '../src/constants'
 import {
   CONNECTIONS_FILE_ERROR,
   CONNECTIONS_FILE_NEWER,
@@ -115,6 +115,15 @@ test('a bad file throws a clear error and adds nothing', async function () {
         { ...favorite('a', 'x'), config: { ...DEFAULT_CONFIGS.mysql, ssh: { host: 1 } } },
       ],
     }),
+    '/bad-ssl': JSON.stringify({
+      version: 1,
+      connections: [
+        {
+          ...favorite('a', 'x'),
+          config: { ...DEFAULT_CONFIGS.mysql, ssl: { ...DEFAULT_SSL_CONFIG, mode: 'maybe' } },
+        },
+      ],
+    }),
   }
   Object.assign(api.files, bad)
   for (const path of Object.keys(bad)) {
@@ -139,4 +148,19 @@ test('export of one connection writes only that one, with no password', async fu
   expect(connections[0].name).toBe('Blog')
   expect(ConnectionTransfer.fileName(' Shop DB / prod ')).toBe('Shop-DB-prod.json')
   expect(ConnectionTransfer.fileName('///')).toBe('sql-pro-connections.json')
+})
+
+test('the SSL settings go out and come back. A file without them still imports', async function () {
+  const { store, transfer } = setup()
+  const withSsl = favorite('a', 'Cloud')
+  withSsl.config.ssl = { ...DEFAULT_SSL_CONFIG, mode: 'verifyFull', caPath: '/ca.pem' }
+  store.favorites.push(withSsl, favorite('b', 'Old'))
+  await transfer.exportTo('/out.json')
+  store.favorites.length = 0
+
+  expect(await transfer.importFrom('/out.json')).toBe(2)
+
+  expect(store.byId('a')?.config.ssl?.mode).toBe('verifyFull')
+  expect(store.byId('a')?.config.ssl?.caPath).toBe('/ca.pem')
+  expect(store.byId('b')?.config.ssl).toBeUndefined()
 })

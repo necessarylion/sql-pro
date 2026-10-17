@@ -6,6 +6,7 @@ import {
   QUERY_CANCELLED_STATUS,
   QUERY_RESULT_NAME,
 } from '../constants'
+import { FALLBACK_DATABASES } from '../constants/databases'
 import { DIAGRAM_SAVED_STATUS_MS } from '../constants/diagram'
 import { RAW_FILTER_COLUMN, VALUELESS_OPERATORS } from '../constants/filters'
 import { ACCESS_LABELS } from '../constants/users'
@@ -17,6 +18,7 @@ import type {
   CsvImport,
   CsvPreview,
   DbObject,
+  DbProcess,
   DbUser,
   Diagram,
   ExportFormat,
@@ -108,6 +110,8 @@ export class Session {
   users: DbUser[] = []
   /** True when the logged-in account may manage users. The Users view needs it. */
   canManageUsers = false
+  /** The connections of the server, for the Processes view. */
+  processes: DbProcess[] = []
   /** What the Diagram view shows. null = not loaded. */
   diagram: Diagram | null = null
   /** Goes up by one on each press of the export shortcut. The workspace then opens the export dialog. */
@@ -349,6 +353,7 @@ export class Session {
       this.result = null
       this.status = ''
       this.diagram = null
+      this.processes = []
       this.clearTable()
       this.setUsers([], false)
     }
@@ -372,6 +377,61 @@ export class Session {
     if (this.view === 'diagram') {
       await this.loadDiagram()
     }
+  }
+
+  /** SQLite has no databases to create or drop. */
+  get canChangeDatabases(): boolean {
+    return this.config !== null && this.config.driver !== 'sqlite'
+  }
+
+  /** Creates a database, loads the list again and switches to the new one. */
+  async createDatabase(name: string, charset = '', collation = ''): Promise<void> {
+    const trimmed = name.trim()
+    await this.api.createDatabase(this.id, trimmed, charset.trim(), collation.trim())
+    this.databases = await this.api.listDatabases(this.id)
+    await this.useDatabase(trimmed)
+    this.status = `Database "${trimmed}" created`
+  }
+
+  /**
+   * Drops a database and loads the list again. When it is the current one, the tab first
+   * switches to another database, because PostgreSQL and SQL Server cannot drop it while
+   * it is in use. MySQL switches to no database at all.
+   */
+  async dropDatabase(name: string): Promise<void> {
+    if (this.config?.database === name) {
+      await this.useDatabase(this.otherDatabase(name))
+      // The user kept the unsaved changes, so the tab is still on this database.
+      if (this.config?.database === name) {
+        return
+      }
+    }
+    try {
+      await this.api.dropDatabase(this.id, name)
+    } finally {
+      this.databases = await this.api.listDatabases(this.id)
+    }
+    this.status = `Database "${name}" dropped`
+  }
+
+  /** The database to switch to before `name` is dropped. A system database comes first. */
+  private otherDatabase(name: string): string {
+    if (this.config?.driver === 'mysql') {
+      return ''
+    }
+    let other: string | null = null
+    for (const database of this.databases) {
+      if (FALLBACK_DATABASES.includes(database)) {
+        return database
+      }
+      if (database !== name && other === null) {
+        other = database
+      }
+    }
+    if (other === null) {
+      throw 'There is no other database to switch to'
+    }
+    return other
   }
 
   /** Loads the tables and views, then the triggers and routines. */
@@ -466,6 +526,8 @@ export class Session {
   async refresh(): Promise<void> {
     if (this.view === 'users') {
       await this.loadUsers()
+    } else if (this.view === 'processes') {
+      await this.loadProcesses()
     } else if (this.view === 'diagram') {
       await this.loadDiagram()
     } else if (this.view !== 'query' && this.view !== 'ask') {
@@ -949,6 +1011,19 @@ export class Session {
     return `${tables.length} ${TableSelection.noun(tables)} ${verb}`
   }
 
+  async loadProcesses(): Promise<void> {
+    this.processes = await this.api.listProcesses(this.id)
+  }
+
+  /** `queryOnly` stops only the running statement. Else the whole connection ends. */
+  async killProcess(process: DbProcess, queryOnly: boolean): Promise<void> {
+    await this.api.killProcess(this.id, process.id, queryOnly)
+    this.status = queryOnly
+      ? `Query of process ${process.id} stopped`
+      : `Process ${process.id} killed`
+    await this.loadProcesses()
+  }
+
   /**
    * Loads the user list. It never throws.
    * A failure means only that users cannot be managed here.
@@ -1172,6 +1247,19 @@ export class Session {
     }
     // The query may have created or dropped tables.
     await this.loadTables()
+  }
+
+  /** Shows the query plan of one statement in the result grid. The statement does not run. */
+  async explain(sql: string): Promise<void> {
+    const sets = await this.api.explain(this.id, sql)
+    let plan: ResultSet | null = null
+    for (const set of sets) {
+      if (set.columns.length > 0) {
+        plan = set
+      }
+    }
+    this.result = plan && markRaw(plan)
+    this.status = 'Query plan. The statement did not run.'
   }
 
   /** Asks a yes or no question in a dialog. */

@@ -11,6 +11,7 @@ import type {
   CsvImport,
   CsvPreview,
   DbObject,
+  DbProcess,
   DbUser,
   Diagram,
   ExportRequest,
@@ -63,6 +64,16 @@ export class DatabaseApi {
     return invoke('list_databases', { id })
   }
 
+  /** Creates a database. `charset` and `collation` are only for MySQL. Empty means the default. */
+  createDatabase(id: string, name: string, charset: string, collation: string): Promise<void> {
+    return invoke('create_database', { id, name, charset, collation })
+  }
+
+  /** Drops a database. The backend refuses the one the tab uses now. */
+  dropDatabase(id: string, name: string): Promise<void> {
+    return invoke('drop_database', { id, name })
+  }
+
   listTables(id: string): Promise<TableRef[]> {
     return invoke('list_tables', { id })
   }
@@ -78,6 +89,11 @@ export class DatabaseApi {
 
   runQuery(id: string, sql: string): Promise<ResultSet[]> {
     return invoke('run_query', { id, sql })
+  }
+
+  /** The query plan of one statement. The backend never runs the statement itself. */
+  explain(id: string, sql: string): Promise<ResultSet[]> {
+    return invoke('explain', { id, sql })
   }
 
   /**
@@ -283,6 +299,15 @@ export class DatabaseApi {
 
   setUserPassword(id: string, user: DbUser, password: string): Promise<void> {
     return invoke('set_user_password', { id, name: user.name, host: user.host, password })
+  }
+
+  listProcesses(id: string): Promise<DbProcess[]> {
+    return invoke('list_processes', { id })
+  }
+
+  /** `queryOnly` stops only the running statement. Else the whole connection ends. */
+  killProcess(id: string, process: number, queryOnly: boolean): Promise<void> {
+    return invoke('kill_process', { id, process, queryOnly })
   }
 
   savePassword(id: string, password: string): Promise<void> {

@@ -1,7 +1,9 @@
 //! `MySQL` and `MariaDB` access.
 
 use async_trait::async_trait;
-use sqlx::mysql::{MySqlConnectOptions, MySqlConnection, MySqlPool, MySqlQueryResult, MySqlRow};
+use sqlx::mysql::{
+    MySqlConnectOptions, MySqlConnection, MySqlPool, MySqlQueryResult, MySqlRow, MySqlSslMode,
+};
 use sqlx::{AssertSqlSafe, MySql, Row as _};
 
 use std::collections::{BTreeSet, HashMap};
@@ -19,7 +21,7 @@ use crate::constants::{
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser, ForeignKey, IndexInfo,
-    Relation, ResultSet, TableRef, UserList,
+    Relation, ResultSet, SslConfig, SslMode, TableRef, UserList,
 };
 
 /// The right that is no right. `MySQL` lists it for an account that has nothing.
@@ -82,6 +84,7 @@ impl MysqlRepository {
             .pipes_as_concat(false)
             .no_engine_substitution(false)
             .timezone(None::<String>);
+        options = Self::with_ssl(options, &config.ssl);
         if has_database {
             options = options.database(&config.database);
         }
@@ -106,6 +109,27 @@ impl MysqlRepository {
             options,
             server_id,
         })
+    }
+
+    /// Adds the SSL mode and the certificate files of the connection.
+    fn with_ssl(mut options: MySqlConnectOptions, ssl: &SslConfig) -> MySqlConnectOptions {
+        options = options.ssl_mode(match ssl.mode {
+            SslMode::Off => MySqlSslMode::Disabled,
+            SslMode::Prefer => MySqlSslMode::Preferred,
+            SslMode::Require => MySqlSslMode::Required,
+            SslMode::VerifyCa => MySqlSslMode::VerifyCa,
+            SslMode::VerifyFull => MySqlSslMode::VerifyIdentity,
+        });
+        if !ssl.ca_path.is_empty() {
+            options = options.ssl_ca(&ssl.ca_path);
+        }
+        if !ssl.cert_path.is_empty() {
+            options = options.ssl_client_cert(&ssl.cert_path);
+        }
+        if !ssl.key_path.is_empty() {
+            options = options.ssl_client_key(&ssl.key_path);
+        }
+        options
     }
 
     /// The definition of a column as `SHOW CREATE TABLE` prints it, without the name.
@@ -405,6 +429,10 @@ impl Repository for MysqlRepository {
 
     fn default_values(&self) -> &'static str {
         "() VALUES ()"
+    }
+
+    fn explain_prefix(&self) -> Option<&'static str> {
+        Some("EXPLAIN")
     }
 
     fn rename_table_sql(&self, table: &TableRef, new_name: &str) -> String {
@@ -714,6 +742,21 @@ impl Repository for MysqlRepository {
         Ok(())
     }
 
+    /// `information_schema` works on `MySQL` and `MariaDB`. The state is the command,
+    /// plus the state when there is one: `Query: executing`.
+    fn processes_sql(&self) -> AppResult<&'static str> {
+        Ok(
+            "SELECT ID, USER, HOST, DB, CONCAT_WS(': ', COMMAND, NULLIF(STATE, '')), TIME, INFO, \
+            CASE WHEN ID = CONNECTION_ID() THEN 1 ELSE 0 END \
+            FROM information_schema.PROCESSLIST ORDER BY ID",
+        )
+    }
+
+    fn kill_sql(&self, id: i64, query_only: bool) -> AppResult<String> {
+        let what = if query_only { "QUERY " } else { "" };
+        Ok(format!("KILL {what}{id}"))
+    }
+
     async fn close(&self) {
         self.pool.close().await;
     }
@@ -725,5 +768,26 @@ impl Repository for MysqlRepository {
         }
         // The id is a number from the server, never text from the user.
         run_on_new_connection::<MySqlConnection>(&self.options, format!("KILL QUERY {id}")).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MySqlConnectOptions, MySqlSslMode, MysqlRepository, SslConfig, SslMode};
+
+    #[test]
+    fn ssl_keeps_the_old_default_and_maps_each_mode() {
+        let options = MysqlRepository::with_ssl(MySqlConnectOptions::new(), &SslConfig::default());
+        assert!(matches!(options.get_ssl_mode(), MySqlSslMode::Preferred));
+        let ssl = SslConfig {
+            mode: SslMode::VerifyFull,
+            ca_path: "/certs/ca.pem".to_owned(),
+            ..SslConfig::default()
+        };
+        let options = MysqlRepository::with_ssl(MySqlConnectOptions::new(), &ssl);
+        assert!(matches!(
+            options.get_ssl_mode(),
+            MySqlSslMode::VerifyIdentity
+        ));
     }
 }

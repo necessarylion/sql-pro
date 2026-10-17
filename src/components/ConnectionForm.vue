@@ -13,7 +13,15 @@ import {
   XIcon,
 } from 'lucide-vue-next'
 import { confirm, open, save } from '@tauri-apps/plugin-dialog'
-import { DEFAULT_CONFIGS, DEFAULT_SSH_CONFIG, DRIVER_LABELS } from '../constants'
+import {
+  DEFAULT_CONFIGS,
+  DEFAULT_SSH_CONFIG,
+  DEFAULT_SSL_CONFIG,
+  DRIVER_LABELS,
+  FORM_TABS,
+  SSL_MODE_LABELS,
+} from '../constants'
+import type { FormTab } from '../constants'
 import {
   DEFAULT_ENVIRONMENT,
   ENVIRONMENT_HINT,
@@ -37,7 +45,7 @@ import { Environment } from '../services/Environment'
 import type { Favorite, FavoriteSection, Folder } from '../services/FavoriteStore'
 import { CONNECTION_TRANSFER, FAVORITE_STORE, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
-import type { ConnectionConfig, Driver } from '../types'
+import type { ConnectionConfig, Driver, SslConfig, SslMode } from '../types'
 import ConnectionInfo from './ConnectionInfo.vue'
 import ContextMenu from './ContextMenu.vue'
 import DbBadge from './DbBadge.vue'
@@ -79,6 +87,28 @@ const connecting = ref(false)
  */
 const test = reactive({ running: false, done: false, error: '' })
 watch(form, clearTest)
+
+/** The tab of the form that shows. SQLite has no SSL or SSH, so it always shows General. */
+const tab = ref<FormTab>('general')
+watch(driverOf, showGeneralForSqlite)
+
+function driverOf(): Driver {
+  return form.config.driver
+}
+
+function showGeneralForSqlite(driver: Driver): void {
+  if (driver === 'sqlite') {
+    tab.value = 'general'
+  }
+}
+
+/** True when the tab's feature is on: SSL that is required or checked, or SSH. */
+function tabIsOn(name: FormTab): boolean {
+  if (name === 'ssl') {
+    return sslMode() !== 'off' && sslMode() !== 'prefer'
+  }
+  return name === 'ssh' && !!form.config.ssh
+}
 
 /** The pasted connection string. It can hold a password, so it is cleared after use. */
 const pasted = ref('')
@@ -156,6 +186,11 @@ function openFolderMenu(event: MouseEvent, folder: Folder): void {
 /** Opens the menu of a connection. */
 function openFavoriteMenu(event: MouseEvent, favorite: Favorite): void {
   menu.value = { x: event.clientX, y: event.clientY, folder: null, favorite }
+}
+
+/** Opens the menu of the empty part of the list. */
+function openListMenu(event: MouseEvent): void {
+  menu.value = { x: event.clientX, y: event.clientY, folder: null, favorite: null }
 }
 
 function closeMenu(): void {
@@ -340,6 +375,7 @@ function typeCustom(event: Event): void {
 function reset(): void {
   setNote('', '')
   editing.value = true
+  tab.value = 'general'
   form.id = ''
   form.name = ''
   form.folderId = ''
@@ -371,6 +407,36 @@ function toggleSsh(): void {
   form.config.ssh = form.config.ssh ? null : { ...DEFAULT_SSH_CONFIG }
 }
 
+/** The SSL mode in the form. A connection saved before SSL support has none: then `prefer`. */
+function sslMode(): SslMode {
+  return form.config.ssl?.mode ?? DEFAULT_SSL_CONFIG.mode
+}
+
+function setSslMode(event: Event): void {
+  const mode = (event.target as HTMLSelectElement).value as SslMode
+  form.config.ssl = { ...(form.config.ssl ?? DEFAULT_SSL_CONFIG), mode }
+}
+
+/**
+ * The certificate files show only for the modes that need them, so the form stays short.
+ * SQL Server reads the CA file only when it checks the certificate.
+ */
+function showsSslFiles(): boolean {
+  const mode = sslMode()
+  if (form.config.driver === 'mssql') {
+    return mode === 'verifyCa' || mode === 'verifyFull'
+  }
+  return mode !== 'off' && mode !== 'prefer'
+}
+
+/** Picks a certificate or key file for one SSL field. */
+async function browseSsl(field: keyof Omit<SslConfig, 'mode'>): Promise<void> {
+  const path = await open({ multiple: false, directory: false })
+  if (typeof path === 'string' && form.config.ssl) {
+    form.config.ssl[field] = path
+  }
+}
+
 /** The form values as a clean config. An empty port field becomes 0. */
 function currentConfig(): ConnectionConfig {
   const ssh = form.config.ssh
@@ -396,6 +462,7 @@ function title(): string {
  */
 async function load(favorite: Favorite): Promise<boolean> {
   const loaded = await store.fullConfig(favorite)
+  tab.value = 'general'
   form.id = favorite.id
   form.name = favorite.name
   form.folderId = store.folderOf(favorite)
@@ -566,7 +633,14 @@ async function browseKey(): Promise<void> {
         `data-drop` marks the places that take a dragged row. `data-row` is the index of a row.
         Rows slide to their new place when the list changes.
       -->
-      <TransitionGroup tag="ul" class="list" name="slide" data-drop @before-leave="cancelDrag">
+      <TransitionGroup
+        tag="ul"
+        class="list"
+        name="slide"
+        data-drop
+        @before-leave="cancelDrag"
+        @contextmenu.prevent="openListMenu"
+      >
         <template v-for="(row, index) in rows" :key="row.key">
           <li
             v-if="row.favorite"
@@ -581,7 +655,7 @@ async function browseKey(): Promise<void> {
             :data-row="index"
             @click="clickRow(row.favorite)"
             @dblclick="session.run(loadAndConnect(row.favorite))"
-            @contextmenu.prevent="openFavoriteMenu($event, row.favorite)"
+            @contextmenu.prevent.stop="openFavoriteMenu($event, row.favorite)"
             @pointerdown.left="startDrag($event, row.favorite, null)"
             @pointermove="moveDrag"
             @pointerup="endDrag"
@@ -613,7 +687,7 @@ async function browseKey(): Promise<void> {
             :data-row="index"
             :title="row.section.folder.name"
             @click="toggleFolder(row.section.folder)"
-            @contextmenu.prevent="openFolderMenu($event, row.section.folder)"
+            @contextmenu.prevent.stop="openFolderMenu($event, row.section.folder)"
             @pointerdown.left="startDrag($event, null, row.section.folder)"
             @pointermove="moveDrag"
             @pointerup="endDrag"
@@ -699,7 +773,23 @@ async function browseKey(): Promise<void> {
         />
         <template v-else>
           <header>
-            <h1>{{ form.id ? 'Edit connection' : 'New connection' }}</h1>
+            <div class="title-line">
+              <h1>{{ form.id ? 'Edit connection' : 'New connection' }}</h1>
+              <div class="db-pick">
+                <button
+                  v-for="(label, driver) in DRIVER_LABELS"
+                  :key="driver"
+                  type="button"
+                  :class="{ active: form.config.driver === driver }"
+                  :title="label"
+                  :aria-label="label"
+                  :aria-pressed="form.config.driver === driver"
+                  @click="setDriver(driver)"
+                >
+                  <DbBadge :driver="driver" />
+                </button>
+              </div>
+            </div>
             <p v-if="!form.id">Pick a database type, then fill in the details.</p>
           </header>
 
@@ -719,114 +809,204 @@ async function browseKey(): Promise<void> {
             <button type="button" @click="fillFromString">Fill</button>
           </div>
 
-          <div class="segmented">
+          <div v-if="form.config.driver !== 'sqlite'" class="segmented form-tabs" role="tablist">
             <button
-              v-for="(label, driver) in DRIVER_LABELS"
-              :key="driver"
+              v-for="(label, name) in FORM_TABS"
+              :key="name"
               type="button"
-              :class="{ active: form.config.driver === driver }"
-              @click="setDriver(driver)"
+              role="tab"
+              :aria-selected="tab === name"
+              :class="{ active: tab === name }"
+              @click="tab = name"
             >
-              <DbBadge :driver="driver" />
               {{ label }}
+              <span v-if="tabIsOn(name)" class="on-dot" />
             </button>
           </div>
 
-          <div class="fields">
-            <div class="row">
-              <label>Name</label>
-              <input v-model="form.name" placeholder="Optional" />
-            </div>
-            <div class="row">
-              <label>Environment</label>
-              <div class="segmented env-switch">
-                <button
-                  v-for="kind in ENVIRONMENT_KINDS"
-                  :key="kind"
-                  type="button"
-                  :class="{ active: env.kind === kind }"
-                  @click="env.kind = kind"
-                >
-                  {{ kind }}
-                </button>
-              </div>
-              <input
-                v-if="env.kind === 'custom'"
-                :value="env.custom"
-                placeholder="name"
-                :title="ENVIRONMENT_HINT"
-                :maxlength="ENVIRONMENT_MAX_LENGTH"
-                autocapitalize="off"
-                spellcheck="false"
-                @input="typeCustom"
-              />
-            </div>
-
-            <div class="row">
-              <label>Folder</label>
-              <select v-model="form.folderId">
-                <option value="">No folder</option>
-                <option v-for="folder in store.folders" :key="folder.id" :value="folder.id">
-                  {{ folder.name }}
-                </option>
-              </select>
-            </div>
-
-            <div v-if="form.config.driver === 'sqlite'" class="row">
-              <label>Database file</label>
-              <input
-                v-model="form.config.database"
-                class="mono"
-                placeholder="/path/to/database.sqlite"
-                spellcheck="false"
-              />
-              <button type="button" @click="session.run(browse())">Choose…</button>
-            </div>
-            <template v-else>
+          <div class="fields" :class="{ tabbed: form.config.driver !== 'sqlite' }">
+            <template v-if="tab === 'general'">
               <div class="row">
-                <label>Host</label>
+                <label>Name</label>
+                <input v-model="form.name" placeholder="Optional" />
+              </div>
+              <div class="row">
+                <label>Environment</label>
+                <div class="segmented env-switch">
+                  <button
+                    v-for="kind in ENVIRONMENT_KINDS"
+                    :key="kind"
+                    type="button"
+                    :class="{ active: env.kind === kind }"
+                    @click="env.kind = kind"
+                  >
+                    {{ kind }}
+                  </button>
+                </div>
                 <input
-                  v-model="form.config.host"
-                  class="mono"
+                  v-if="env.kind === 'custom'"
+                  :value="env.custom"
+                  placeholder="name"
+                  :title="ENVIRONMENT_HINT"
+                  :maxlength="ENVIRONMENT_MAX_LENGTH"
                   autocapitalize="off"
                   spellcheck="false"
-                />
-                <label class="short">Port</label>
-                <input
-                  v-model.number="form.config.port"
-                  class="port"
-                  type="number"
-                  min="0"
-                  max="65535"
+                  @input="typeCustom"
                 />
               </div>
+
               <div class="row">
-                <label>Username</label>
-                <input
-                  v-model="form.config.user"
-                  class="mono"
-                  autocapitalize="off"
-                  spellcheck="false"
-                />
+                <label>Folder</label>
+                <select v-model="form.folderId">
+                  <option value="">No folder</option>
+                  <option v-for="folder in store.folders" :key="folder.id" :value="folder.id">
+                    {{ folder.name }}
+                  </option>
+                </select>
               </div>
-              <div class="row">
-                <label>Password</label>
-                <input v-model="form.config.password" type="password" />
-              </div>
-              <div class="row">
-                <label>Database</label>
+
+              <div v-if="form.config.driver === 'sqlite'" class="row">
+                <label>Database file</label>
                 <input
                   v-model="form.config.database"
-                  autocapitalize="off"
+                  class="mono"
+                  placeholder="/path/to/database.sqlite"
                   spellcheck="false"
-                  :placeholder="
-                    form.config.driver === 'mysql' ? 'Optional. You can pick one later.' : ''
-                  "
                 />
+                <button type="button" @click="session.run(browse())">Choose…</button>
               </div>
+              <template v-else>
+                <div class="row">
+                  <label>Host</label>
+                  <input
+                    v-model="form.config.host"
+                    class="mono"
+                    autocapitalize="off"
+                    spellcheck="false"
+                  />
+                  <label class="short">Port</label>
+                  <input
+                    v-model.number="form.config.port"
+                    class="port"
+                    type="number"
+                    min="0"
+                    max="65535"
+                  />
+                </div>
+                <div class="row">
+                  <label>Username</label>
+                  <input
+                    v-model="form.config.user"
+                    class="mono"
+                    autocapitalize="off"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="row">
+                  <label>Password</label>
+                  <input v-model="form.config.password" type="password" />
+                </div>
+                <div class="row">
+                  <label>Database</label>
+                  <input
+                    v-model="form.config.database"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    :placeholder="
+                      form.config.driver === 'mysql' ? 'Optional. You can pick one later.' : ''
+                    "
+                  />
+                </div>
+              </template>
+            </template>
 
+            <template v-else-if="tab === 'ssl'">
               <div class="row">
-                <label></label>
+                <label>SSL</label>
+                <select :value="sslMode()" @change="setSslMode">
+                  <option v-for="(label, mode) in SSL_MODE_LABELS" :key="mode" :value="mode">
+                    {{ label }}
+                  </option>
+                </select>
+              </div>
+              <template v-if="form.config.ssl && showsSslFiles()">
+                <div class="row">
+                  <label>CA file</label>
+                  <input
+                    :value="form.config.ssl.caPath"
+                    class="mono"
+                    placeholder="Optional. Empty = system CAs."
+                    spellcheck="false"
+                    readonly
+                    @click="session.run(browseSsl('caPath'))"
+                  />
+                  <button
+                    v-if="form.config.ssl.caPath"
+                    type="button"
+                    class="icon"
+                    title="Clear"
+                    aria-label="Clear"
+                    @click="form.config.ssl.caPath = ''"
+                  >
+                    <XIcon :size="11" />
+                  </button>
+                  <button type="button" @click="session.run(browseSsl('caPath'))">Choose…</button>
+                </div>
+                <template v-if="form.config.driver !== 'mssql'">
+                  <div class="row">
+                    <label>Client cert</label>
+                    <input
+                      :value="form.config.ssl.certPath"
+                      class="mono"
+                      placeholder="Optional"
+                      spellcheck="false"
+                      readonly
+                      @click="session.run(browseSsl('certPath'))"
+                    />
+                    <button
+                      v-if="form.config.ssl.certPath"
+                      type="button"
+                      class="icon"
+                      title="Clear"
+                      aria-label="Clear"
+                      @click="form.config.ssl.certPath = ''"
+                    >
+                      <XIcon :size="11" />
+                    </button>
+                    <button type="button" @click="session.run(browseSsl('certPath'))">
+                      Choose…
+                    </button>
+                  </div>
+                  <div class="row">
+                    <label>Client key</label>
+                    <input
+                      :value="form.config.ssl.keyPath"
+                      class="mono"
+                      placeholder="Optional"
+                      spellcheck="false"
+                      readonly
+                      @click="session.run(browseSsl('keyPath'))"
+                    />
+                    <button
+                      v-if="form.config.ssl.keyPath"
+                      type="button"
+                      class="icon"
+                      title="Clear"
+                      aria-label="Clear"
+                      @click="form.config.ssl.keyPath = ''"
+                    >
+                      <XIcon :size="11" />
+                    </button>
+                    <button type="button" @click="session.run(browseSsl('keyPath'))">
+                      Choose…
+                    </button>
+                  </div>
+                </template>
+              </template>
+            </template>
+
+            <template v-else>
+              <div class="row">
                 <label class="check">
                   <input type="checkbox" :checked="!!form.config.ssh" @change="toggleSsh" />
                   Connect over SSH
@@ -970,6 +1150,7 @@ async function browseKey(): Promise<void> {
           <button role="menuitem" @click="moveTo(menu.favorite, '')">Move out of the folder</button>
         </template>
       </template>
+      <button v-else role="menuitem" @click="folderDialog?.open(null)">New Folder…</button>
     </ContextMenu>
     <FolderDialog ref="folderDialog" />
   </div>
@@ -1228,6 +1409,59 @@ header p {
   border-radius: 5px;
 }
 
+/* The title and the database logos share one line. */
+.title-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.title-line h1 {
+  margin: 0;
+}
+
+/* Logo-only database picker. Not .segmented, so it does not look like the tab bar. */
+.db-pick {
+  display: flex;
+  gap: 4px;
+}
+
+.db-pick button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  opacity: 0.5;
+}
+
+.db-pick button:hover {
+  opacity: 1;
+}
+
+.db-pick button.active {
+  border-color: var(--accent);
+  background: var(--seg-active);
+  opacity: 1;
+}
+
+.db-pick :deep(.badge) {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}
+
+.db-pick :deep(.badge svg) {
+  width: 15px;
+  height: 15px;
+}
+
 /* The small switch inside a form row. */
 .segmented.env-switch {
   height: 24px;
@@ -1245,6 +1479,31 @@ header p {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* As tall as the General tab (7 rows), so the buttons do not move when the tab changes. */
+.fields.tabbed {
+  min-height: calc(7 * 24px + 6 * 8px);
+}
+
+/* The small tab bar. It uses the env-switch size. */
+.segmented.form-tabs {
+  height: 26px;
+  border-radius: 6px;
+}
+
+.segmented.form-tabs button {
+  gap: 5px;
+  height: 22px;
+  border-radius: 4px;
+}
+
+/* Says that SSL or SSH is on, without opening the tab. */
+.on-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-text);
 }
 
 .row {

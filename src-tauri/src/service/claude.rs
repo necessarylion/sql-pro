@@ -4,8 +4,8 @@
 use std::fmt::Write as _;
 
 use crate::constants::{
-    AI_PROVIDERS, CLAUDE_EFFORTS, CLAUDE_MODEL_ALIASES, CLAUDE_SCHEMA_MAX_CHARS, MODEL_ID_MAX,
-    READ_KEYWORDS, WRITE_KEYWORDS,
+    AI_PROVIDERS, CLAUDE_EFFORTS, CLAUDE_MODEL_ALIASES, CLAUDE_SCHEMA_MAX_CHARS, EXPLAIN_KEYWORDS,
+    MODEL_ID_MAX, READ_KEYWORDS, WRITE_KEYWORDS,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{AiOptions, ColumnInfo, Driver, TableRef};
@@ -152,6 +152,24 @@ pub fn is_read_only(sql: &str) -> bool {
         && !words.any(|word| WRITE_KEYWORDS.contains(&word.as_str()))
 }
 
+/// `sql` without its `;` at the end, when it is one statement that Explain may take.
+/// `None` for anything else. A second statement would run for real behind the
+/// `EXPLAIN`, and `ANALYZE` in front would run the first one.
+///
+/// ponytail: same text check as `is_read_only`. Text it cannot read for sure
+/// (`$`, `#`, backslashes) is refused.
+pub(super) fn explainable(sql: &str) -> Option<&str> {
+    let code = code_only(sql)?;
+    let code = code.trim_end();
+    let code = code.strip_suffix(';').unwrap_or(code);
+    let first = words(code).next()?;
+    if code.contains(';') || !EXPLAIN_KEYWORDS.contains(&first.as_str()) {
+        return None;
+    }
+    let sql = sql.trim_end();
+    Some(sql.strip_suffix(';').unwrap_or(sql))
+}
+
 /// How `sql` from the Query view changes the transaction state of the connection:
 /// `Some(true)` it opens one, `Some(false)` it ends it, `None` no change.
 /// Only `MySQL` needs this: it cannot tell if `BEGIN` ran. The last statement wins.
@@ -267,7 +285,9 @@ fn close(chars: &[char], mut index: usize, quote: char) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_options, is_model_id, is_read_only, parse_reply, transaction_change};
+    use super::{
+        check_options, explainable, is_model_id, is_read_only, parse_reply, transaction_change,
+    };
     use crate::model::AiOptions;
 
     #[test]
@@ -284,6 +304,20 @@ mod tests {
         assert!(check_options(&options(Some("--dangerously-skip-permissions"), None)).is_err());
         assert!(check_options(&options(None, Some("huge"))).is_err());
         assert!(check_options(&options(None, Some(""))).is_err());
+    }
+
+    #[test]
+    fn explain_takes_one_statement() {
+        assert_eq!(explainable("SELECT 1;  "), Some("SELECT 1"));
+        assert_eq!(
+            explainable("/* x */ delete from t where a = ';'"),
+            Some("/* x */ delete from t where a = ';'")
+        );
+        assert_eq!(explainable("SELECT 1; DELETE FROM t"), None);
+        assert_eq!(explainable("ANALYZE DELETE FROM t"), None);
+        assert_eq!(explainable("(ANALYZE) DELETE FROM t"), None);
+        assert_eq!(explainable("DROP TABLE t"), None);
+        assert_eq!(explainable("  "), None);
     }
 
     #[test]

@@ -30,8 +30,8 @@ pub use password::{Keychain, OsKeychain, PasswordRepository};
 pub use tunnel::SshTunnel;
 
 use crate::constants::{
-    CANCEL_NOT_REACHED, CONNECT_TIMEOUT_SECONDS, LOCALHOST, MAX_QUERY_ROWS, NO_USER_ACCOUNTS,
-    PASSWORD_ERROR_HIDDEN, PROCEDURE, TRIGGER,
+    CANCEL_NOT_REACHED, CONNECT_TIMEOUT_SECONDS, LOCALHOST, MAX_QUERY_ROWS, NO_PROCESSES,
+    NO_USER_ACCOUNTS, PASSWORD_ERROR_HIDDEN, PROCEDURE, TRIGGER,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -215,6 +215,18 @@ pub trait Repository: Send + Sync {
         Err(NO_USER_ACCOUNTS.into())
     }
 
+    /// The SQL that lists the connections of the server. It gives these columns in this
+    /// order: id, user, host, database, state, seconds, query, current (1 or 0).
+    fn processes_sql(&self) -> AppResult<&'static str> {
+        Err(NO_PROCESSES.into())
+    }
+
+    /// The SQL that stops process `id`. With `query_only` it stops only the running
+    /// statement and the connection stays open.
+    fn kill_sql(&self, _id: i64, _query_only: bool) -> AppResult<String> {
+        Err(NO_PROCESSES.into())
+    }
+
     /// The statement that deletes all rows of a table. `table` is already quoted.
     fn truncate_sql(&self, table: &str) -> String {
         format!("TRUNCATE TABLE {table}")
@@ -278,6 +290,12 @@ pub trait Repository: Send + Sync {
         None
     }
 
+    /// The words in front of a statement that give its query plan without running it.
+    /// `None` when this database has no such words in the app.
+    fn explain_prefix(&self) -> Option<&'static str> {
+        None
+    }
+
     /// The words that make a primary key column number its rows itself.
     /// They go right after `PRIMARY KEY` in a `CREATE TABLE`.
     fn auto_increment(&self) -> &'static str;
@@ -328,6 +346,8 @@ impl RepositoryFactory {
                 _ => Arc::new(SshTunnel::open(ssh, &config.host, config.port).await?),
             };
             tunneled = config.clone();
+            // The certificate holds the real host name, not the local end of the tunnel.
+            tunneled.ssl.server_name.clone_from(&config.host);
             LOCALHOST.clone_into(&mut tunneled.host);
             tunneled.port = opened.local_port();
             tunnel = Some(opened);

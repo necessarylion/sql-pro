@@ -12,6 +12,18 @@ export interface ConnectionConfig {
   database: string
   /** Set to reach the database through an SSH server. Not used for sqlite. */
   ssh: SshConfig | null
+  /** Missing in connections saved before SSL support. Missing = `prefer`. Not used for sqlite. */
+  ssl?: SslConfig
+}
+
+export type SslMode = 'off' | 'prefer' | 'require' | 'verifyCa' | 'verifyFull'
+
+/** An empty path means "not set". SQL Server has no client certificate, so it ignores `certPath` and `keyPath`. */
+export interface SslConfig {
+  mode: SslMode
+  caPath: string
+  certPath: string
+  keyPath: string
 }
 
 /** `password` is the login password or the key passphrase. Empty = keys and agent only. */
@@ -148,7 +160,8 @@ export interface SaveResult {
   deleted: number
 }
 
-export type SessionView = 'structure' | 'content' | 'query' | 'ask' | 'users' | 'diagram'
+export type SessionView =
+  'structure' | 'content' | 'query' | 'ask' | 'users' | 'processes' | 'diagram'
 
 /** One reply of Claude Code in the Ask AI view. */
 export interface ClaudeReply {
@@ -390,4 +403,20 @@ export interface CsvImport {
   emptyIsNull: boolean
   /** The columns to fill. The others get their default. */
   columns: CsvColumn[]
+}
+
+/** One connection of the database server, with what it runs now. */
+export interface DbProcess {
+  /** MySQL connection id, PostgreSQL pid or SQL Server session id. */
+  id: number
+  user: string | null
+  /** The client host or address. */
+  host: string | null
+  database: string | null
+  state: string | null
+  /** How long it is in this state, in seconds. */
+  seconds: number | null
+  query: string | null
+  /** True for the connection of this tab. */
+  current: boolean
 }

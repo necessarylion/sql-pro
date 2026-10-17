@@ -23,6 +23,7 @@ import {
   SearchIcon,
   SparklesIcon,
   SquareFunctionIcon,
+  Trash2Icon,
   TableIcon,
   TablePropertiesIcon,
   TerminalIcon,
@@ -31,6 +32,7 @@ import {
   UsersIcon,
   WorkflowIcon,
   ZapIcon,
+  ActivityIcon,
 } from 'lucide-vue-next'
 import { OBJECT_KIND_LABELS, VIEW_LABELS } from '../constants'
 import {
@@ -47,6 +49,7 @@ import type { DbObject, DbObjectKind, SessionView, TableRef } from '../types'
 import AskAiView from './AskAiView.vue'
 import ContentView from './ContentView.vue'
 import ContextMenu from './ContextMenu.vue'
+import DatabaseDialog from './DatabaseDialog.vue'
 import DefinitionView from './DefinitionView.vue'
 import DiagramView from './DiagramView.vue'
 import EnvBadge from './EnvBadge.vue'
@@ -57,6 +60,7 @@ import QueryView from './QueryView.vue'
 import StructureView from './StructureView.vue'
 import TableDialog from './TableDialog.vue'
 import UsersView from './UsersView.vue'
+import ProcessesView from './ProcessesView.vue'
 
 const props = defineProps<{ session: Session }>()
 const manager = injectRequired(SESSION_MANAGER)
@@ -70,6 +74,7 @@ const VIEW_ICONS: Record<SessionView, Component> = {
   query: TerminalIcon,
   ask: SparklesIcon,
   users: UsersIcon,
+  processes: ActivityIcon,
   diagram: WorkflowIcon,
 }
 
@@ -99,6 +104,7 @@ const selection = reactive(new TableSelection())
 /** The submenu that is shown now, if any. */
 const submenu = ref<'export' | 'import' | null>(null)
 const tableDialog = useTemplateRef<InstanceType<typeof TableDialog>>('tableDialog')
+const databaseDialog = useTemplateRef<InstanceType<typeof DatabaseDialog>>('databaseDialog')
 const exportDialog = useTemplateRef<InstanceType<typeof ExportDialog>>('exportDialog')
 const importDialog = useTemplateRef<InstanceType<typeof ImportDialog>>('importDialog')
 const menuElement = ref<HTMLElement | null>(null)
@@ -536,6 +542,14 @@ function hasView(): boolean {
   return false
 }
 
+/** Users is only for an account that may manage users. SQLite has no server processes. */
+function showsView(view: SessionView): boolean {
+  if (view === 'users') {
+    return props.session.canManageUsers
+  }
+  return view !== 'processes' || props.session.config?.driver !== 'sqlite'
+}
+
 /** MySQL can be connected without a database. Then there is nothing to back up. */
 function hasNoDatabase(): boolean {
   return props.session.config?.driver === 'mysql' && props.session.config.database === ''
@@ -567,6 +581,19 @@ async function backup(): Promise<void> {
   }
 }
 
+/** Asks first, naming the database. Drops it only on yes. */
+async function dropDatabase(): Promise<void> {
+  const session = props.session
+  const name = session.config?.database ?? ''
+  const sure = await confirm(
+    `Drop database "${name}"? All its tables and data are deleted. This cannot be undone.`,
+    { title: 'Drop database', kind: 'warning' },
+  )
+  if (sure) {
+    await session.run(session.dropDatabase(name))
+  }
+}
+
 function changeDatabase(event: Event): void {
   props.session.run(switchDatabase(event.target as HTMLSelectElement))
 }
@@ -592,11 +619,23 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
         </select>
         <ChevronsUpDownIcon :size="11" />
       </div>
+      <div v-if="session.canChangeDatabases" class="database-actions">
+        <button class="icon" title="New database" @click="databaseDialog?.open()">
+          <PlusIcon :size="13" />
+        </button>
+        <button
+          class="icon"
+          :title="backupBlocked ? 'Choose a database first' : 'Drop this database'"
+          :disabled="backupBlocked"
+          @click="dropDatabase"
+        >
+          <Trash2Icon :size="13" />
+        </button>
+      </div>
       <div class="segmented">
         <template v-for="(text, view) in VIEW_LABELS" :key="view">
-          <!-- Users is only for an account that may manage users. -->
           <button
-            v-if="view !== 'users' || session.canManageUsers"
+            v-if="showsView(view)"
             :class="{ active: session.view === view }"
             @click="session.view = view"
           >
@@ -738,6 +777,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
         <template v-if="session.view !== 'query' && session.view !== 'ask'">
           <!-- The Users view needs no table. It has its own bottom bar for errors. -->
           <UsersView v-if="session.view === 'users'" :session="session" />
+          <ProcessesView v-else-if="session.view === 'processes'" :session="session" />
           <!-- The diagram shows all tables. It has its own bottom bar too. -->
           <DiagramView v-else-if="session.view === 'diagram'" :session="session" />
           <!-- No table is open, so no view with a bottom bar. Show the error or the status here. -->
@@ -895,6 +935,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
       </button>
     </ContextMenu>
     <TableDialog ref="tableDialog" :session="session" />
+    <DatabaseDialog ref="databaseDialog" :session="session" />
     <ExportDialog ref="exportDialog" :session="session" />
     <ImportDialog ref="importDialog" :session="session" />
   </div>
@@ -942,6 +983,14 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
   border: 1px solid var(--border);
   border-radius: 5px;
   color: var(--text-2);
+}
+
+/* Close to the select, so they read as its actions. */
+.database-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin-left: -6px;
 }
 
 .database svg {

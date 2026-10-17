@@ -122,6 +122,10 @@ impl Repository for SqliteRepository {
         "DEFAULT VALUES"
     }
 
+    fn explain_prefix(&self) -> Option<&'static str> {
+        Some("EXPLAIN QUERY PLAN")
+    }
+
     /// `SQLite` has no TRUNCATE. A DELETE without WHERE does the same.
     fn truncate_sql(&self, table: &str) -> String {
         format!("DELETE FROM {table}")

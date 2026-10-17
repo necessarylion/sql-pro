@@ -10,9 +10,9 @@ use tauri::State;
 use crate::error::AppResult;
 use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
-    ConnectionConfig, CsvImport, CsvPreview, DbObject, Diagram, ExportRequest, NewColumn,
-    NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult, TableKeys,
-    TablePage, TableRef, UserList, Values,
+    ConnectionConfig, CsvImport, CsvPreview, DbObject, DbProcess, Diagram, ExportRequest,
+    NewColumn, NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult,
+    TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::open_file::OpenedFiles;
 use crate::repository::PasswordRepository;
@@ -53,6 +53,24 @@ pub async fn list_databases(service: Service<'_>, id: String) -> AppResult<Vec<S
 }
 
 #[tauri::command]
+pub async fn create_database(
+    service: Service<'_>,
+    id: String,
+    name: String,
+    charset: String,
+    collation: String,
+) -> AppResult<()> {
+    service
+        .create_database(&id, &name, &charset, &collation)
+        .await
+}
+
+#[tauri::command]
+pub async fn drop_database(service: Service<'_>, id: String, name: String) -> AppResult<()> {
+    service.drop_database(&id, &name).await
+}
+
+#[tauri::command]
 pub async fn list_tables(service: Service<'_>, id: String) -> AppResult<Vec<TableRef>> {
     service.tables(&id).await
 }
@@ -69,6 +87,12 @@ pub async fn browse(
 #[tauri::command]
 pub async fn run_query(service: Service<'_>, id: String, sql: String) -> AppResult<Vec<ResultSet>> {
     service.run_query(&id, &sql).await
+}
+
+/// Gives the query plan of one statement without running it.
+#[tauri::command]
+pub async fn explain(service: Service<'_>, id: String, sql: String) -> AppResult<Vec<ResultSet>> {
+    service.explain(&id, &sql).await
 }
 
 /// Runs at the same time as the query it stops. Tauri runs async commands side by side.
@@ -358,6 +382,22 @@ pub async fn write_text_file(path: PathBuf, text: String) -> AppResult<()> {
 #[tauri::command]
 pub async fn list_users(service: Service<'_>, id: String) -> AppResult<UserList> {
     service.list_users(&id).await
+}
+
+#[tauri::command]
+pub async fn list_processes(service: Service<'_>, id: String) -> AppResult<Vec<DbProcess>> {
+    service.list_processes(&id).await
+}
+
+/// `process` arrives as a number, so text cannot reach the SQL.
+#[tauri::command]
+pub async fn kill_process(
+    service: Service<'_>,
+    id: String,
+    process: i64,
+    query_only: bool,
+) -> AppResult<()> {
+    service.kill_process(&id, process, query_only).await
 }
 
 #[tauri::command]

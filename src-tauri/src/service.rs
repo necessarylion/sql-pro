@@ -4,6 +4,7 @@ mod attachment;
 mod claude;
 mod export;
 mod import;
+mod processes;
 mod spare;
 
 use std::collections::HashMap;
@@ -15,9 +16,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::Mutex;
 
 use crate::constants::{
-    AI_IMAGE_MAX_BYTES, ANY_HOST, CANNOT_MANAGE_USERS, CLAUDE_READ_ONLY_NOTE, LIKE_ESCAPE,
-    LOCALHOST, MAX_QUERY_ROWS, MSSQL_NO_USER_ACCOUNTS, NO_USER_ACCOUNTS, NOT_A_READ,
-    OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, VIEW,
+    AI_IMAGE_MAX_BYTES, ANY_HOST, CANNOT_MANAGE_USERS, CHARSET_ONLY_MYSQL, CLAUDE_READ_ONLY_NOTE,
+    DROP_CURRENT_DATABASE, EXPLAIN_ONE_STATEMENT, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS,
+    MSSQL_NO_USER_ACCOUNTS, NO_EXPLAIN, NO_USER_ACCOUNTS, NOT_A_READ, OPEN_TRANSACTION,
+    PRIMARY_KEY_NOT_DROPPED, SQLITE_NO_DATABASES, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -151,6 +153,82 @@ impl ConnectionService {
         self.repository(id)?.databases().await
     }
 
+    /// Creates a database on the server. `charset` and `collation` are only for `MySQL`.
+    /// Empty ones are left out, so the server picks its defaults.
+    pub async fn create_database(
+        &self,
+        id: &str,
+        name: &str,
+        charset: &str,
+        collation: &str,
+    ) -> AppResult<()> {
+        let connection = self.connection(id)?;
+        let name = Self::database_name(&connection.config, name)?;
+        let repository = connection.repository.as_ref();
+        let mut sql = format!("CREATE DATABASE {}", repository.quote(name));
+        let (charset, collation) = (charset.trim(), collation.trim());
+        if connection.config.driver != Driver::Mysql
+            && !(charset.is_empty() && collation.is_empty())
+        {
+            return Err(CHARSET_ONLY_MYSQL.into());
+        }
+        // MySQL takes both names as text values, so they are written as literals.
+        if !charset.is_empty() {
+            sql.push_str(" CHARACTER SET ");
+            sql.push_str(&repository.literal(charset));
+        }
+        if !collation.is_empty() {
+            sql.push_str(" COLLATE ");
+            sql.push_str(&repository.literal(collation));
+        }
+        repository.query(&sql).await?;
+        Ok(())
+    }
+
+    /// Drops a database of the server, but never the one this tab uses.
+    /// `PostgreSQL` and SQL Server cannot drop a database that has a connection,
+    /// so the tab must switch to another database first.
+    pub async fn drop_database(&self, id: &str, name: &str) -> AppResult<()> {
+        let connection = self.connection(id)?;
+        let name = Self::database_name(&connection.config, name)?;
+        if name == connection.config.database {
+            return Err(DROP_CURRENT_DATABASE.into());
+        }
+        let repository = connection.repository.as_ref();
+        if !repository
+            .databases()
+            .await?
+            .iter()
+            .any(|known| known == name)
+        {
+            return Err(AppError::Message(format!("Unknown database: {name}")));
+        }
+        // The spare may still be open on this database. Then the server would refuse.
+        // ponytail: a spare that is opening right now is not closed. A retry then works.
+        connection.spare.discard().await;
+        let result = repository
+            .query(&format!("DROP DATABASE {}", repository.quote(name)))
+            .await;
+        connection.spare.refill(
+            self.factory,
+            connection.config.clone(),
+            connection.tunnel.clone(),
+        );
+        result.map(drop)
+    }
+
+    /// The trimmed name of a database to create or drop. `SQLite` has no databases.
+    fn database_name<'name>(config: &ConnectionConfig, name: &'name str) -> AppResult<&'name str> {
+        if config.driver == Driver::Sqlite {
+            return Err(SQLITE_NO_DATABASES.into());
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("The database needs a name".into());
+        }
+        Ok(name)
+    }
+
     pub async fn tables(&self, id: &str) -> AppResult<Vec<TableRef>> {
         self.repository(id)?.tables().await
     }
@@ -168,6 +246,14 @@ impl ConnectionService {
             _ => {}
         }
         result
+    }
+
+    /// Gives the query plan of one statement. The statement itself never runs.
+    pub async fn explain(&self, id: &str, sql: &str) -> AppResult<Vec<ResultSet>> {
+        let repository = self.repository(id)?;
+        let prefix = repository.explain_prefix().ok_or(NO_EXPLAIN)?;
+        let statement = claude::explainable(sql).ok_or(EXPLAIN_ONE_STATEMENT)?;
+        repository.query(&format!("{prefix} {statement}")).await
     }
 
     /// True when SQL only reads, by the same check that Ask AI uses.
@@ -1368,6 +1454,7 @@ mod tests {
             password: String::new(),
             database: path.to_string_lossy().into_owned(),
             ssh: None,
+            ssl: crate::model::SslConfig::default(),
         };
         let service = ConnectionService::new(RepositoryFactory);
         service
@@ -1416,6 +1503,7 @@ mod tests {
             password: String::new(),
             database: path.to_string_lossy().into_owned(),
             ssh: None,
+            ssl: crate::model::SslConfig::default(),
         };
         let service = ConnectionService::new(RepositoryFactory);
         service.test_connection(&config).await.expect("test");
@@ -1445,6 +1533,7 @@ mod tests {
             password: String::new(),
             database: path.to_string_lossy().into_owned(),
             ssh: None,
+            ssl: crate::model::SslConfig::default(),
         };
         let service = ConnectionService::new(RepositoryFactory);
         service
