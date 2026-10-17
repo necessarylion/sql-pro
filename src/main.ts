@@ -13,6 +13,7 @@ import { DiscardPrompt } from './services/DiscardPrompt'
 import {
   AI_STORE,
   CHAT_FORMATTER,
+  COLUMN_ORDERS,
   FILE_DROP,
   CONNECTION_TRANSFER,
   DIAGRAM_LAYOUTS,
@@ -25,6 +26,7 @@ import {
   THEME_SERVICE,
   ZOOM_SERVICE,
 } from './services/keys'
+import { ColumnOrderStore } from './services/ColumnOrderStore'
 import { LayoutService } from './services/LayoutService'
 import { PinnedTables } from './services/PinnedTables'
 import { ProfileStorage } from './services/ProfileStorage'
@@ -76,6 +78,7 @@ createApp(App)
   .provide(QUERY_HISTORY, queryHistory)
   .provide(DIAGRAM_LAYOUTS, new DiagramLayoutStore(storage))
   .provide(PINNED_TABLES, pinnedTables)
+  .provide(COLUMN_ORDERS, new ColumnOrderStore(storage))
   .provide(CHAT_FORMATTER, new ChatFormatter())
   .provide(FILE_DROP, new FileDrop())
   .provide(AI_STORE, reactive(new AiStore(storage)) as AiStore)
