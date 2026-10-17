@@ -232,6 +232,19 @@ pub const AI_FILE_TYPES: &str = "Only PNG, JPEG and WebP images and CSV files ca
 /// The error when SQL that is not a read is sent to the read-only path.
 pub const NOT_A_READ: &str = "This SQL is not a read, so it cannot run as one.";
 
+/// The first words of a statement that Explain takes. Anything else is refused,
+/// so `ANALYZE` (which runs the statement) can never come first.
+pub const EXPLAIN_KEYWORDS: [&str; 9] = [
+    "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "REPLACE", "VALUES", "TABLE", "MERGE",
+];
+
+/// The error when Explain gets text that is not one plain statement.
+pub const EXPLAIN_ONE_STATEMENT: &str =
+    "Explain takes one SELECT, INSERT, UPDATE or DELETE statement.";
+
+/// The error when the database has no Explain in this app.
+pub const NO_EXPLAIN: &str = "Explain is not available for this database.";
+
 /// The error when the Claude Code CLI cannot be found.
 pub const CLAUDE_NOT_FOUND: &str = "Claude Code is not installed. Install it from https://claude.com/claude-code, then run `claude` once in a terminal to log in.";
 

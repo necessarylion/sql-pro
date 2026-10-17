@@ -1606,6 +1606,25 @@ async fn custom_sql(service: &ConnectionService) {
     assert!(service.run_query(ID, "SELEC nonsense").await.is_err());
 }
 
+/// Explain gives a plan and never runs the statement. More than one statement,
+/// or `ANALYZE` in front, is refused.
+async fn explain(service: &ConnectionService, table: &TableRef, driver: Driver) {
+    let delete = format!("DELETE FROM {TABLE} WHERE id > 0;");
+    let plan = service.explain(ID, &delete).await;
+    if driver == Driver::Mssql {
+        assert!(plan.is_err());
+        return;
+    }
+    let before = page(service, table).await.total;
+    assert_ne!(plan.expect("plan")[0].rows.len(), 0);
+    assert_eq!(page(service, table).await.total, before);
+    let two = format!("SELECT 1; DELETE FROM {TABLE}");
+    assert!(service.explain(ID, &two).await.is_err());
+    let analyze = format!("ANALYZE DELETE FROM {TABLE}");
+    assert!(service.explain(ID, &analyze).await.is_err());
+    assert_eq!(page(service, table).await.total, before);
+}
+
 /// Every SQL Server type comes back as the text SQL Server itself writes.
 /// Types the driver cannot read still show when a table is browsed.
 async fn mssql_types(service: &ConnectionService) {
@@ -1858,6 +1877,7 @@ async fn exercise(config: ConnectionConfig) {
     save_image();
 
     custom_sql(&service).await;
+    explain(&service, &table, driver).await;
     if driver == Driver::Mssql {
         mssql_types(&service).await;
     }

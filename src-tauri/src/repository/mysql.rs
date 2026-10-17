@@ -407,6 +407,10 @@ impl Repository for MysqlRepository {
         "() VALUES ()"
     }
 
+    fn explain_prefix(&self) -> Option<&'static str> {
+        Some("EXPLAIN")
+    }
+
     fn rename_table_sql(&self, table: &TableRef, new_name: &str) -> String {
         format!(
             "RENAME TABLE {} TO {}",

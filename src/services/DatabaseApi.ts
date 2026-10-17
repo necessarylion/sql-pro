@@ -80,6 +80,11 @@ export class DatabaseApi {
     return invoke('run_query', { id, sql })
   }
 
+  /** The query plan of one statement. The backend never runs the statement itself. */
+  explain(id: string, sql: string): Promise<ResultSet[]> {
+    return invoke('explain', { id, sql })
+  }
+
   /**
    * Sends a message to Claude about the database of connection `id`.
    * With no `sessionId`, a new conversation starts with the tables of the database.

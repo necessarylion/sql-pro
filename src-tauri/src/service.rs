@@ -15,9 +15,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use parking_lot::Mutex;
 
 use crate::constants::{
-    AI_IMAGE_MAX_BYTES, ANY_HOST, CANNOT_MANAGE_USERS, CLAUDE_READ_ONLY_NOTE, LIKE_ESCAPE,
-    LOCALHOST, MAX_QUERY_ROWS, MSSQL_NO_USER_ACCOUNTS, NO_USER_ACCOUNTS, NOT_A_READ,
-    OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, VIEW,
+    AI_IMAGE_MAX_BYTES, ANY_HOST, CANNOT_MANAGE_USERS, CLAUDE_READ_ONLY_NOTE,
+    EXPLAIN_ONE_STATEMENT, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS, MSSQL_NO_USER_ACCOUNTS,
+    NO_EXPLAIN, NO_USER_ACCOUNTS, NOT_A_READ, OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -168,6 +168,14 @@ impl ConnectionService {
             _ => {}
         }
         result
+    }
+
+    /// Gives the query plan of one statement. The statement itself never runs.
+    pub async fn explain(&self, id: &str, sql: &str) -> AppResult<Vec<ResultSet>> {
+        let repository = self.repository(id)?;
+        let prefix = repository.explain_prefix().ok_or(NO_EXPLAIN)?;
+        let statement = claude::explainable(sql).ok_or(EXPLAIN_ONE_STATEMENT)?;
+        repository.query(&format!("{prefix} {statement}")).await
     }
 
     /// True when SQL only reads, by the same check that Ask AI uses.

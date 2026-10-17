@@ -317,6 +317,10 @@ impl Repository for PostgresRepository {
         "DEFAULT VALUES"
     }
 
+    fn explain_prefix(&self) -> Option<&'static str> {
+        Some("EXPLAIN")
+    }
+
     // ponytail: identity columns need PostgreSQL 10. Use SERIAL if older servers must work.
     /// Inside a transaction block `now()` is the start of the transaction. On its own,
     /// a statement is its own transaction, so `now()` equals the statement time.

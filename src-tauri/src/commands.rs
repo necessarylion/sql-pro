@@ -71,6 +71,12 @@ pub async fn run_query(service: Service<'_>, id: String, sql: String) -> AppResu
     service.run_query(&id, &sql).await
 }
 
+/// Gives the query plan of one statement without running it.
+#[tauri::command]
+pub async fn explain(service: Service<'_>, id: String, sql: String) -> AppResult<Vec<ResultSet>> {
+    service.explain(&id, &sql).await
+}
+
 /// Runs at the same time as the query it stops. Tauri runs async commands side by side.
 #[tauri::command]
 pub async fn cancel_query(service: Service<'_>, id: String) -> AppResult<()> {
