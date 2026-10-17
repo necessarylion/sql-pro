@@ -146,6 +146,8 @@ export const GRID_ROW_BUFFER = 20
 
 /** A column of the grid cannot be dragged narrower than this, in pixels. */
 export const COLUMN_MIN_WIDTH = 40
+/** How far, in pixels, a header press must go before it moves the column. A shorter one is a click. */
+export const COLUMN_MOVE_THRESHOLD = 4
 
 /** The title of the question that is asked before unsaved changes are lost. */
 export const UNSAVED_TITLE = 'Unsaved changes'

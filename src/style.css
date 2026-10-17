@@ -99,6 +99,14 @@
   user-select: none !important;
 }
 
+/* On while a grid column is dragged to a new place. */
+:root.moving-column,
+:root.moving-column * {
+  cursor: grabbing !important;
+  -webkit-user-select: none !important;
+  user-select: none !important;
+}
+
 /* The light look. Set data-theme="light" on <html> to use it. */
 :root[data-theme='light'] {
   color-scheme: light;

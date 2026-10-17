@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import {
   computed,
+  inject,
   nextTick,
   onBeforeUnmount,
   onMounted,
+  reactive,
   ref,
   useTemplateRef,
   watch,
@@ -14,11 +16,13 @@ import {
   BINARY_TYPE_PATTERN,
   CELL_PREVIEW_LENGTH,
   COLUMN_MIN_WIDTH,
+  COLUMN_MOVE_THRESHOLD,
   GRID_ROW_BUFFER,
   GRID_ROW_HEIGHT,
   NUMERIC_TYPE_PATTERN,
 } from '../constants'
-import { injectRequired, SHORTCUTS } from '../services/keys'
+import { ColumnOrder } from '../services/ColumnOrder'
+import { COLUMN_ORDERS, injectRequired, SHORTCUTS } from '../services/keys'
 import { TableSelection } from '../services/TableSelection'
 import type { GridColumn, Row } from '../types'
 
@@ -37,6 +41,8 @@ const props = defineProps<{
   changed?: Record<number, number[]>
   /** The row numbers that are marked as deleted. They are crossed out and cannot be edited. */
   deleted?: number[]
+  /** Give this to save the dragged column order under this table key. See ColumnOrderStore. */
+  orderKey?: string
 }>()
 
 const emit = defineEmits<{
@@ -86,6 +92,26 @@ const resizing = ref('')
 // A drag can end with a click on the header. That click must not sort.
 let skipSort = false
 const columnStyles = computed(stylesOfColumns)
+
+// The columns can be dragged to a new place on screen, for example to compare two columns.
+// Display only: edits, selection and export use the data column numbers.
+const columnOrder = reactive(new ColumnOrder())
+const orderStore = inject(COLUMN_ORDERS, null)
+/** The data column numbers in shown order. */
+const shown = computed(shownColumns)
+/** The data column of the header press, and the x where the press started. */
+let pressColumn: number | null = null
+let pressX = 0
+/** The data column that is being moved. A press becomes a move only after a few pixels. */
+const moving = ref<number | null>(null)
+/** The header the moved column would drop next to, and on which side. */
+const dropTarget = ref<{ column: number; after: boolean } | null>(null)
+// A floating copy of the moved column follows the mouse. Its box is set once when the move
+// starts. Each mouse move only changes its transform, in the next animation frame.
+const ghost = useTemplateRef<HTMLElement>('ghost')
+const ghostBox = ref<CSSProperties>({})
+let ghostShift = 0
+let ghostFrame = 0
 // Sets, so each row finds out in one step if it is selected or deleted.
 const selectedSet = computed(setOfSelected)
 const deletedSet = computed(setOfDeleted)
@@ -108,10 +134,12 @@ let resizeObserver: ResizeObserver | null = null
 onMounted(watchSize)
 onBeforeUnmount(unwatchSize)
 
-// Another table or another query result starts with automatic widths.
-watch(columnNames, resetWidths)
+// Another table or another query result starts with automatic widths and the data order,
+// or the saved order of that table.
+watch(columnsAndKey, resetColumns, { immediate: true })
 // The grid can go away in the middle of a drag.
 onBeforeUnmount(stopResize)
+onBeforeUnmount(cancelMove)
 
 function watchSize(): void {
   if (grid.value) {
@@ -192,8 +220,139 @@ function columnNames(): string {
   return names.join('\n')
 }
 
-function resetWidths(): void {
+function columnsAndKey(): string {
+  return `${props.orderKey ?? ''}\n${columnNames()}`
+}
+
+/** The column names in data order. */
+function dataNames(): string[] {
+  const names: string[] = []
+  for (const column of props.columns) {
+    names.push(column.name)
+  }
+  return names
+}
+
+function resetColumns(): void {
   widths.value = {}
+  columnOrder.reset()
+  if (props.orderKey && orderStore) {
+    columnOrder.restore(dataNames(), orderStore.load(props.orderKey))
+  }
+}
+
+/** Saves the shown order of a real table. Other grids have no key and save nothing. */
+function saveOrder(): void {
+  if (props.orderKey && orderStore) {
+    const names = dataNames()
+    const shownNames: string[] = []
+    for (const index of shown.value) {
+      shownNames.push(names[index])
+    }
+    orderStore.save(props.orderKey, shownNames, names)
+  }
+}
+
+function shownColumns(): number[] {
+  return columnOrder.shown(props.columns.length)
+}
+
+/** A press on a header can start a column move. The resize handle has its own drag. */
+function startMove(event: PointerEvent, column: number): void {
+  if ((event.target as HTMLElement).closest('.resizer')) {
+    return
+  }
+  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+  pressColumn = column
+  pressX = event.clientX
+}
+
+/**
+ * The capture sends all moves to the pressed header. The drop target is the header
+ * under the mouse. The mouse on its left half drops before it, on its right half after it.
+ */
+function moveColumn(event: PointerEvent): void {
+  if (pressColumn === null) {
+    return
+  }
+  if (moving.value === null) {
+    if (Math.abs(event.clientX - pressX) < COLUMN_MOVE_THRESHOLD) {
+      return
+    }
+    showGhost(event.currentTarget as HTMLElement, pressColumn)
+  }
+  ghostShift = event.clientX - pressX
+  if (!ghostFrame) {
+    ghostFrame = requestAnimationFrame(placeGhost)
+  }
+  const cells = (event.currentTarget as HTMLElement).parentElement?.children ?? []
+  for (const cell of cells) {
+    const column = (cell as HTMLElement).dataset.column
+    const box = cell.getBoundingClientRect()
+    if (column !== undefined && event.clientX >= box.left && event.clientX < box.right) {
+      setDropTarget(Number(column), event.clientX > box.left + box.width / 2)
+    }
+  }
+}
+
+/** The ghost starts over the header of the moved column, as tall as the visible grid. */
+function showGhost(header: HTMLElement, column: number): void {
+  const head = header.getBoundingClientRect()
+  const box = grid.value?.getBoundingClientRect()
+  ghostShift = 0
+  ghostBox.value = {
+    left: `${head.left}px`,
+    top: `${box?.top ?? head.top}px`,
+    width: `${head.width}px`,
+    height: `${grid.value?.clientHeight ?? 0}px`,
+  }
+  moving.value = column
+  document.documentElement.classList.add('moving-column')
+}
+
+function placeGhost(): void {
+  ghostFrame = 0
+  if (ghost.value) {
+    ghost.value.style.transform = `translateX(${ghostShift}px)`
+  }
+}
+
+/** Changes the target only when it really changes, so a mouse move draws nothing new. */
+function setDropTarget(target: number, after: boolean): void {
+  if (target === moving.value) {
+    dropTarget.value = null
+  } else if (dropTarget.value?.column !== target || dropTarget.value.after !== after) {
+    dropTarget.value = { column: target, after }
+  }
+}
+
+/** Ends the press. A real move puts the column in its new place, and the click after it must not sort. */
+function endMove(): void {
+  if (moving.value !== null && dropTarget.value) {
+    const { column, after } = dropTarget.value
+    columnOrder.move(props.columns.length, moving.value, column, after)
+    saveOrder()
+  }
+  if (moving.value !== null) {
+    skipSort = true
+  }
+  cancelMove()
+}
+
+function cancelMove(): void {
+  pressColumn = null
+  moving.value = null
+  dropTarget.value = null
+  cancelAnimationFrame(ghostFrame)
+  ghostFrame = 0
+  document.documentElement.classList.remove('moving-column')
+}
+
+function dropSide(column: number): string {
+  if (dropTarget.value?.column !== column) {
+    return ''
+  }
+  return dropTarget.value.after ? 'drop-after' : 'drop-before'
 }
 
 /** One style per column. All three are needed: a table cell ignores `width` alone. */
@@ -276,6 +435,8 @@ function rowMemo(row: Row, rowIndex: number): unknown[] {
     edited ? text.value : '',
     props.columns,
     columnStyles.value,
+    shown.value,
+    moving.value,
   ]
 }
 
@@ -496,31 +657,47 @@ function onEnter(event: KeyboardEvent): void {
       <thead>
         <tr @pointerdown="allowSort">
           <th
-            v-for="(column, columnIndex) in columns"
+            v-for="columnIndex in shown"
             :key="columnIndex"
-            :class="{ sortable: orderBy !== undefined, numeric: isNumeric(columnIndex) }"
+            :data-column="columnIndex"
+            :class="[
+              {
+                sortable: orderBy !== undefined,
+                numeric: isNumeric(columnIndex),
+                moving: moving === columnIndex,
+              },
+              dropSide(columnIndex),
+            ]"
             :style="columnStyles[columnIndex]"
-            :title="column.type"
-            @click="sort(column.name)"
+            :title="columns[columnIndex].type"
+            @pointerdown.left="startMove($event, columnIndex)"
+            @pointermove="moveColumn"
+            @pointerup="endMove"
+            @pointercancel="cancelMove"
+            @click="sort(columns[columnIndex].name)"
           >
             <span class="head">
-              <KeyRoundIcon v-if="keyColumns?.includes(column.name)" class="key" :size="10" />
-              {{ column.name }}
-              <template v-if="column.name === orderBy">
+              <KeyRoundIcon
+                v-if="keyColumns?.includes(columns[columnIndex].name)"
+                class="key"
+                :size="10"
+              />
+              {{ columns[columnIndex].name }}
+              <template v-if="columns[columnIndex].name === orderBy">
                 <ChevronDownIcon v-if="descending" :size="10" />
                 <ChevronUpIcon v-else :size="10" />
               </template>
             </span>
             <span
               class="resizer"
-              :class="{ dragging: resizing === column.name }"
+              :class="{ dragging: resizing === columns[columnIndex].name }"
               title="Drag to resize. Double click to reset."
-              @pointerdown.left="startResize($event, column.name)"
+              @pointerdown.left="startResize($event, columns[columnIndex].name)"
               @pointermove="resize"
               @pointerup="stopResize"
               @pointercancel="stopResize"
               @click.stop
-              @dblclick.stop="resetWidth(column.name)"
+              @dblclick.stop="resetWidth(columns[columnIndex].name)"
             />
           </th>
           <th class="filler" />
@@ -528,7 +705,7 @@ function onEnter(event: KeyboardEvent): void {
       </thead>
       <tbody>
         <tr class="sizer" aria-hidden="true">
-          <td v-for="(value, columnIndex) in widest" :key="columnIndex">{{ value }}</td>
+          <td v-for="columnIndex in shown" :key="columnIndex">{{ widest[columnIndex] }}</td>
           <td class="filler" />
         </tr>
         <tr v-if="start > 0" class="spacer">
@@ -549,12 +726,13 @@ function onEnter(event: KeyboardEvent): void {
           @contextmenu="openMenu(rowIndex, $event)"
         >
           <td
-            v-for="(value, columnIndex) in rows[rowIndex]"
+            v-for="columnIndex in shown"
             :key="columnIndex"
             :class="{
               editing: isEditing(rowIndex, columnIndex),
               numeric: isNumeric(columnIndex),
               modified: isChanged(rowIndex, columnIndex),
+              moving: moving === columnIndex,
             }"
             :style="columnStyles[columnIndex]"
             @dblclick="startEdit(rowIndex, columnIndex)"
@@ -579,8 +757,8 @@ function onEnter(event: KeyboardEvent): void {
                 NULL
               </button>
             </div>
-            <span v-else-if="value === null" class="null">NULL</span>
-            <template v-else>{{ preview(value) }}</template>
+            <span v-else-if="rows[rowIndex][columnIndex] === null" class="null">NULL</span>
+            <template v-else>{{ preview(rows[rowIndex][columnIndex] ?? '') }}</template>
           </td>
           <td class="filler" />
         </tr>
@@ -592,6 +770,22 @@ function onEnter(event: KeyboardEvent): void {
         </tr>
       </tbody>
     </table>
+    <!-- The floating copy of the moved column: its header and its drawn cells. -->
+    <div v-if="moving !== null" ref="ghost" class="ghost" :style="ghostBox" aria-hidden="true">
+      <div class="ghost-head">{{ columns[moving].name }}</div>
+      <div class="ghost-body">
+        <div
+          class="ghost-rows"
+          :class="{ numeric: isNumeric(moving) }"
+          :style="{ transform: `translateY(${start * GRID_ROW_HEIGHT - scrollTop}px)` }"
+        >
+          <div v-for="rowIndex in drawnRows" :key="rowIndex" class="ghost-cell">
+            <span v-if="rows[rowIndex][moving] === null" class="null">NULL</span>
+            <template v-else>{{ preview(rows[rowIndex][moving] ?? '') }}</template>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -653,6 +847,20 @@ th::after {
 
 th.sortable {
   cursor: pointer;
+}
+
+/* The column that is being moved stays dim in its old place. A thin line shows where it will drop. */
+th.moving,
+td.moving {
+  opacity: 0.35;
+}
+
+th.drop-before {
+  box-shadow: inset 2px 0 var(--accent);
+}
+
+th.drop-after {
+  box-shadow: inset -2px 0 var(--accent);
 }
 
 /* The drag handle on the right edge of a header cell. */
@@ -825,6 +1033,63 @@ textarea {
   text-align: left;
   resize: none;
   field-sizing: content;
+}
+
+/*
+  The floating copy of the moved column. Fixed, so it stays over the visible grid
+  while the grid scrolls under it. It never takes the mouse.
+*/
+.ghost {
+  position: fixed;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  background: var(--bg);
+  box-shadow: var(--popover-shadow);
+  opacity: 0.85;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.ghost-head {
+  flex: none;
+  height: 28px;
+  padding: 0 8px;
+  overflow: hidden;
+  background: var(--header);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-weight: 600;
+  line-height: 28px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ghost-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ghost-cell {
+  height: 23px;
+  padding: 0 8px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  line-height: 23px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ghost-cell:nth-child(even) {
+  background: var(--row-alt);
+}
+
+.ghost-rows.numeric .ghost-cell {
+  text-align: right;
 }
 
 /* The button stands after the text, so it never covers it. */

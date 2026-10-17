@@ -1,6 +1,7 @@
 import { inject, type InjectionKey } from 'vue'
 import type { AiStore } from './AiStore'
 import type { ChatFormatter } from './ChatFormatter'
+import type { ColumnOrderStore } from './ColumnOrderStore'
 import type { FileDrop } from './FileDrop'
 import type { ConnectionTransfer } from './ConnectionTransfer'
 import type { DiagramLayoutStore } from './DiagramLayoutStore'
@@ -27,6 +28,7 @@ export const AI_STORE: InjectionKey<AiStore> = Symbol('AiStore')
 export const CHAT_FORMATTER: InjectionKey<ChatFormatter> = Symbol('ChatFormatter')
 export const FILE_DROP: InjectionKey<FileDrop> = Symbol('FileDrop')
 export const PINNED_TABLES: InjectionKey<PinnedTables> = Symbol('PinnedTables')
+export const COLUMN_ORDERS: InjectionKey<ColumnOrderStore> = Symbol('ColumnOrderStore')
 
 /** Like `inject`, but fails loudly when main.ts did not provide the object. */
 export function injectRequired<T>(key: InjectionKey<T>): T {

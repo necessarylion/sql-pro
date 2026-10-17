@@ -12,7 +12,7 @@ import {
   Undo2Icon,
 } from 'lucide-vue-next'
 import { PAGE_SIZE } from '../constants'
-import { LAYOUT_SERVICE, SHORTCUTS, injectRequired } from '../services/keys'
+import { COLUMN_ORDERS, LAYOUT_SERVICE, SHORTCUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
 import type { GridColumn, Row, TablePage } from '../types'
 import BottomBar from './BottomBar.vue'
@@ -25,6 +25,7 @@ import RowDetail from './RowDetail.vue'
 const props = defineProps<{ session: Session }>()
 const shortcuts = injectRequired(SHORTCUTS)
 const layout = injectRequired(LAYOUT_SERVICE)
+const columnOrders = injectRequired(COLUMN_ORDERS)
 
 const selected = ref<number[]>([])
 // Where the export menu is open. null = closed.
@@ -32,6 +33,8 @@ const selected = ref<number[]>([])
 const menu = ref<{ x: number; y: number; row: number } | null>(null)
 
 const gridColumns = computed(toGridColumns)
+// The dragged column order of this table is saved under this key.
+const orderKey = computed(columnOrderKey)
 const rangeText = computed(describeRange)
 const pageText = computed(describePage)
 const keyColumns = computed(primaryKeyNames)
@@ -70,6 +73,11 @@ function changedOfSession(): Record<number, number[]> {
 
 function deletedOfSession(): number[] {
   return props.session.deletedRows
+}
+
+function columnOrderKey(): string | undefined {
+  const { config, table } = props.session
+  return config && table ? columnOrders.key(config, table) : undefined
 }
 
 function toGridColumns(): GridColumn[] {
@@ -216,6 +224,7 @@ function deleteSelected(): void {
       :changed="changedCells"
       :deleted="deletedRows"
       :key-columns="keyColumns"
+      :order-key="orderKey"
       @sort="session.run(session.sort($event))"
       @edit="edit"
       @menu="openMenu"
