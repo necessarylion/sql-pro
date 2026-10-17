@@ -23,7 +23,7 @@ use crate::constants::QUERY_CANCELLED;
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, ForeignKey, IndexInfo, Relation, ResultSet,
-    TableRef,
+    SslMode, TableRef,
 };
 
 /// The schema a name without a schema lands in.
@@ -132,11 +132,10 @@ impl MssqlRepository {
     /// The driver only reads its settings from a URL. Every part is escaped, so a
     /// password with `@` or `/` still works. The URL is never logged or shown.
     ///
-    /// The traffic is encrypted, but the certificate of the server is not checked.
-    /// That is what the app does for `MySQL` and `PostgreSQL` too, and most servers
-    /// have a self-signed certificate.
-    // ponytail: no setting to check the certificate. Add one to the connection
-    // form (`trust_server_certificate=false`) when users need it.
+    /// By default the traffic is encrypted, but the certificate of the server is not
+    /// checked, because most servers have a self-signed certificate. `Prefer` and
+    /// `Require` both mean that. `Off` encrypts only the login, like `Encrypt=false`
+    /// in other SQL Server clients. The driver has no client certificate option.
     fn url(config: &ConnectionConfig) -> String {
         let host = if config.host.contains(':') {
             format!("[{}]", config.host)
@@ -150,7 +149,30 @@ impl MssqlRepository {
             config.port
         );
         url.extend(utf8_percent_encode(&config.database, NON_ALPHANUMERIC));
-        url.push_str("?encrypt=mandatory&trust_server_certificate=true");
+        let ssl = &config.ssl;
+        let (encrypt, trust) = match ssl.mode {
+            SslMode::Off => ("optional", "true"),
+            SslMode::Prefer | SslMode::Require => ("mandatory", "true"),
+            SslMode::VerifyCa | SslMode::VerifyFull => ("mandatory", "false"),
+        };
+        url.push_str("?encrypt=");
+        url.push_str(encrypt);
+        url.push_str("&trust_server_certificate=");
+        url.push_str(trust);
+        if trust == "false" && !ssl.ca_path.is_empty() {
+            url.push_str("&ssl-ca=");
+            url.extend(utf8_percent_encode(&ssl.ca_path, NON_ALPHANUMERIC));
+        }
+        // The driver checks the host name only when this is set.
+        if ssl.mode == SslMode::VerifyFull {
+            let name = if ssl.server_name.is_empty() {
+                &config.host
+            } else {
+                &ssl.server_name
+            };
+            url.push_str("&hostname_in_certificate=");
+            url.extend(utf8_percent_encode(name, NON_ALPHANUMERIC));
+        }
         url
     }
 
@@ -662,7 +684,7 @@ impl Repository for MssqlRepository {
 
 #[cfg(test)]
 mod tests {
-    use super::MssqlRepository;
+    use super::{MssqlRepository, SslMode};
 
     #[test]
     fn decimals_keep_their_scale() {
@@ -706,11 +728,44 @@ mod tests {
             password: "p@ss/w:rd?#".to_owned(),
             database: "my db".to_owned(),
             ssh: None,
+            ssl: crate::model::SslConfig::default(),
         };
         let url = MssqlRepository::url(&config);
         let options = sqlx_sqlserver::MssqlConnectOptions::parse_url(&url).expect("url");
         assert_eq!(options.password(), Some("p@ss/w:rd?#"));
         assert_eq!(options.database(), "my db");
         assert_eq!(options.host(), "[::1]");
+    }
+
+    fn parse(config: &crate::model::ConnectionConfig) -> sqlx_sqlserver::MssqlConnectOptions {
+        sqlx_sqlserver::MssqlConnectOptions::parse_url(&MssqlRepository::url(config)).expect("url")
+    }
+
+    #[test]
+    fn the_url_checks_the_certificate_only_when_asked() {
+        let mut config = crate::model::ConnectionConfig {
+            driver: crate::model::Driver::Mssql,
+            host: "127.0.0.1".to_owned(),
+            port: 1433,
+            user: "sa".to_owned(),
+            password: String::new(),
+            database: String::new(),
+            ssh: None,
+            ssl: crate::model::SslConfig::default(),
+        };
+        let options = parse(&config);
+        assert!(options.trust_server_certificate());
+        assert_eq!(options.hostname_in_certificate(), None);
+
+        config.ssl.mode = SslMode::VerifyFull;
+        config.ssl.ca_path = "/certs/my ca.pem".to_owned();
+        config.ssl.server_name = "db.example.com".to_owned();
+        let options = parse(&config);
+        assert!(!options.trust_server_certificate());
+        assert_eq!(options.hostname_in_certificate(), Some("db.example.com"));
+        assert_eq!(
+            options.ssl_root_cert(),
+            Some(std::path::Path::new("/certs/my ca.pem"))
+        );
     }
 }

@@ -328,6 +328,8 @@ impl RepositoryFactory {
                 _ => Arc::new(SshTunnel::open(ssh, &config.host, config.port).await?),
             };
             tunneled = config.clone();
+            // The certificate holds the real host name, not the local end of the tunnel.
+            tunneled.ssl.server_name.clone_from(&config.host);
             LOCALHOST.clone_into(&mut tunneled.host);
             tunneled.port = opened.local_port();
             tunnel = Some(opened);

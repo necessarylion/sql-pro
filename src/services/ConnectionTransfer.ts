@@ -1,11 +1,11 @@
-import { DRIVER_LABELS } from '../constants'
+import { DRIVER_LABELS, SSL_MODE_LABELS } from '../constants'
 import {
   CONNECTIONS_FILE_ERROR,
   CONNECTIONS_FILE_NAME,
   CONNECTIONS_FILE_NEWER,
   CONNECTIONS_FILE_VERSION,
 } from '../constants/transfer'
-import type { ConnectionConfig, Driver, SshConfig } from '../types'
+import type { ConnectionConfig, Driver, SshConfig, SslConfig, SslMode } from '../types'
 import type { DatabaseApi } from './DatabaseApi'
 import { Environment } from './Environment'
 import type { Favorite, FavoriteStore } from './FavoriteStore'
@@ -116,6 +116,7 @@ export class ConnectionTransfer {
         ssh: ssh
           ? { host: ssh.host, port: ssh.port, user: ssh.user, password: '', keyPath: ssh.keyPath }
           : null,
+        ssl: config.ssl,
       },
     }
   }
@@ -147,6 +148,10 @@ export class ConnectionTransfer {
       database: config.database,
       ssh: ConnectionTransfer.readSsh(config.ssh),
     }
+    // Files from before SSL support have no `ssl`.
+    if (config.ssl !== undefined) {
+      result.ssl = ConnectionTransfer.readSsl(config.ssl)
+    }
     return {
       id: item.id,
       name: item.name,
@@ -172,6 +177,25 @@ export class ConnectionTransfer {
       user: ssh.user as string,
       password: '',
       keyPath: ssh.keyPath,
+    }
+  }
+
+  private static readSsl(ssl: unknown): SslConfig {
+    if (
+      !ConnectionTransfer.isObject(ssl) ||
+      typeof ssl.mode !== 'string' ||
+      !Object.hasOwn(SSL_MODE_LABELS, ssl.mode) ||
+      typeof ssl.caPath !== 'string' ||
+      typeof ssl.certPath !== 'string' ||
+      typeof ssl.keyPath !== 'string'
+    ) {
+      throw new Error(CONNECTIONS_FILE_ERROR)
+    }
+    return {
+      mode: ssl.mode as SslMode,
+      caPath: ssl.caPath,
+      certPath: ssl.certPath,
+      keyPath: ssl.keyPath,
     }
   }
 

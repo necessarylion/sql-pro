@@ -12,6 +12,18 @@ export interface ConnectionConfig {
   database: string
   /** Set to reach the database through an SSH server. Not used for sqlite. */
   ssh: SshConfig | null
+  /** Missing in connections saved before SSL support. Missing = `prefer`. Not used for sqlite. */
+  ssl?: SslConfig
+}
+
+export type SslMode = 'off' | 'prefer' | 'require' | 'verifyCa' | 'verifyFull'
+
+/** An empty path means "not set". SQL Server has no client certificate, so it ignores `certPath` and `keyPath`. */
+export interface SslConfig {
+  mode: SslMode
+  caPath: string
+  certPath: string
+  keyPath: string
 }
 
 /** `password` is the login password or the key passphrase. Empty = keys and agent only. */
