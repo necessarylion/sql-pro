@@ -38,14 +38,6 @@ export const DRIVER_LABELS: Record<Driver, string> = {
   sqlite: 'SQLite',
 }
 
-/** The short text in the small coloured badge of a driver. */
-export const DRIVER_BADGES: Record<Driver, string> = {
-  mysql: 'MY',
-  postgres: 'PG',
-  mssql: 'MS',
-  sqlite: 'SL',
-}
-
 export const DEFAULT_CONFIGS: Record<Driver, ConnectionConfig> = {
   mysql: {
     driver: 'mysql',

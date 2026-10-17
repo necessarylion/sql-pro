@@ -1,24 +1,36 @@
 <script setup lang="ts">
-import { DRIVER_BADGES } from '../constants'
+import { DRIVER_LABELS } from '../constants'
+import { DRIVER_LOGOS } from '../constants/logos'
 import type { Driver } from '../types'
 
 defineProps<{ driver: Driver }>()
 </script>
 
 <template>
-  <span class="badge" :class="driver">{{ DRIVER_BADGES[driver] }}</span>
+  <span class="badge" :class="driver" role="img" :aria-label="DRIVER_LABELS[driver]">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <title>{{ DRIVER_LABELS[driver] }}</title>
+      <path :d="DRIVER_LOGOS[driver]" />
+    </svg>
+  </span>
 </template>
 
 <style scoped>
+/* A square tile in the brand colour, the same size for every database. */
 .badge {
   flex: none;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 3px;
-  color: var(--on-accent);
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+
+.badge svg {
+  width: 12px;
+  height: 12px;
+  fill: var(--on-accent);
 }
 
 .mysql {

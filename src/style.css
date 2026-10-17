@@ -34,10 +34,12 @@
   --picked: #2c3d63;
   --syntax-type: #4fd1c5;
   --on-accent: #ffffff;
-  --mysql: #b95c00;
+  /* The tile colour behind each database logo (the brand colour). The logo on it is white. */
+  --mysql: #00758f;
   --postgres: #336791;
-  --mssql: #a4262c;
-  --sqlite: #0f766e;
+  --mssql: #cc2927;
+  /* Lighter than the brand #003b57, so the tile shows on the dark background. */
+  --sqlite: #0e5a80;
   /* The six folder colours. A folder saves the name, like `red`. */
   --folder-grey: #a6a7ad;
   --folder-red: #ff8078;
@@ -137,6 +139,7 @@
   --stmt-highlight: #eef4ff;
   --picked: #d6e3fd;
   --syntax-type: #0f766e;
+  --sqlite: #003b57;
   --folder-grey: #8c8d93;
   --folder-red: #c8261b;
   --folder-orange: #b95c00;
@@ -229,10 +232,26 @@ button {
   border-radius: 6px;
   font-weight: 500;
   white-space: nowrap;
+  cursor: pointer;
 }
 
 button:disabled {
   color: var(--text-3);
+  cursor: default;
+}
+
+/* Other controls you click also show the hand. A label around a checkbox or radio toggles it. */
+select,
+input[type='checkbox'],
+input[type='radio'],
+label:has(> input[type='checkbox'], > input[type='radio']) {
+  cursor: pointer;
+}
+
+select:disabled,
+input:disabled,
+label:has(> input:disabled) {
+  cursor: default;
 }
 
 button.primary {
@@ -428,6 +447,8 @@ button.danger {
   height: 22px;
   padding: 0 10px;
   white-space: nowrap;
+  /* Every row in these lists is clickable. */
+  cursor: pointer;
 }
 
 .list li svg {

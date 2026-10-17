@@ -595,7 +595,6 @@ async function browseKey(): Promise<void> {
             @pointercancel="cancelDrag"
             @lostpointercapture="cancelDrag"
           >
-            <ChevronRightIcon class="chevron" :class="{ open: row.section.open }" :size="10" />
             <FolderIcon
               :icon="row.section.folder.icon"
               :color="row.section.folder.color"
@@ -603,6 +602,7 @@ async function browseKey(): Promise<void> {
             />
             <span class="name">{{ row.section.folder.name }}</span>
             <span class="count">{{ row.section.favorites.length }}</span>
+            <ChevronRightIcon class="chevron" :class="{ open: row.section.open }" :size="10" />
           </li>
         </template>
       </TransitionGroup>
@@ -961,6 +961,7 @@ async function browseKey(): Promise<void> {
 .list li {
   gap: 7px;
   height: 24px;
+  cursor: pointer;
 }
 
 /* A long environment name is cut, so the connection name keeps its room. */
@@ -975,20 +976,34 @@ async function browseKey(): Promise<void> {
   min-width: 40px;
 }
 
-/* A connection inside a folder. */
+/* A connection inside a folder. Its badge lines up with the folder name: 10px padding + 13px icon + 7px gap. */
 .list li.child {
-  padding-left: 26px;
+  padding-left: 30px;
 }
 
+/* The row keeps the mouse during a drag, so its cursor shows for the whole drag. */
 .list li.dragged {
   opacity: 0.5;
+  cursor: grabbing;
 }
 
 .folder {
   font-weight: 600;
 }
 
+/* The count sits right after the folder name. A long name is cut, not the count. */
+.list li.folder .name {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The chevron stays at the right end of a folder row. */
+.list li.folder .chevron {
+  margin-left: auto;
+}
+
 .chevron {
+  flex: none;
   transition: transform 0.1s;
 }
 
@@ -1071,6 +1086,11 @@ async function browseKey(): Promise<void> {
 
 .list li.selected {
   --line: var(--on-accent);
+}
+
+/* A thin white ring, drawn with a shadow so the badge keeps its size. */
+.list li.selected :deep(.badge) {
+  box-shadow: 0 0 0 0.5px var(--on-accent);
 }
 
 /* The place a dragged connection would go to. */
