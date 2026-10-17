@@ -7,8 +7,9 @@ import {
   DownloadIcon,
   HistoryIcon,
   PlayIcon,
+  SaveIcon,
 } from 'lucide-vue-next'
-import { QUERY_HISTORY, SHORTCUTS, injectRequired } from '../services/keys'
+import { QUERY_HISTORY, SAVED_QUERIES, SHORTCUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
 import { SqlEditor } from '../services/SqlEditor'
 import { SqlRisk } from '../services/SqlRisk'
@@ -17,10 +18,16 @@ import DataGrid from './DataGrid.vue'
 import ExportRowsMenu from './ExportRowsMenu.vue'
 import PaneResizer from './PaneResizer.vue'
 import QueryHistoryList from './QueryHistoryList.vue'
+import SavedQueryDialog from './SavedQueryDialog.vue'
+import SavedQueryList from './SavedQueryList.vue'
 
 const props = defineProps<{ session: Session }>()
 const shortcuts = injectRequired(SHORTCUTS)
 const history = injectRequired(QUERY_HISTORY)
+const saved = injectRequired(SAVED_QUERIES)
+const savedDialog = useTemplateRef<InstanceType<typeof SavedQueryDialog>>('savedDialog')
+// The saved queries of this tab are the ones of its server.
+const savedKey = computed(savedQueriesKey)
 
 const host = useTemplateRef<HTMLDivElement>('host')
 const columns = computed(resultColumns)
@@ -32,6 +39,10 @@ const exportRows = computed(rowsToExport)
 const showHistory = ref(false)
 // Not a ref: Vue must not wrap the CodeMirror objects.
 let editor: SqlEditor | null = null
+
+function savedQueriesKey(): string {
+  return saved.key(props.session.config)
+}
 
 function resultColumns(): GridColumn[] {
   const columns: GridColumn[] = []
@@ -146,13 +157,21 @@ watch(sessionResult, clearSelection)
   <div class="below">
     <div class="bar tools">
       <button
-        title="Show the SQL that was run before"
+        title="Show the saved queries and the SQL that was run before"
         :class="{ active: showHistory }"
         :aria-pressed="showHistory"
         @click="showHistory = !showHistory"
       >
         <HistoryIcon :size="11" />
         History
+      </button>
+      <button
+        title="Save the SQL in the editor under a name"
+        :disabled="!session.sql.trim()"
+        @click="savedDialog?.save(session.sql)"
+      >
+        <SaveIcon :size="11" />
+        Save
       </button>
       <span class="spacer" />
       <span class="dim">Select text to run only that part.</span>
@@ -167,7 +186,14 @@ watch(sessionResult, clearSelection)
         <span class="hint">{{ shortcuts.hint('↵') }}</span>
       </button>
     </div>
-    <QueryHistoryList v-if="showHistory" @pick="useHistory" />
+    <div v-if="showHistory" class="queries">
+      <SavedQueryList
+        :connection-key="savedKey"
+        @pick="useHistory"
+        @rename="savedDialog?.rename($event)"
+      />
+      <QueryHistoryList @pick="useHistory" />
+    </div>
     <DataGrid
       v-else-if="session.result"
       v-model:selected="selected"
@@ -186,6 +212,7 @@ watch(sessionResult, clearSelection)
       :table="null"
       @close="closeMenu"
     />
+    <SavedQueryDialog ref="savedDialog" :connection-key="savedKey" />
     <div class="bar bottom result">
       <template v-if="session.error">
         <CircleAlertIcon class="error" :size="13" />
@@ -267,6 +294,14 @@ watch(sessionResult, clearSelection)
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The saved queries above the history. */
+.queries {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
 }
 
 /* The History button while the list is open. */
