@@ -149,6 +149,10 @@ pub const QUERY_STATS_LIMIT: u32 = 500;
 pub const QUERY_STATS_MIN_DAYS: u32 = 1;
 pub const QUERY_STATS_MAX_DAYS: u32 = 3650;
 
+/// The start of every "query stats are off or not readable" error. The frontend looks for it
+/// to show its setup guide in place of the error. Keep it the same as in `src/constants/queryStats.ts`.
+pub const QUERY_STATS_NOT_SET_UP: &str = "Query stats are not set up.";
+
 /// What to do when the server does not collect query stats, or the account may not read them.
 pub const MYSQL_NO_QUERY_STATS: &str = "Query stats need performance_schema, and it is off or not readable. \
     Set performance_schema=ON in my.cnf and restart the server. \
@@ -160,7 +164,8 @@ pub const POSTGRES_NO_QUERY_STATS: &str = "Query stats need the pg_stat_statemen
     To see the queries of other users, your account needs the pg_read_all_stats role. \
     An admin can give it on the Users screen (Query stats).";
 pub const MSSQL_NO_QUERY_STATS: &str = "Query stats need the VIEW SERVER STATE permission \
-    (on Azure SQL: VIEW DATABASE STATE).";
+    (on SQL Server 2022 and later VIEW SERVER PERFORMANCE STATE is enough, on Azure SQL: VIEW DATABASE STATE). \
+    An admin can give it with GRANT VIEW SERVER STATE TO [login];";
 
 /// The error when the process to stop is not in the list any more.
 pub const PROCESS_GONE: &str = "This process is not running any more";

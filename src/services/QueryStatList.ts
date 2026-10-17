@@ -1,4 +1,11 @@
-import type { GridColumn, QueryStat, Row } from '../types'
+import {
+  QUERY_STATS_ACCOUNT,
+  QUERY_STATS_GUIDES,
+  QUERY_STATS_NOT_SET_UP,
+  QUERY_STATS_USER,
+  type QueryStatsStep,
+} from '../constants/queryStats'
+import type { Driver, GridColumn, QueryStat, Row, SnippetOutput } from '../types'
 
 export type QueryStatColumn = keyof QueryStat
 
@@ -32,6 +39,88 @@ export class QueryStatList {
       return `${Math.round(ms)} ms`
     }
     return `${(ms / 1000).toFixed(1)} s`
+  }
+
+  /**
+   * The rest of the error when it says the stats are not set up: the hint and the server text.
+   * null for any other error.
+   */
+  static setupDetail(error: string): string | null {
+    return error.startsWith(QUERY_STATS_NOT_SET_UP)
+      ? error.slice(QUERY_STATS_NOT_SET_UP.length).trim()
+      : null
+  }
+
+  /**
+   * The MySQL account from CURRENT_USER(), like app@10.0.0.%, quoted for SQL: 'app'@'10.0.0.%'.
+   * A user name may hold an @, so it splits at the last one. null when there is no @.
+   */
+  static mysqlAccount(currentUser: string): string | null {
+    const at = currentUser.lastIndexOf('@')
+    if (at < 0) {
+      return null
+    }
+    return `${QueryStatList.quote(currentUser.slice(0, at))}@${QueryStatList.quote(currentUser.slice(at + 1))}`
+  }
+
+  /**
+   * The setup steps for this database kind, with the user name of the connection in the snippets.
+   * `currentUser` is the MySQL CURRENT_USER() text, '' when not known. Then the host stays a word to replace.
+   */
+  static guide(driver: Driver, user: string, currentUser = ''): QueryStatsStep[] {
+    if (driver === 'sqlite') {
+      return []
+    }
+    const name = user || 'user'
+    const known = QueryStatList.mysqlAccount(currentUser)
+    const account = known ?? `${QueryStatList.quote(name)}@'host'`
+    const steps: QueryStatsStep[] = []
+    for (const step of QUERY_STATS_GUIDES[driver]) {
+      const shown: QueryStatsStep = {
+        text: known === null && step.unknownAccountText ? step.unknownAccountText : step.text,
+      }
+      if (step.code !== undefined) {
+        shown.code = QueryStatList.fill(step.code, name, account)
+      }
+      if (step.run) {
+        shown.run = true
+      }
+      if (step.options) {
+        shown.options = []
+        for (const option of step.options) {
+          shown.options.push({ ...option, code: QueryStatList.fill(option.code, name, account) })
+        }
+      }
+      steps.push(shown)
+    }
+    return steps
+  }
+
+  /**
+   * The short text of a snippet output: the error, "Result: 1" for one value, or "Done" with the
+   * changed rows. null when the output has more rows or columns, so the guide shows a table.
+   */
+  static outputText(output: SnippetOutput): string | null {
+    if (output.error) {
+      return output.error
+    }
+    const set = output.set
+    if (set && set.rows.length > 0) {
+      const only = set.rows.length === 1 && set.columns.length === 1
+      return only ? `Result: ${set.rows[0]?.[0] ?? 'NULL'}` : null
+    }
+    const affected = set?.affected ?? 0
+    return affected > 0 ? `Done. ${affected} ${affected === 1 ? 'row' : 'rows'} changed.` : 'Done'
+  }
+
+  /** Puts the user name and the MySQL account into a snippet. */
+  private static fill(code: string, name: string, account: string): string {
+    return code.replaceAll(QUERY_STATS_ACCOUNT, account).replaceAll(QUERY_STATS_USER, name)
+  }
+
+  /** A SQL string in single quotes. A quote inside is doubled. */
+  private static quote(text: string): string {
+    return `'${text.replaceAll("'", "''")}'`
   }
 
   /** The columns of the DataGrid. */

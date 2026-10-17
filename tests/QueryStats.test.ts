@@ -6,7 +6,7 @@ import { QueryStatList } from '../src/services/QueryStatList'
 import { Session } from '../src/services/Session'
 import { ExplainQueryPrompt } from '../src/services/ExplainQueryPrompt'
 import { FakePrompt } from './FakePrompt'
-import type { QueryStat, TableRef, UserList } from '../src/types'
+import type { QueryStat, ResultSet, TableRef, UserList } from '../src/types'
 
 const SLOW: QueryStat = {
   query: 'SELECT * FROM orders WHERE id = ?',
@@ -29,6 +29,11 @@ const FAST: QueryStat = {
 
 class FakeApi {
   days: number[] = []
+  /** When set, queryStats throws this text, like the backend does. */
+  failure = ''
+  /** What CURRENT_USER() returns. null = the call fails. */
+  currentUser: string | null = 'app@10.0.0.%'
+  sql: string[] = []
 
   async connect(): Promise<void> {}
 
@@ -48,8 +53,21 @@ class FakeApi {
 
   async useDatabase(): Promise<void> {}
 
+  async runQuery(_id: string, sql: string): Promise<ResultSet[]> {
+    this.sql.push(sql)
+    if (this.currentUser === null) {
+      throw 'denied'
+    }
+    return [
+      { columns: ['CURRENT_USER()'], rows: [[this.currentUser]], affected: 0, truncated: false },
+    ]
+  }
+
   async queryStats(_id: string, days: number): Promise<QueryStat[]> {
     this.days.push(days)
+    if (this.failure) {
+      throw this.failure
+    }
     return [FAST, SLOW]
   }
 }
@@ -217,4 +235,163 @@ test('askAiReadOnly opens the Ask AI view in a new chat, and refuses while the A
   await expect(session.askAiReadOnly('again')).rejects.toContain('busy')
   expect(session.view).toBe('queryStats')
   expect(session.readOnlyQuestion).toBeNull()
+})
+
+test('stats that are off show the setup guide, not an error', async function () {
+  const api = new FakeApi()
+  const session = await connected(api)
+  session.view = 'queryStats'
+  api.failure = 'Query stats are not set up. Query stats need performance_schema. (denied)'
+  expect(await session.run(session.loadQueryStats())).toBe(true)
+  expect(session.error).toBe('')
+  expect(session.queryStats).toEqual([])
+  expect(session.queryStatsSetup).toBe('Query stats need performance_schema. (denied)')
+  expect(api.sql).toEqual(['SELECT CURRENT_USER()'])
+  expect(session.queryStatsAccount).toBe('app@10.0.0.%')
+  api.failure = ''
+  await session.loadQueryStats()
+  expect(session.queryStatsSetup).toBe('')
+  expect(session.queryStats).toEqual([FAST, SLOW])
+})
+
+test('other errors stay errors', async function () {
+  const api = new FakeApi()
+  const session = await connected(api)
+  api.failure = 'connection lost'
+  expect(await session.run(session.loadQueryStats())).toBe(false)
+  expect(session.error).toBe('connection lost')
+  expect(session.queryStatsSetup).toBe('')
+  expect(QueryStatList.setupDetail('connection lost')).toBeNull()
+})
+
+test('the guide fits the database kind and names the user', function () {
+  const mysql = QueryStatList.guide('mysql', 'app')
+  expect(
+    mysql.some(function (step) {
+      return step.code === 'SELECT @@performance_schema;'
+    }),
+  ).toBe(true)
+  expect(
+    mysql.some(function (step) {
+      return step.code === "GRANT SELECT ON performance_schema.* TO 'app'@'host';"
+    }),
+  ).toBe(true)
+  const postgres = QueryStatList.guide('postgres', '')
+  expect(
+    postgres.some(function (step) {
+      return step.code === 'GRANT pg_read_all_stats TO user;'
+    }),
+  ).toBe(true)
+  expect(QueryStatList.guide('mssql', 'sa')[0]?.code).toBe('GRANT VIEW SERVER STATE TO [sa];')
+  expect(QueryStatList.guide('sqlite', 'x')).toEqual([])
+  // Another way to do a step is part of it, not a step of its own.
+  expect(postgres[0]?.options?.[0]?.code).toBe(
+    "ALTER SYSTEM SET shared_preload_libraries = 'pg_stat_statements';",
+  )
+  expect(QueryStatList.guide('mssql', 'sa')).toHaveLength(1)
+  expect(QueryStatList.guide('mssql', 'sa')[0]?.options?.[1]?.code).toBe(
+    'GRANT VIEW DATABASE STATE TO [sa];',
+  )
+})
+
+test('the MySQL account splits at the last @ and is quoted', function () {
+  expect(QueryStatList.mysqlAccount('web2print@%')).toBe("'web2print'@'%'")
+  expect(QueryStatList.mysqlAccount("o'neil@me@10.0.0.%")).toBe("'o''neil@me'@'10.0.0.%'")
+  expect(QueryStatList.mysqlAccount('nobody')).toBeNull()
+})
+
+test('the MySQL grant uses the real account, or asks for the host when it is not known', async function () {
+  const known = QueryStatList.guide('mysql', 'web2print', 'web2print@%')
+  const grant = known.find(function (step) {
+    return step.code?.startsWith('GRANT') ?? false
+  })
+  expect(grant?.code).toBe("GRANT SELECT ON performance_schema.* TO 'web2print'@'%';")
+  expect(grant?.text).not.toContain('host')
+  const unknown = QueryStatList.guide('mysql', 'web2print', '')
+  const fallback = unknown.find(function (step) {
+    return step.code?.startsWith('GRANT') ?? false
+  })
+  expect(fallback?.code).toBe("GRANT SELECT ON performance_schema.* TO 'web2print'@'host';")
+  expect(fallback?.text).toContain('Put the host of your account in place of host.')
+
+  const api = new FakeApi()
+  api.currentUser = null
+  api.failure = 'Query stats are not set up. off'
+  const session = await connected(api)
+  expect(await session.run(session.loadQueryStats())).toBe(true)
+  expect(session.queryStatsAccount).toBe('')
+})
+
+test('only SQL snippets can run, config lines and restarts cannot', function () {
+  const mysql = QueryStatList.guide('mysql', 'app', 'app@%')
+  expect(mysql[0]?.code).toContain('performance_schema = ON')
+  expect(mysql[0]?.run).toBeUndefined()
+  expect(mysql[1]?.run).toBeUndefined()
+  expect(mysql[2]?.run).toBe(true)
+  expect(mysql[3]?.run).toBe(true)
+  const postgres = QueryStatList.guide('postgres', 'app')
+  expect(postgres[0]?.run).toBeUndefined()
+  expect(postgres[0]?.options?.[0]?.run).toBe(true)
+  expect(postgres[0]?.options?.[1]?.run).toBeUndefined()
+  expect(QueryStatList.guide('mssql', 'sa')[0]?.options?.[0]?.run).toBe(true)
+})
+
+test('a setup snippet runs only after OK, then the stats load again', async function () {
+  const api = new FakeApi()
+  const prompt = new FakePrompt()
+  const session = new Session(api as unknown as DatabaseApi, prompt)
+  await session.connect({ ...DEFAULT_CONFIGS.mysql, database: 'shop' }, 'test')
+  const sql = 'SELECT @@performance_schema;'
+
+  prompt.answer = false
+  expect(await session.run(session.runQueryStatsSnippet(sql))).toBe(true)
+  expect(api.sql).toEqual([])
+  expect(api.days).toEqual([])
+  expect(prompt.questions[0]).toContain('This SQL changes the server.')
+  expect(prompt.questions[0]).toContain(sql)
+
+  prompt.answer = true
+  api.currentUser = '1'
+  expect(await session.run(session.runQueryStatsSnippet(sql))).toBe(true)
+  expect(api.sql).toEqual([sql])
+  expect(api.days).toEqual([7])
+  expect(session.queryStats).toEqual([FAST, SLOW])
+  expect(session.status).toBe('Done')
+  const output = session.snippetOutputs[sql]
+  expect(output && QueryStatList.outputText(output)).toBe('Result: 1')
+})
+
+test('a failed snippet keeps the server error under it, and loads nothing', async function () {
+  const api = new FakeApi()
+  const session = await connected(api)
+  api.currentUser = null
+  const sql = 'GRANT pg_read_all_stats TO app;'
+  expect(await session.run(session.runQueryStatsSnippet(sql))).toBe(true)
+  expect(api.days).toEqual([])
+  const output = session.snippetOutputs[sql]
+  expect(output?.error).toBe('denied')
+  expect(output && QueryStatList.outputText(output)).toBe('denied')
+})
+
+test('the output stays when the guide loads again, and goes on a database change', async function () {
+  const api = new FakeApi()
+  const session = await connected(api)
+  session.view = 'queryStats'
+  api.failure = 'Query stats are not set up. off'
+  const sql = 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements;'
+  await session.run(session.runQueryStatsSnippet(sql))
+  expect(session.queryStatsSetup).toBe('off')
+  expect(session.snippetOutputs[sql]).toBeDefined()
+  await session.useDatabase('shop')
+  expect(session.snippetOutputs).toEqual({})
+})
+
+test('the output text: one value, done with changed rows, or a table', function () {
+  const set = { columns: ['a'], rows: [['1']], affected: 0, truncated: false }
+  expect(QueryStatList.outputText({ error: '', set })).toBe('Result: 1')
+  expect(QueryStatList.outputText({ error: '', set: null })).toBe('Done')
+  expect(QueryStatList.outputText({ error: '', set: { ...set, rows: [], affected: 2 } })).toBe(
+    'Done. 2 rows changed.',
+  )
+  expect(QueryStatList.outputText({ error: '', set: { ...set, columns: ['a', 'b'] } })).toBeNull()
 })
