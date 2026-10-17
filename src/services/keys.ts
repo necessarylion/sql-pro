@@ -9,6 +9,7 @@ import type { FavoriteStore } from './FavoriteStore'
 import type { LayoutService } from './LayoutService'
 import type { PinnedTables } from './PinnedTables'
 import type { QueryHistory } from './QueryHistory'
+import type { SavedQueries } from './SavedQueries'
 import type { SessionManager } from './SessionManager'
 import type { Shortcuts } from './Shortcuts'
 import type { ThemeService } from './ThemeService'
@@ -23,6 +24,7 @@ export const LAYOUT_SERVICE: InjectionKey<LayoutService> = Symbol('LayoutService
 export const ZOOM_SERVICE: InjectionKey<ZoomService> = Symbol('ZoomService')
 export const SHORTCUTS: InjectionKey<Shortcuts> = Symbol('Shortcuts')
 export const QUERY_HISTORY: InjectionKey<QueryHistory> = Symbol('QueryHistory')
+export const SAVED_QUERIES: InjectionKey<SavedQueries> = Symbol('SavedQueries')
 export const DIAGRAM_LAYOUTS: InjectionKey<DiagramLayoutStore> = Symbol('DiagramLayoutStore')
 export const AI_STORE: InjectionKey<AiStore> = Symbol('AiStore')
 export const CHAT_FORMATTER: InjectionKey<ChatFormatter> = Symbol('ChatFormatter')

@@ -21,6 +21,7 @@ import {
   LAYOUT_SERVICE,
   PINNED_TABLES,
   QUERY_HISTORY,
+  SAVED_QUERIES,
   SESSION_MANAGER,
   SHORTCUTS,
   THEME_SERVICE,
@@ -31,6 +32,7 @@ import { LayoutService } from './services/LayoutService'
 import { PinnedTables } from './services/PinnedTables'
 import { ProfileStorage } from './services/ProfileStorage'
 import { QueryHistory } from './services/QueryHistory'
+import { SavedQueries } from './services/SavedQueries'
 import { SessionManager } from './services/SessionManager'
 import { Shortcuts } from './services/Shortcuts'
 import { ThemeService } from './services/ThemeService'
@@ -76,6 +78,7 @@ createApp(App)
   .provide(FAVORITE_STORE, favoriteStore)
   .provide(CONNECTION_TRANSFER, new ConnectionTransfer(api, favoriteStore))
   .provide(QUERY_HISTORY, queryHistory)
+  .provide(SAVED_QUERIES, reactive(new SavedQueries(storage)) as SavedQueries)
   .provide(DIAGRAM_LAYOUTS, new DiagramLayoutStore(storage))
   .provide(PINNED_TABLES, pinnedTables)
   .provide(COLUMN_ORDERS, new ColumnOrderStore(storage))
