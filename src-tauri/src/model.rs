@@ -502,6 +502,23 @@ pub struct CsvPreview {
     pub count: usize,
 }
 
+/// One connection of the database server, with what it runs now.
+#[derive(Debug, Serialize)]
+pub struct DbProcess {
+    /// `MySQL` connection id, `PostgreSQL` pid or SQL Server session id.
+    pub id: i64,
+    pub user: Option<String>,
+    /// The client host or address.
+    pub host: Option<String>,
+    pub database: Option<String>,
+    pub state: Option<String>,
+    /// How long it is in this state, in seconds.
+    pub seconds: Option<i64>,
+    pub query: Option<String>,
+    /// True for the connection of this tab.
+    pub current: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ConnectionConfig, SslMode};

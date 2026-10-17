@@ -132,6 +132,12 @@ pub const SQLITE_NO_DATABASES: &str = "SQLite has no databases to create or drop
 pub const CHARSET_ONLY_MYSQL: &str = "Charset and collation are only for MySQL";
 pub const DROP_CURRENT_DATABASE: &str = "Switch to another database before you drop this one";
 
+/// The error for a database kind that has no server processes.
+pub const NO_PROCESSES: &str = "SQLite has no server processes";
+
+/// The error when the process to stop is not in the list any more.
+pub const PROCESS_GONE: &str = "This process is not running any more";
+
 /// The error for a foreign key change on `SQLite`.
 pub const SQLITE_FOREIGN_KEYS_FIXED: &str =
     "SQLite cannot add or drop a foreign key of an existing table";

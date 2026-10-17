@@ -4,6 +4,7 @@ mod attachment;
 mod claude;
 mod export;
 mod import;
+mod processes;
 mod spare;
 
 use std::collections::HashMap;

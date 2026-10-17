@@ -10,9 +10,9 @@ use tauri::State;
 use crate::error::AppResult;
 use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
-    ConnectionConfig, CsvImport, CsvPreview, DbObject, Diagram, ExportRequest, NewColumn,
-    NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult, TableKeys,
-    TablePage, TableRef, UserList, Values,
+    ConnectionConfig, CsvImport, CsvPreview, DbObject, DbProcess, Diagram, ExportRequest,
+    NewColumn, NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult,
+    TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::open_file::OpenedFiles;
 use crate::repository::PasswordRepository;
@@ -376,6 +376,22 @@ pub async fn write_text_file(path: PathBuf, text: String) -> AppResult<()> {
 #[tauri::command]
 pub async fn list_users(service: Service<'_>, id: String) -> AppResult<UserList> {
     service.list_users(&id).await
+}
+
+#[tauri::command]
+pub async fn list_processes(service: Service<'_>, id: String) -> AppResult<Vec<DbProcess>> {
+    service.list_processes(&id).await
+}
+
+/// `process` arrives as a number, so text cannot reach the SQL.
+#[tauri::command]
+pub async fn kill_process(
+    service: Service<'_>,
+    id: String,
+    process: i64,
+    query_only: bool,
+) -> AppResult<()> {
+    service.kill_process(&id, process, query_only).await
 }
 
 #[tauri::command]

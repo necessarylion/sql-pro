@@ -100,6 +100,8 @@ pub fn run() {
             commands::drop_user,
             commands::set_user_access,
             commands::set_user_password,
+            commands::list_processes,
+            commands::kill_process,
             commands::save_password,
             commands::load_password,
             commands::delete_password,
