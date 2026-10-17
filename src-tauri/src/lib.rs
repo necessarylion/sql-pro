@@ -53,6 +53,8 @@ pub fn run() {
             commands::clone_connection,
             commands::use_database,
             commands::list_databases,
+            commands::create_database,
+            commands::drop_database,
             commands::list_tables,
             commands::browse,
             commands::run_query,

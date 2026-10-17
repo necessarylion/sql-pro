@@ -86,6 +86,14 @@ impl Spare {
         }
     }
 
+    /// Closes the spare that is ready now. A later `refill` opens a new one.
+    pub(super) async fn discard(&self) {
+        let ready = self.state.lock().ready.take();
+        if let Some((_, (repository, _tunnel))) = ready {
+            repository.close().await;
+        }
+    }
+
     /// Closes the spare and keeps no new one. The spare also lets go of the tunnel.
     pub(super) async fn close(&self) {
         let ready = {

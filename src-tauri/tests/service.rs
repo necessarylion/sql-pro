@@ -1748,6 +1748,57 @@ async fn cancel(service: &ConnectionService, driver: Driver) {
     assert_eq!(sets[0].rows[0], vec![text("2")]);
 }
 
+/// A database name that must be quoted to work.
+const NEW_DATABASE: &str = "sqlpro made \"db\"";
+
+/// Creates and drops a database. `SQLite` has none, so both must fail there.
+async fn databases(service: &ConnectionService, config: &ConnectionConfig) {
+    let driver = config.driver;
+    if driver == Driver::Sqlite {
+        assert!(service.create_database(ID, "x", "", "").await.is_err());
+        assert!(service.drop_database(ID, "x").await.is_err());
+        return;
+    }
+    // A leftover of an earlier failed run is removed first.
+    let _ = service.drop_database(ID, NEW_DATABASE).await;
+    let charset = if driver == Driver::Mysql {
+        "utf8mb4"
+    } else {
+        ""
+    };
+    let created = service.create_database(ID, NEW_DATABASE, charset, "");
+    created.await.expect("create database");
+    let listed = service.databases(ID).await.expect("databases");
+    assert!(listed.iter().any(|name| name == NEW_DATABASE));
+    if driver != Driver::Mysql {
+        let refused = service
+            .create_database(ID, "sqlpro_never", "utf8", "")
+            .await;
+        assert!(refused.is_err(), "charset is only for MySQL");
+    }
+    assert!(service.create_database(ID, "  ", "", "").await.is_err());
+
+    // The tab can visit the new database and come back.
+    service
+        .use_database(ID, NEW_DATABASE.to_owned())
+        .await
+        .expect("use new database");
+    let current = service.drop_database(ID, NEW_DATABASE).await;
+    assert!(current.is_err(), "the current database is never dropped");
+    service
+        .use_database(ID, config.database.clone())
+        .await
+        .expect("back to the test database");
+
+    service
+        .drop_database(ID, NEW_DATABASE)
+        .await
+        .expect("drop database");
+    let listed = service.databases(ID).await.expect("databases");
+    assert!(!listed.iter().any(|name| name == NEW_DATABASE));
+    assert!(service.drop_database(ID, NEW_DATABASE).await.is_err());
+}
+
 #[allow(clippy::too_many_lines, reason = "one end-to-end flow")]
 async fn exercise(config: ConnectionConfig) {
     let driver = config.driver;
@@ -1856,6 +1907,7 @@ async fn exercise(config: ConnectionConfig) {
     diagram(&service, driver).await;
     keys(&service, driver).await;
     cancel(&service, driver).await;
+    databases(&service, &config).await;
     save_image();
 
     custom_sql(&service).await;

@@ -23,6 +23,7 @@ import {
   SearchIcon,
   SparklesIcon,
   SquareFunctionIcon,
+  Trash2Icon,
   TableIcon,
   TablePropertiesIcon,
   TerminalIcon,
@@ -47,6 +48,7 @@ import type { DbObject, DbObjectKind, SessionView, TableRef } from '../types'
 import AskAiView from './AskAiView.vue'
 import ContentView from './ContentView.vue'
 import ContextMenu from './ContextMenu.vue'
+import DatabaseDialog from './DatabaseDialog.vue'
 import DefinitionView from './DefinitionView.vue'
 import DiagramView from './DiagramView.vue'
 import EnvBadge from './EnvBadge.vue'
@@ -99,6 +101,7 @@ const selection = reactive(new TableSelection())
 /** The submenu that is shown now, if any. */
 const submenu = ref<'export' | 'import' | null>(null)
 const tableDialog = useTemplateRef<InstanceType<typeof TableDialog>>('tableDialog')
+const databaseDialog = useTemplateRef<InstanceType<typeof DatabaseDialog>>('databaseDialog')
 const exportDialog = useTemplateRef<InstanceType<typeof ExportDialog>>('exportDialog')
 const importDialog = useTemplateRef<InstanceType<typeof ImportDialog>>('importDialog')
 const menuElement = ref<HTMLElement | null>(null)
@@ -567,6 +570,19 @@ async function backup(): Promise<void> {
   }
 }
 
+/** Asks first, naming the database. Drops it only on yes. */
+async function dropDatabase(): Promise<void> {
+  const session = props.session
+  const name = session.config?.database ?? ''
+  const sure = await confirm(
+    `Drop database "${name}"? All its tables and data are deleted. This cannot be undone.`,
+    { title: 'Drop database', kind: 'warning' },
+  )
+  if (sure) {
+    await session.run(session.dropDatabase(name))
+  }
+}
+
 function changeDatabase(event: Event): void {
   props.session.run(switchDatabase(event.target as HTMLSelectElement))
 }
@@ -591,6 +607,19 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
           <option v-for="name in session.databases" :key="name">{{ name }}</option>
         </select>
         <ChevronsUpDownIcon :size="11" />
+      </div>
+      <div v-if="session.canChangeDatabases" class="database-actions">
+        <button class="icon" title="New database" @click="databaseDialog?.open()">
+          <PlusIcon :size="13" />
+        </button>
+        <button
+          class="icon"
+          :title="backupBlocked ? 'Choose a database first' : 'Drop this database'"
+          :disabled="backupBlocked"
+          @click="dropDatabase"
+        >
+          <Trash2Icon :size="13" />
+        </button>
       </div>
       <div class="segmented">
         <template v-for="(text, view) in VIEW_LABELS" :key="view">
@@ -895,6 +924,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
       </button>
     </ContextMenu>
     <TableDialog ref="tableDialog" :session="session" />
+    <DatabaseDialog ref="databaseDialog" :session="session" />
     <ExportDialog ref="exportDialog" :session="session" />
     <ImportDialog ref="importDialog" :session="session" />
   </div>
@@ -942,6 +972,14 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
   border: 1px solid var(--border);
   border-radius: 5px;
   color: var(--text-2);
+}
+
+/* Close to the select, so they read as its actions. */
+.database-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin-left: -6px;
 }
 
 .database svg {
