@@ -2,6 +2,7 @@
 //!
 //! `SQLite` always runs. `MySQL`, `PostgreSQL` and SQL Server run only when these are set:
 //! `SQLPRO_TEST_MYSQL=host:port:user:password:database`
+//! `SQLPRO_TEST_MARIADB=host:port:user:password:database` (`MariaDB` through the `MySQL` driver)
 //! `SQLPRO_TEST_POSTGRES=host:port:user:password:database`
 //! `SQLPRO_TEST_MSSQL=host:port:user:password:database` (the database is created when missing)
 //! Add `SQLPRO_TEST_SSH=host:port:user:password` to run them through an SSH tunnel.
@@ -66,6 +67,15 @@ fn ssh_from_env() -> Option<SshConfig> {
         password: password.to_owned(),
         key_path: String::new(),
     })
+}
+
+/// A temp file of this test run. The name of the test thread is in it, because the
+/// tests run at the same time and `MySQL` and `MariaDB` both use `Driver::Mysql`.
+fn temp_path(kind: &str, extension: &str) -> std::path::PathBuf {
+    let thread = std::thread::current();
+    let test = thread.name().unwrap_or("main");
+    let name = format!("sqlpro-{kind}-{}-{test}.{extension}", std::process::id());
+    std::env::temp_dir().join(name)
 }
 
 fn config_from_env(name: &str, driver: Driver) -> Option<ConnectionConfig> {
@@ -745,7 +755,7 @@ async fn create_and_rename(service: &ConnectionService) {
 /// Dumps the database to a file. Expects the test table with the name O'Brien in it.
 async fn dump(service: &ConnectionService, driver: Driver) {
     let folder = std::env::temp_dir();
-    let path = folder.join(format!("sqlpro-dump-{}-{driver:?}.sql", std::process::id()));
+    let path = temp_path("dump", "sql");
     if driver == Driver::Mssql {
         let error = service
             .dump_database(ID, &path)
@@ -781,12 +791,8 @@ async fn dump(service: &ConnectionService, driver: Driver) {
 }
 
 /// Exports the test table as SQL and as CSV. Expects the two rows that `exercise` inserts.
-async fn export(service: &ConnectionService, table: &TableRef, driver: Driver) {
-    let folder = std::env::temp_dir();
-    let path = folder.join(format!(
-        "sqlpro-export-{}-{driver:?}.sql",
-        std::process::id()
-    ));
+async fn export(service: &ConnectionService, table: &TableRef) {
+    let path = temp_path("export", "sql");
     let mut request = ExportRequest {
         tables: vec![table.clone()],
         format: ExportFormat::Sql,
@@ -821,7 +827,7 @@ async fn export(service: &ConnectionService, table: &TableRef, driver: Driver) {
     assert_eq!(csv, "note,id\r\n,1\r\n\"line 1\nline 2\",2\r\n");
 
     // CSV into a folder: one file per table.
-    let out = folder.join(format!("sqlpro-export-{}-{driver:?}", std::process::id()));
+    let out = temp_path("export", "csv");
     std::fs::create_dir_all(&out).expect("folder");
     request.columns = Vec::new();
     request.path = out.clone();
@@ -879,10 +885,8 @@ fn csv_column(name: &str, field: usize) -> CsvColumn {
 
 /// Exports the test table as SQL and imports the file back under another name.
 /// Then imports CSV rows into that copy. Leaves the test table as it was.
-async fn import(service: &ConnectionService, table: &TableRef, driver: Driver) {
-    let folder = std::env::temp_dir();
-    let name = format!("sqlpro-import-{}-{driver:?}", std::process::id());
-    let path = folder.join(format!("{name}.sql"));
+async fn import(service: &ConnectionService, table: &TableRef) {
+    let path = temp_path("import", "sql");
     let request = ExportRequest {
         tables: vec![table.clone()],
         format: ExportFormat::Sql,
@@ -920,7 +924,7 @@ async fn import(service: &ConnectionService, table: &TableRef, driver: Driver) {
     assert_eq!(page(service, &copy).await.total, 2);
 
     // CSV with a header, fields in another order, quotes and empty fields.
-    let csv = folder.join(format!("{name}.csv"));
+    let csv = temp_path("import", "csv");
     std::fs::write(&csv, "note,id,name\r\n\"a, \"\"b\"\"\",10,\r\n,11,Zed\r\n").expect("csv");
     let preview = ConnectionService::preview_csv(&csv).expect("preview");
     assert_eq!(preview.count, 3);
@@ -1097,8 +1101,8 @@ async fn diagram(service: &ConnectionService, driver: Driver) {
 
 /// Writes a file, and fails for a folder that does not exist.
 fn save_image() {
+    let path = temp_path("image", "png");
     let folder = std::env::temp_dir();
-    let path = folder.join(format!("sqlpro-image-{}.png", std::process::id()));
     ConnectionService::save_image(&path, &[1, 2, 3]).expect("save image");
     assert_eq!(std::fs::read(&path).expect("image file"), [1, 2, 3]);
     std::fs::remove_file(&path).expect("remove image");
@@ -1827,6 +1831,45 @@ async fn own_process(service: &ConnectionService, id: &str) -> i64 {
     own.id
 }
 
+/// Runs a query, then finds its shape in the query stats of the server.
+/// `PostgreSQL` needs `pg_stat_statements` in `shared_preload_libraries`.
+async fn query_stats(service: &ConnectionService, driver: Driver) {
+    if driver == Driver::Sqlite {
+        let listed = service.query_stats(ID, 7).await;
+        assert_eq!(
+            listed.expect_err("no stats").to_string(),
+            "SQLite has no query stats"
+        );
+        return;
+    }
+    if driver == Driver::Postgres {
+        service
+            .run_query(ID, "CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+            .await
+            .expect("create extension");
+    }
+    // The list has only the 500 slowest shapes. A test server that ran for long has more,
+    // so the cheap probe would not be in it. So the stats start again here.
+    let reset = match driver {
+        Driver::Mysql => "TRUNCATE TABLE performance_schema.events_statements_summary_by_digest",
+        Driver::Postgres => "SELECT pg_stat_statements_reset()",
+        _ => "DBCC FREEPROCCACHE",
+    };
+    service.run_query(ID, reset).await.expect("reset stats");
+    let probe = format!("SELECT COUNT(*) AS sqlpro_stats_probe FROM {TABLE}");
+    service.run_query(ID, &probe).await.expect("probe");
+    // Zero days is out of bounds and becomes one day.
+    let stats = service.query_stats(ID, 0).await.expect("query stats");
+    assert!(stats.len() <= 500);
+    let found = stats
+        .iter()
+        .find(|stat| stat.query.contains("sqlpro_stats_probe"));
+    let found = found.unwrap_or_else(|| panic!("the probe is listed: {stats:?}"));
+    assert!(found.runs >= 1);
+    assert!(found.total_ms >= 0.0);
+    assert_eq!(found.last_run.is_some(), driver != Driver::Postgres);
+}
+
 /// Lists the processes and stops one. The tab cannot stop its own connection.
 /// Leaves `ID` connected.
 async fn processes(service: &ConnectionService, config: &ConnectionConfig) {
@@ -1947,12 +1990,13 @@ async fn exercise(config: ConnectionConfig) {
     );
 
     dump(&service, driver).await;
-    export(&service, &table, driver).await;
-    import(&service, &table, driver).await;
+    export(&service, &table).await;
+    import(&service, &table).await;
     filters(&service, &table).await;
     save_changes(&service, &table).await;
     clone_connection(&service, &config, &table).await;
     processes(&service, &config).await;
+    query_stats(&service, driver).await;
     users(&service, &config, &table).await;
 
     // Update: only the row with the given key changes.
@@ -2001,6 +2045,11 @@ async fn exercise(config: ConnectionConfig) {
     }
 
     clean_up(&service).await;
+    // Here, not in a test of its own: run at the same time, its sequence on
+    // `PostgreSQL` can come and go while `pg_dump` reads the database.
+    if driver != Driver::Sqlite {
+        ai_read_guard(config).await;
+    }
 }
 
 #[tokio::test]
@@ -2024,6 +2073,13 @@ async fn sqlite() {
 #[tokio::test]
 async fn mysql() {
     if let Some(config) = config_from_env("SQLPRO_TEST_MYSQL", Driver::Mysql) {
+        exercise(config).await;
+    }
+}
+
+#[tokio::test]
+async fn mariadb() {
+    if let Some(config) = config_from_env("SQLPRO_TEST_MARIADB", Driver::Mysql) {
         exercise(config).await;
     }
 }
@@ -2135,17 +2191,4 @@ async fn ai_read_guard(config: ConnectionConfig) {
             .expect("drop");
     }
     service.disconnect(id).await;
-}
-
-#[tokio::test]
-async fn ai_read_guard_on_servers() {
-    for (name, driver) in [
-        ("SQLPRO_TEST_MYSQL", Driver::Mysql),
-        ("SQLPRO_TEST_POSTGRES", Driver::Postgres),
-        ("SQLPRO_TEST_MSSQL", Driver::Mssql),
-    ] {
-        if let Some(config) = config_from_env(name, driver) {
-            ai_read_guard(config).await;
-        }
-    }
 }

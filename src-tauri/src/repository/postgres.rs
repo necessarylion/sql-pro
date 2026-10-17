@@ -13,7 +13,9 @@ use super::{
     password_safe, pool_options, relations, run_on_new_connection, run_script, single,
     standard_columns,
 };
-use crate::constants::{POSTGRES_ROLE_NAME_MAX, TRIGGER};
+use crate::constants::{
+    POSTGRES_NO_QUERY_STATS, POSTGRES_ROLE_NAME_MAX, QUERY_STATS_LIMIT, TRIGGER,
+};
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser, ForeignKey, IndexInfo,
@@ -651,6 +653,24 @@ impl Repository for PostgresRepository {
             "pg_terminate_backend"
         };
         Ok(format!("SELECT {function}({id})"))
+    }
+
+    /// `pg_stat_statements` keeps no last run time, so `days` is not used: the stats
+    /// count since the last reset. It has one row per user too, so rows of the same
+    /// shape in the same database are added up. The column names are those of
+    /// `PostgreSQL` 13 and newer (`total_time` became `total_exec_time`). Older ones fail.
+    fn query_stats_sql(&self, _days: u32) -> AppResult<String> {
+        Ok(format!(
+            "SELECT min(s.query), d.datname, sum(s.calls), NULL, sum(s.total_exec_time), \
+            sum(s.total_exec_time) / NULLIF(sum(s.calls), 0), max(s.max_exec_time), sum(s.rows) \
+            FROM pg_stat_statements s LEFT JOIN pg_database d ON d.oid = s.dbid \
+            GROUP BY s.queryid, d.datname \
+            ORDER BY sum(s.total_exec_time) DESC LIMIT {QUERY_STATS_LIMIT}"
+        ))
+    }
+
+    fn query_stats_setup(&self) -> &'static str {
+        POSTGRES_NO_QUERY_STATS
     }
 
     async fn close(&self) {

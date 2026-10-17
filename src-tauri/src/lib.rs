@@ -103,6 +103,7 @@ pub fn run() {
             commands::set_user_password,
             commands::list_processes,
             commands::kill_process,
+            commands::query_stats,
             commands::save_password,
             commands::load_password,
             commands::delete_password,

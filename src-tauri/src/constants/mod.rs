@@ -135,6 +135,27 @@ pub const DROP_CURRENT_DATABASE: &str = "Switch to another database before you d
 /// The error for a database kind that has no server processes.
 pub const NO_PROCESSES: &str = "SQLite has no server processes";
 
+/// The error for a database kind that has no query stats.
+pub const NO_QUERY_STATS: &str = "SQLite has no query stats";
+
+/// The Query stats view shows at most this many query shapes, the slowest first.
+pub const QUERY_STATS_LIMIT: u32 = 500;
+
+/// The bounds of "last N days" in the Query stats view.
+pub const QUERY_STATS_MIN_DAYS: u32 = 1;
+pub const QUERY_STATS_MAX_DAYS: u32 = 3650;
+
+/// What to do when the server does not collect query stats, or the account may not read them.
+pub const MYSQL_NO_QUERY_STATS: &str = "Query stats need performance_schema, and it is off or not readable. \
+    Set performance_schema=ON in my.cnf and restart the server. \
+    Your account also needs SELECT on performance_schema.";
+pub const POSTGRES_NO_QUERY_STATS: &str = "Query stats need the pg_stat_statements extension. \
+    Add pg_stat_statements to shared_preload_libraries, restart the server, \
+    then run CREATE EXTENSION pg_stat_statements; in this database. \
+    To see the queries of other users, your account needs the pg_read_all_stats role.";
+pub const MSSQL_NO_QUERY_STATS: &str = "Query stats need the VIEW SERVER STATE permission \
+    (on Azure SQL: VIEW DATABASE STATE).";
+
 /// The error when the process to stop is not in the list any more.
 pub const PROCESS_GONE: &str = "This process is not running any more";
 

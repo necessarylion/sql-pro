@@ -9,6 +9,11 @@ import {
 import { FALLBACK_DATABASES } from '../constants/databases'
 import { DIAGRAM_SAVED_STATUS_MS } from '../constants/diagram'
 import { RAW_FILTER_COLUMN, VALUELESS_OPERATORS } from '../constants/filters'
+import {
+  QUERY_STATS_DEFAULT_DAYS,
+  QUERY_STATS_MAX_DAYS,
+  QUERY_STATS_MIN_DAYS,
+} from '../constants/queryStats'
 import { ACCESS_LABELS } from '../constants/users'
 import type {
   AiOptions,
@@ -19,6 +24,7 @@ import type {
   CsvPreview,
   DbObject,
   DbProcess,
+  QueryStat,
   DbUser,
   Diagram,
   ExportFormat,
@@ -112,6 +118,10 @@ export class Session {
   canManageUsers = false
   /** The connections of the server, for the Processes view. */
   processes: DbProcess[] = []
+  /** The query shapes of the server, for the Query stats view. */
+  queryStats: QueryStat[] = []
+  /** The Query stats view shows the queries of the last this many days. */
+  queryStatsDays = QUERY_STATS_DEFAULT_DAYS
   /** What the Diagram view shows. null = not loaded. */
   diagram: Diagram | null = null
   /** Goes up by one on each press of the export shortcut. The workspace then opens the export dialog. */
@@ -354,6 +364,7 @@ export class Session {
       this.status = ''
       this.diagram = null
       this.processes = []
+      this.queryStats = []
       this.clearTable()
       this.setUsers([], false)
     }
@@ -528,6 +539,8 @@ export class Session {
       await this.loadUsers()
     } else if (this.view === 'processes') {
       await this.loadProcesses()
+    } else if (this.view === 'queryStats') {
+      await this.loadQueryStats()
     } else if (this.view === 'diagram') {
       await this.loadDiagram()
     } else if (this.view !== 'query' && this.view !== 'ask') {
@@ -1013,6 +1026,13 @@ export class Session {
 
   async loadProcesses(): Promise<void> {
     this.processes = await this.api.listProcesses(this.id)
+  }
+
+  /** Loads the query stats. Days that are not a whole number in bounds are fixed first. */
+  async loadQueryStats(): Promise<void> {
+    const days = Math.round(this.queryStatsDays) || QUERY_STATS_MIN_DAYS
+    this.queryStatsDays = Math.min(Math.max(days, QUERY_STATS_MIN_DAYS), QUERY_STATS_MAX_DAYS)
+    this.queryStats = await this.api.queryStats(this.id, this.queryStatsDays)
   }
 
   /** `queryOnly` stops only the running statement. Else the whole connection ends. */

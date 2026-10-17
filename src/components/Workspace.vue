@@ -17,6 +17,7 @@ import {
   DatabaseIcon,
   DownloadIcon,
   EyeIcon,
+  GaugeIcon,
   LoaderCircleIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -61,6 +62,7 @@ import StructureView from './StructureView.vue'
 import TableDialog from './TableDialog.vue'
 import UsersView from './UsersView.vue'
 import ProcessesView from './ProcessesView.vue'
+import QueryStatsView from './QueryStatsView.vue'
 
 const props = defineProps<{ session: Session }>()
 const manager = injectRequired(SESSION_MANAGER)
@@ -75,6 +77,7 @@ const VIEW_ICONS: Record<SessionView, Component> = {
   ask: SparklesIcon,
   users: UsersIcon,
   processes: ActivityIcon,
+  queryStats: GaugeIcon,
   diagram: WorkflowIcon,
 }
 
@@ -542,12 +545,15 @@ function hasView(): boolean {
   return false
 }
 
-/** Users is only for an account that may manage users. SQLite has no server processes. */
+/** Users is only for an account that may manage users. SQLite has no server processes or query stats. */
 function showsView(view: SessionView): boolean {
   if (view === 'users') {
     return props.session.canManageUsers
   }
-  return view !== 'processes' || props.session.config?.driver !== 'sqlite'
+  if (view === 'processes' || view === 'queryStats') {
+    return props.session.config?.driver !== 'sqlite'
+  }
+  return true
 }
 
 /** MySQL can be connected without a database. Then there is nothing to back up. */
@@ -782,6 +788,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
           <!-- The Users view needs no table. It has its own bottom bar for errors. -->
           <UsersView v-if="session.view === 'users'" :session="session" />
           <ProcessesView v-else-if="session.view === 'processes'" :session="session" />
+          <QueryStatsView v-else-if="session.view === 'queryStats'" :session="session" />
           <!-- The diagram shows all tables. It has its own bottom bar too. -->
           <DiagramView v-else-if="session.view === 'diagram'" :session="session" />
           <!-- No table is open, so no view with a bottom bar. Show the error or the status here. -->
