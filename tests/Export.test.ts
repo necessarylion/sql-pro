@@ -3,11 +3,17 @@ import { expect, test } from 'bun:test'
 import type { DatabaseApi } from '../src/services/DatabaseApi'
 import { Session } from '../src/services/Session'
 import { FakePrompt } from './FakePrompt'
-import type { ExportRequest, Row, RowsExport, TableRef } from '../src/types'
+import type { ExportRequest, Row, RowsExport, RowsSql, TableRef } from '../src/types'
 
 class FakeApi {
   exports: { id: string; request: ExportRequest }[] = []
   rowExports: { id: string; request: RowsExport }[] = []
+  inserts: { id: string; request: RowsSql }[] = []
+
+  async rowsInsertSql(id: string, request: RowsSql): Promise<string> {
+    this.inserts.push({ id, request })
+    return `INSERT ${request.rows.length}`
+  }
 
   async exportRows(id: string, request: RowsExport): Promise<void> {
     this.rowExports.push({ id, request })
@@ -84,4 +90,24 @@ test('row export names the table, or uses the file name for a query result', asy
   await session.exportRows('sql', null, ['id'], [['1'], ['2']], '/tmp/old.users.sql')
   expect(api.rowExports[1].request.table.name).toBe('old.users')
   expect(session.status).toBe('Exported 2 rows to /tmp/old.users.sql')
+})
+
+test('Copy Rows As INSERT asks the backend, so the database quotes it', async function () {
+  const api = new FakeApi()
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
+  const pick = { columns: ['id', 'name'], rows: [['1', null]] }
+
+  expect(await session.rowsText('insert', USERS, pick)).toBe('INSERT 1')
+  expect(api.inserts).toEqual([{ id: session.id, request: { table: USERS, ...pick } }])
+
+  // A query result has no table. It uses the same name as an export.
+  await session.rowsText('insert', null, pick)
+  expect(api.inserts[1]?.request.table.name).toBe('query_result')
+
+  // Other formats need no backend.
+  expect(await session.rowsText('csv', USERS, pick)).toBe('1,')
+  expect(api.inserts.length).toBe(2)
+
+  session.noteCopied(2, 'JSON')
+  expect(session.status).toBe('Copied 2 rows as JSON')
 })

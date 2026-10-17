@@ -31,6 +31,7 @@ import type {
   QueryStat,
   DbUser,
   Diagram,
+  CopyFormat,
   ExportFormat,
   ExportRequest,
   RowsExport,
@@ -43,6 +44,7 @@ import type {
   FilterRule,
   ResultSet,
   Row,
+  RowsPick,
   RowUpdate,
   SessionView,
   SnippetOutput,
@@ -56,6 +58,7 @@ import type { DatabaseApi } from './DatabaseApi'
 import type { DiscardPrompt } from './DiscardPrompt'
 import { Environment } from './Environment'
 import { QueryStatList } from './QueryStatList'
+import { RowCopy } from './RowCopy'
 import { TableDraft } from './TableDraft'
 import { TableSelection } from './TableSelection'
 import type { ColumnDraft } from './TableDraft'
@@ -146,6 +149,7 @@ export class Session {
   private statusTimer: ReturnType<typeof setTimeout> | undefined
   private api: DatabaseApi
   private prompt: DiscardPrompt
+  private rowCopy = new RowCopy()
 
   constructor(api: DatabaseApi, prompt: DiscardPrompt) {
     this.api = api
@@ -1286,6 +1290,28 @@ export class Session {
     const request: RowsExport = { format, table: target, columns, rows, path }
     await this.api.exportRows(this.id, request)
     this.status = `Exported ${this.plural(rows.length, 'row')} to ${path}`
+  }
+
+  /**
+   * The picked rows as text in one "Copy Rows As" format. INSERT statements come from the
+   * backend, so names and values are quoted the way this database wants. A query result
+   * has no table (`table` is null): its statements use the same name as an export.
+   */
+  async rowsText(format: CopyFormat, table: TableRef | null, pick: RowsPick): Promise<string> {
+    if (format !== 'insert') {
+      return this.rowCopy.as(format, pick)
+    }
+    const target = table ?? { schema: null, name: QUERY_RESULT_NAME, kind: 'table' }
+    return this.api.rowsInsertSql(this.id, {
+      table: target,
+      columns: pick.columns,
+      rows: pick.rows,
+    })
+  }
+
+  /** Says in the status that rows were copied, like "Copied 2 rows as JSON". */
+  noteCopied(count: number, label: string): void {
+    this.status = `Copied ${this.plural(count, 'row')} as ${label}`
   }
 
   /** The first rows of a CSV file and how many rows it has. */

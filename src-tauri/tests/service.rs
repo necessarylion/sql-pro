@@ -12,7 +12,7 @@ use sql_pro_lib::model::{
     AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, CsvColumn, CsvImport, DbUser,
     Diagram, Driver, ExportFormat, ExportRequest, FilterOperator, FilterRule, ForeignKey,
     IndexInfo, NewColumn, NewForeignKey, NewIndex, NewUser, ReferentialAction, Relation, RowUpdate,
-    RowsExport, SaveResult, SshConfig, TableRef, Values,
+    RowsExport, RowsSql, SaveResult, SshConfig, TableRef, Values,
 };
 use std::time::{Duration, Instant};
 
@@ -874,6 +874,38 @@ async fn export(service: &ConnectionService, table: &TableRef) {
     let csv = std::fs::read_to_string(&path).expect("rows csv");
     assert_eq!(csv, "id,name\r\n1,O'Brien\r\n2,\r\n");
     std::fs::remove_file(&path).expect("remove rows export");
+}
+
+/// "Copy Rows As > INSERT Statement": names and values quoted the way each database wants.
+fn insert_statements(service: &ConnectionService, driver: Driver) {
+    let request = RowsSql {
+        table: TableRef {
+            schema: Some("app".to_owned()),
+            name: "picked".to_owned(),
+            kind: String::new(),
+        },
+        columns: vec!["id".to_owned(), "a\"b`c]d".to_owned()],
+        rows: vec![
+            vec![text("O'Brien"), text("C:\\dir")],
+            vec![text("2"), None],
+        ],
+    };
+    let sql = service.rows_insert_sql(ID, &request).expect("insert sql");
+    let expected = match driver {
+        Driver::Mysql => concat!(
+            "INSERT INTO `app`.`picked` (`id`, `a\"b``c]d`) VALUES ('O''Brien', 'C:\\\\dir');\n",
+            "INSERT INTO `app`.`picked` (`id`, `a\"b``c]d`) VALUES ('2', NULL);\n",
+        ),
+        Driver::Mssql => concat!(
+            "INSERT INTO [app].[picked] ([id], [a\"b`c]]d]) VALUES (N'O''Brien', N'C:\\dir');\n",
+            "INSERT INTO [app].[picked] ([id], [a\"b`c]]d]) VALUES (N'2', NULL);\n",
+        ),
+        Driver::Postgres | Driver::Sqlite => concat!(
+            "INSERT INTO \"app\".\"picked\" (\"id\", \"a\"\"b`c]d\") VALUES ('O''Brien', 'C:\\dir');\n",
+            "INSERT INTO \"app\".\"picked\" (\"id\", \"a\"\"b`c]d\") VALUES ('2', NULL);\n",
+        ),
+    };
+    assert_eq!(sql, expected);
 }
 
 fn csv_column(name: &str, field: usize) -> CsvColumn {
@@ -2055,6 +2087,7 @@ async fn exercise(config: ConnectionConfig) {
 
     dump(&service, driver).await;
     export(&service, &table).await;
+    insert_statements(&service, driver);
     import(&service, &table).await;
     filters(&service, &table).await;
     save_changes(&service, &table).await;

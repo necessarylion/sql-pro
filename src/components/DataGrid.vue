@@ -27,7 +27,7 @@ import { RowCopy } from '../services/RowCopy'
 import { COLUMN_ORDERS, injectRequired, SHORTCUTS } from '../services/keys'
 import { TableSelection } from '../services/TableSelection'
 import ContextMenu from './ContextMenu.vue'
-import type { GridColumn, Row } from '../types'
+import type { GridColumn, Row, RowsPick } from '../types'
 
 const props = defineProps<{
   columns: GridColumn[]
@@ -64,7 +64,7 @@ const rowCopy = new RowCopy()
 // Without a listener the grid shows its own menu with Copy only. null = closed.
 const ownMenu = !getCurrentInstance()?.vnode.props?.onMenu
 const menu = ref<{ x: number; y: number } | null>(null)
-defineExpose({ copyRows })
+defineExpose({ copyRows, pickedRows })
 const grid = useTemplateRef<HTMLElement>('grid')
 // The mouse button can be let go in the middle of a drag when the grid goes away.
 onBeforeUnmount(endDrag)
@@ -586,6 +586,30 @@ function copyRows(): void {
   void navigator.clipboard.writeText(rowCopy.text(rows, shown.value))
 }
 
+/**
+ * The selected rows for "Copy Rows As": the values the grid shows (with unsaved edits),
+ * in grid order, with the columns in the shown order.
+ */
+function pickedRows(): RowsPick {
+  const columns: string[] = []
+  for (const column of shown.value) {
+    columns.push(props.columns[column]?.name ?? '')
+  }
+  const rows: Row[] = []
+  for (const index of [...(selected.value ?? [])].sort(byNumber)) {
+    const row = props.rows[index]
+    if (!row) {
+      continue
+    }
+    const values: Row = []
+    for (const column of shown.value) {
+      values.push(row[column] ?? null)
+    }
+    rows.push(values)
+  }
+  return { columns, rows }
+}
+
 function byNumber(first: number, second: number): number {
   return first - second
 }
@@ -989,8 +1013,22 @@ tbody tr.alt {
   background: var(--row-alt);
 }
 
+/*
+  The selection colour fades in and out. Only colour, so it stays cheap.
+  Only the drawn rows exist (about one screen), and a new row starts with no transition.
+*/
+tbody tr {
+  /* A click selects the row, so the rows show the hand. */
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
 /* The empty rows that stand for the rows that are not drawn. */
 tbody tr.spacer td {
+  /* Not a real row, so no hand. */
+  cursor: default;
   max-width: none;
   padding: 0;
   border: 0;
@@ -1075,6 +1113,8 @@ td.editing {
 }
 
 textarea {
+  /* The rows show the hand. The editor keeps the text cursor. */
+  cursor: text;
   flex: 1;
   min-width: 0;
   max-height: 160px;

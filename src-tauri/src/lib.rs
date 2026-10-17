@@ -88,6 +88,7 @@ pub fn run() {
             commands::dump_database,
             commands::export_tables,
             commands::export_rows,
+            commands::rows_insert_sql,
             commands::list_columns,
             commands::preview_csv,
             commands::import_csv,

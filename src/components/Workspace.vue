@@ -969,6 +969,11 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
   flex: 1;
 }
 
+/* A view fades in when you switch to it. It also runs when a v-show view is shown again. */
+.main > * {
+  animation: fade-in var(--dur-fast) var(--ease);
+}
+
 /* The left padding is the side margin of the search box in the sidebar. */
 .toolbar {
   gap: 10px;

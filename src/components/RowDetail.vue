@@ -210,6 +210,7 @@ function format(field: Field): void {
 
 <style scoped>
 .detail {
+  animation: slide-in var(--dur-med) var(--ease);
   position: relative;
   /* Above the grid header (z-index 2), below menus and dialogs (100). */
   z-index: 3;

@@ -101,7 +101,8 @@ onBeforeUnmount(stopListening)
       A drag region only works on the element that is clicked, so the tabs stay clickable.
     -->
     <div class="tabs" :class="{ mac: shortcuts.mac }" data-tauri-drag-region>
-      <div class="strip">
+      <!-- A new tab grows in, a closed tab shrinks out, and the others slide. -->
+      <TransitionGroup tag="div" name="tab" class="strip">
         <div
           v-for="session in manager.sessions"
           :key="session.id"
@@ -123,7 +124,7 @@ onBeforeUnmount(stopListening)
             <XIcon :size="11" />
           </button>
         </div>
-      </div>
+      </TransitionGroup>
       <button class="icon new" title="New tab" @click="manager.open()">
         <PlusIcon :size="13" />
       </button>
@@ -214,6 +215,32 @@ onBeforeUnmount(stopListening)
   color: var(--text-2);
   font-weight: 500;
   white-space: nowrap;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+/* The width goes to and from zero, so the tabs next to it slide along. */
+.tab-enter-active,
+.tab-leave-active {
+  overflow: hidden;
+  transition:
+    width var(--dur-med) var(--ease),
+    min-width var(--dur-med) var(--ease),
+    padding var(--dur-med) var(--ease),
+    opacity var(--dur-med) var(--ease);
+}
+
+.tab-enter-from,
+.tab-leave-to {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  opacity: 0;
+}
+
+.tab-move {
+  transition: transform var(--dur-med) var(--ease);
 }
 
 .tab:not(.active):hover {
@@ -342,5 +369,7 @@ onBeforeUnmount(stopListening)
   flex: 1;
   flex-direction: column;
   min-height: 0;
+  /* Fades in when its tab becomes active. */
+  animation: fade-in var(--dur-fast) var(--ease);
 }
 </style>

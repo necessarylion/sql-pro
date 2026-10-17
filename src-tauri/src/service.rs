@@ -27,7 +27,7 @@ use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
     ConnectionConfig, DbObject, DbUser, Diagram, DiagramTable, Driver, ExportRequest,
     FilterOperator, FilterRule, NewColumn, NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate,
-    RowsExport, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
+    RowsExport, RowsSql, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::repository::{
     ClaudeCli, DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, not_saved,
@@ -493,6 +493,17 @@ impl ConnectionService {
     pub fn export_rows(&self, id: &str, request: &RowsExport) -> AppResult<()> {
         let repository = self.repository(id)?;
         export::Exporter::write_rows(repository.as_ref(), request)
+    }
+
+    /// `INSERT` statements for rows the app already has. It does not touch the database.
+    pub fn rows_insert_sql(&self, id: &str, request: &RowsSql) -> AppResult<String> {
+        let repository = self.repository(id)?;
+        Ok(export::Exporter::insert_sql(
+            repository.as_ref(),
+            &request.table,
+            &request.columns,
+            &request.rows,
+        ))
     }
 
     /// The columns of a table or view.
