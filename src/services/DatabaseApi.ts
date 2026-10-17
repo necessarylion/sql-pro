@@ -12,6 +12,7 @@ import type {
   CsvPreview,
   DbObject,
   DbProcess,
+  QueryStat,
   DbUser,
   Diagram,
   ExportRequest,
@@ -308,6 +309,11 @@ export class DatabaseApi {
   /** `queryOnly` stops only the running statement. Else the whole connection ends. */
   killProcess(id: string, process: number, queryOnly: boolean): Promise<void> {
     return invoke('kill_process', { id, process, queryOnly })
+  }
+
+  /** The query shapes of the server from the last `days` days. PostgreSQL does not use `days`. */
+  queryStats(id: string, days: number): Promise<QueryStat[]> {
+    return invoke('query_stats', { id, days })
   }
 
   savePassword(id: string, password: string): Promise<void> {

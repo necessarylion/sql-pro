@@ -16,7 +16,8 @@ use super::{
     password_safe, pool_options, relations, run_on_new_connection, run_script, single,
 };
 use crate::constants::{
-    ANY_HOST, MYSQL_DATABASE_PRIVILEGES, MYSQL_HOST_MAX, MYSQL_SYSTEM_USERS, MYSQL_USER_NAME_MAX,
+    ANY_HOST, MYSQL_DATABASE_PRIVILEGES, MYSQL_HOST_MAX, MYSQL_NO_QUERY_STATS, MYSQL_SYSTEM_USERS,
+    MYSQL_USER_NAME_MAX, QUERY_STATS_LIMIT,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -755,6 +756,30 @@ impl Repository for MysqlRepository {
     fn kill_sql(&self, id: i64, query_only: bool) -> AppResult<String> {
         let what = if query_only { "QUERY " } else { "" };
         Ok(format!("KILL {what}{id}"))
+    }
+
+    /// The digest table has the same columns on `MySQL` 8 and `MariaDB`.
+    /// Only the current database: with none selected, `DATABASE()` is NULL and no row matches.
+    /// Its timers are in picoseconds: / 1e9 gives milliseconds.
+    fn query_stats_sql(&self, days: u32) -> AppResult<String> {
+        Ok(format!(
+            "SELECT DIGEST_TEXT, SCHEMA_NAME, COUNT_STAR, LAST_SEEN, \
+            SUM_TIMER_WAIT / 1000000000, AVG_TIMER_WAIT / 1000000000, \
+            MAX_TIMER_WAIT / 1000000000, SUM_ROWS_SENT \
+            FROM performance_schema.events_statements_summary_by_digest \
+            WHERE DIGEST_TEXT IS NOT NULL AND SCHEMA_NAME = DATABASE() \
+            AND LAST_SEEN >= NOW() - INTERVAL {days} DAY \
+            ORDER BY SUM_TIMER_WAIT DESC LIMIT {QUERY_STATS_LIMIT}"
+        ))
+    }
+
+    /// With `performance_schema` off the table is there, but stays empty.
+    fn query_stats_on_sql(&self) -> Option<&'static str> {
+        Some("SELECT @@performance_schema")
+    }
+
+    fn query_stats_setup(&self) -> &'static str {
+        MYSQL_NO_QUERY_STATS
     }
 
     async fn close(&self) {

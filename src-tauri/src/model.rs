@@ -519,6 +519,23 @@ pub struct DbProcess {
     pub current: bool,
 }
 
+/// One query shape of the server: all runs of the same statement with other values.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryStat {
+    /// The normalized text. Values are replaced, like `WHERE id = ?`.
+    pub query: String,
+    pub database: Option<String>,
+    pub runs: i64,
+    /// The time of the last run, as the server writes it. `PostgreSQL` has none.
+    pub last_run: Option<String>,
+    pub total_ms: f64,
+    pub average_ms: f64,
+    pub max_ms: Option<f64>,
+    /// All rows the runs gave back.
+    pub rows: Option<i64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ConnectionConfig, SslMode};

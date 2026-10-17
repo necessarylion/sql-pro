@@ -137,6 +137,7 @@ export const VIEW_LABELS: Record<SessionView, string> = {
   ask: 'Ask AI',
   users: 'Users',
   processes: 'Processes',
+  queryStats: 'Query stats',
   diagram: 'Diagram',
 }
 

@@ -19,7 +19,7 @@ use super::{
     foreign_keys, hex, indexes, kind, objects, pool_options, relations, run_on_new_connection,
     run_script, single, standard_columns,
 };
-use crate::constants::QUERY_CANCELLED;
+use crate::constants::{MSSQL_NO_QUERY_STATS, QUERY_CANCELLED, QUERY_STATS_LIMIT};
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, ForeignKey, IndexInfo, Relation, ResultSet,
@@ -663,10 +663,13 @@ impl Repository for MssqlRepository {
 
     /// User sessions, with the request and the SQL text that run now.
     /// Without the VIEW SERVER STATE right SQL Server shows only the own session.
+    /// A session that never ran a request has 1900-01-01 as its start. That gives no
+    /// time, because `DATEDIFF` in seconds overflows after 68 years.
     fn processes_sql(&self) -> AppResult<&'static str> {
         Ok("SELECT s.session_id, s.login_name, s.host_name, \
             DB_NAME(COALESCE(r.database_id, s.database_id)), COALESCE(r.status, s.status), \
-            DATEDIFF(SECOND, COALESCE(r.start_time, s.last_request_start_time), GETDATE()), \
+            DATEDIFF(SECOND, NULLIF(COALESCE(r.start_time, s.last_request_start_time), \
+            '19000101'), GETDATE()), \
             t.text, CASE WHEN s.session_id = @@SPID THEN 1 ELSE 0 END \
             FROM sys.dm_exec_sessions s \
             LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id \
@@ -680,6 +683,37 @@ impl Repository for MssqlRepository {
             return Err("SQL Server can only end the whole session".into());
         }
         Ok(format!("KILL {id}"))
+    }
+
+    /// One row per `query_hash`. The offsets cut the statement out of its batch; they
+    /// count bytes of UTF-16 text, so they are halved. Ad hoc SQL has no `dbid` in
+    /// `dm_exec_sql_text`, so the database then comes from the plan. Times are in
+    /// microseconds: / 1000 gives milliseconds. Only the database of this connection.
+    fn query_stats_sql(&self, days: u32) -> AppResult<String> {
+        Ok(format!(
+            "SELECT TOP ({QUERY_STATS_LIMIT}) MAX(x.statement), MAX(x.db), SUM(x.execution_count), \
+            CONVERT(nvarchar(30), MAX(x.last_execution_time), 120), \
+            SUM(x.total_elapsed_time) / 1000.0, \
+            SUM(x.total_elapsed_time) / 1000.0 / NULLIF(SUM(x.execution_count), 0), \
+            MAX(x.max_elapsed_time) / 1000.0, SUM(x.total_rows) \
+            FROM (SELECT s.query_hash, s.execution_count, s.last_execution_time, \
+            s.total_elapsed_time, s.max_elapsed_time, s.total_rows, \
+            DB_NAME(COALESCE(t.dbid, CONVERT(int, a.value))) AS db, \
+            CONVERT(nvarchar(max), SUBSTRING(t.text, s.statement_start_offset / 2 + 1, \
+            (CASE s.statement_end_offset WHEN -1 THEN DATALENGTH(t.text) \
+            ELSE s.statement_end_offset END - s.statement_start_offset) / 2 + 1)) AS statement \
+            FROM sys.dm_exec_query_stats s \
+            CROSS APPLY sys.dm_exec_sql_text(s.sql_handle) t \
+            OUTER APPLY (SELECT value FROM sys.dm_exec_plan_attributes(s.plan_handle) \
+            WHERE attribute = 'dbid') a \
+            WHERE s.last_execution_time >= DATEADD(DAY, -{days}, GETDATE()) \
+            AND COALESCE(t.dbid, CONVERT(int, a.value)) = DB_ID()) x \
+            GROUP BY x.query_hash ORDER BY SUM(x.total_elapsed_time) DESC"
+        ))
+    }
+
+    fn query_stats_setup(&self) -> &'static str {
+        MSSQL_NO_QUERY_STATS
     }
 
     async fn close(&self) {

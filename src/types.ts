@@ -161,7 +161,7 @@ export interface SaveResult {
 }
 
 export type SessionView =
-  'structure' | 'content' | 'query' | 'ask' | 'users' | 'processes' | 'diagram'
+  'structure' | 'content' | 'query' | 'ask' | 'users' | 'processes' | 'queryStats' | 'diagram'
 
 /** One reply of Claude Code in the Ask AI view. */
 export interface ClaudeReply {
@@ -403,6 +403,21 @@ export interface CsvImport {
   emptyIsNull: boolean
   /** The columns to fill. The others get their default. */
   columns: CsvColumn[]
+}
+
+/** One query shape of the server: all runs of the same statement with other values. */
+export interface QueryStat {
+  /** The normalized text. Values are replaced, like `WHERE id = ?`. */
+  query: string
+  database: string | null
+  runs: number
+  /** The time of the last run, as the server writes it. PostgreSQL has none. */
+  lastRun: string | null
+  totalMs: number
+  averageMs: number
+  maxMs: number | null
+  /** All rows the runs gave back. */
+  rows: number | null
 }
 
 /** One connection of the database server, with what it runs now. */

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   computed,
+  getCurrentInstance,
   inject,
   nextTick,
   onBeforeUnmount,
@@ -22,8 +23,10 @@ import {
   NUMERIC_TYPE_PATTERN,
 } from '../constants'
 import { ColumnOrder } from '../services/ColumnOrder'
+import { RowCopy } from '../services/RowCopy'
 import { COLUMN_ORDERS, injectRequired, SHORTCUTS } from '../services/keys'
 import { TableSelection } from '../services/TableSelection'
+import ContextMenu from './ContextMenu.vue'
 import type { GridColumn, Row } from '../types'
 
 const props = defineProps<{
@@ -56,6 +59,12 @@ const selected = defineModel<number[]>('selected')
 const shortcuts = injectRequired(SHORTCUTS)
 // The selection logic. `selected` stays the source: the parent can clear it, like after a reload.
 const selection = new TableSelection<number>()
+const rowCopy = new RowCopy()
+// A parent that listens to `menu` shows its own row menu, with a Copy item that calls `copyRows`.
+// Without a listener the grid shows its own menu with Copy only. null = closed.
+const ownMenu = !getCurrentInstance()?.vnode.props?.onMenu
+const menu = ref<{ x: number; y: number } | null>(null)
+defineExpose({ copyRows })
 const grid = useTemplateRef<HTMLElement>('grid')
 // The mouse button can be let go in the middle of a drag when the grid goes away.
 onBeforeUnmount(endDrag)
@@ -524,7 +533,8 @@ function dragOver(rowIndex: number): void {
 /**
  * Up and down arrows select the row above or below the last selected row.
  * Cmd+A (Ctrl+A on Windows and Linux) selects all rows, instead of all text of the page.
- * Only when the grid itself has the focus. The cell editor keeps its arrows and its Cmd+A.
+ * Cmd+C (Ctrl+C) copies the selected rows.
+ * Only when the grid itself has the focus. The cell editor keeps its arrows, its Cmd+A and its Cmd+C.
  */
 function moveSelection(event: KeyboardEvent): void {
   if (event.target !== event.currentTarget || props.rows.length === 0) {
@@ -534,6 +544,12 @@ function moveSelection(event: KeyboardEvent): void {
     event.preventDefault()
     selection.names = rowOrder()
     selected.value = [...selection.names]
+    return
+  }
+  // Text the user selected with the mouse wins: then the normal copy runs.
+  if (shortcuts.copies(event) && selected.value?.length && !window.getSelection()?.toString()) {
+    event.preventDefault()
+    copyRows()
     return
   }
   let step = 0
@@ -550,6 +566,28 @@ function moveSelection(event: KeyboardEvent): void {
   selection.only(next)
   selected.value = [next]
   void nextTick(showSelected)
+}
+
+/**
+ * Copies the selected rows as tab-separated text, in grid order and shown column order.
+ * Cmd+C is handled as a key, not in a copy event: WebKit sends no copy event when no text is selected.
+ */
+function copyRows(): void {
+  const indexes = [...(selected.value ?? [])].sort(byNumber)
+  if (indexes.length === 0) {
+    return
+  }
+  const rows: Row[] = []
+  for (const index of indexes) {
+    if (props.rows[index]) {
+      rows.push(props.rows[index])
+    }
+  }
+  void navigator.clipboard.writeText(rowCopy.text(rows, shown.value))
+}
+
+function byNumber(first: number, second: number): number {
+  return first - second
 }
 
 /**
@@ -589,7 +627,15 @@ function openMenu(rowIndex: number, event: MouseEvent): void {
   if (!isSelected(rowIndex)) {
     selected.value = [rowIndex]
   }
-  emit('menu', event, rowIndex)
+  if (ownMenu) {
+    menu.value = { x: event.clientX, y: event.clientY }
+  } else {
+    emit('menu', event, rowIndex)
+  }
+}
+
+function closeMenu(): void {
+  menu.value = null
 }
 
 function isEditing(rowIndex: number, columnIndex: number): boolean {
@@ -786,6 +832,13 @@ function onEnter(event: KeyboardEvent): void {
         </div>
       </div>
     </div>
+    <!-- mousedown.stop: a press in the menu must not reach the grid, or it would clear the selection. -->
+    <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" @close="closeMenu" @mousedown.stop>
+      <button role="menuitem" @click="copyRows">
+        Copy
+        <span class="hint">{{ shortcuts.hint('C') }}</span>
+      </button>
+    </ContextMenu>
   </div>
 </template>
 

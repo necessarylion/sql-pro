@@ -5,6 +5,7 @@ mod claude;
 mod export;
 mod import;
 mod processes;
+mod query_stats;
 mod spare;
 
 use std::collections::HashMap;

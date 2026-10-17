@@ -11,8 +11,8 @@ use crate::error::AppResult;
 use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
     ConnectionConfig, CsvImport, CsvPreview, DbObject, DbProcess, Diagram, ExportRequest,
-    NewColumn, NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate, RowsExport, SaveResult,
-    TableKeys, TablePage, TableRef, UserList, Values,
+    NewColumn, NewForeignKey, NewIndex, NewUser, QueryStat, ResultSet, RowUpdate, RowsExport,
+    SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::open_file::OpenedFiles;
 use crate::repository::PasswordRepository;
@@ -387,6 +387,12 @@ pub async fn list_users(service: Service<'_>, id: String) -> AppResult<UserList>
 #[tauri::command]
 pub async fn list_processes(service: Service<'_>, id: String) -> AppResult<Vec<DbProcess>> {
     service.list_processes(&id).await
+}
+
+/// `days` arrives as a number, so text cannot reach the SQL.
+#[tauri::command]
+pub async fn query_stats(service: Service<'_>, id: String, days: u32) -> AppResult<Vec<QueryStat>> {
+    service.query_stats(&id, days).await
 }
 
 /// `process` arrives as a number, so text cannot reach the SQL.
