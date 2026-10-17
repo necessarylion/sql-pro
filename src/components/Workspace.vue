@@ -23,7 +23,6 @@ import {
   SearchIcon,
   SparklesIcon,
   SquareFunctionIcon,
-  Trash2Icon,
   TableIcon,
   TablePropertiesIcon,
   TerminalIcon,
@@ -35,6 +34,7 @@ import {
   ActivityIcon,
 } from 'lucide-vue-next'
 import { OBJECT_KIND_LABELS, VIEW_LABELS } from '../constants'
+import { DROP_DATABASE_OPTION, NEW_DATABASE_OPTION } from '../constants/databases'
 import {
   LAYOUT_SERVICE,
   PINNED_TABLES,
@@ -595,7 +595,19 @@ async function dropDatabase(): Promise<void> {
 }
 
 function changeDatabase(event: Event): void {
-  props.session.run(switchDatabase(event.target as HTMLSelectElement))
+  const select = event.target as HTMLSelectElement
+  const choice = select.value
+  if (choice === NEW_DATABASE_OPTION || choice === DROP_DATABASE_OPTION) {
+    // The picker keeps showing the current database. The action switches database itself.
+    select.value = props.session.config?.database ?? ''
+    if (choice === NEW_DATABASE_OPTION) {
+      databaseDialog.value?.open()
+    } else {
+      dropDatabase()
+    }
+    return
+  }
+  props.session.run(switchDatabase(select))
 }
 
 async function switchDatabase(select: HTMLSelectElement): Promise<void> {
@@ -616,21 +628,13 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
         <select :value="session.config?.database" title="Database" @change="changeDatabase">
           <option value="" disabled>Choose database…</option>
           <option v-for="name in session.databases" :key="name">{{ name }}</option>
+          <template v-if="session.canChangeDatabases">
+            <hr />
+            <option :value="NEW_DATABASE_OPTION">New database…</option>
+            <option :value="DROP_DATABASE_OPTION" :disabled="backupBlocked">Drop database…</option>
+          </template>
         </select>
         <ChevronsUpDownIcon :size="11" />
-      </div>
-      <div v-if="session.canChangeDatabases" class="database-actions">
-        <button class="icon" title="New database" @click="databaseDialog?.open()">
-          <PlusIcon :size="13" />
-        </button>
-        <button
-          class="icon"
-          :title="backupBlocked ? 'Choose a database first' : 'Drop this database'"
-          :disabled="backupBlocked"
-          @click="dropDatabase"
-        >
-          <Trash2Icon :size="13" />
-        </button>
       </div>
       <div class="segmented">
         <template v-for="(text, view) in VIEW_LABELS" :key="view">
@@ -983,14 +987,6 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
   border: 1px solid var(--border);
   border-radius: 5px;
   color: var(--text-2);
-}
-
-/* Close to the select, so they read as its actions. */
-.database-actions {
-  display: flex;
-  flex: none;
-  gap: 2px;
-  margin-left: -6px;
 }
 
 .database svg {
