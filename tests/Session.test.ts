@@ -549,3 +549,14 @@ test('explain shows the plan as the result', async function () {
   expect(session.result?.rows).toEqual([['plan of DELETE FROM users']])
   expect(session.status).toContain('did not run')
 })
+
+test('a new view clears the error, the same view keeps it', function () {
+  const session = reactive(
+    new Session(new FakeApi() as unknown as DatabaseApi, new FakePrompt()),
+  ) as Session
+  session.error = 'Query stats need performance_schema'
+  session.view = 'content'
+  expect(session.error).toBe('Query stats need performance_schema')
+  session.view = 'structure'
+  expect(session.error).toBe('')
+})

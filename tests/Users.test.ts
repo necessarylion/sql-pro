@@ -6,8 +6,22 @@ import { Session } from '../src/services/Session'
 import { FakePrompt } from './FakePrompt'
 import type { DbUser, GrantableAccess, NewUser, TableRef, UserList } from '../src/types'
 
-const ROOT: DbUser = { name: 'root', host: '%', access: 'admin', current: true }
-const BOB: DbUser = { name: 'bob', host: 'localhost', access: 'read', current: false }
+const ROOT: DbUser = {
+  name: 'root',
+  host: '%',
+  access: 'admin',
+  current: true,
+  queryStats: true,
+  queryStatsFixed: true,
+}
+const BOB: DbUser = {
+  name: 'bob',
+  host: 'localhost',
+  access: 'read',
+  current: false,
+  queryStats: false,
+  queryStatsFixed: false,
+}
 const ORDERS: TableRef = { schema: null, name: 'orders', kind: 'table' }
 
 class FakeApi {
@@ -56,6 +70,13 @@ class FakeApi {
       throw 'You cannot change your own access'
     }
     this.calls.push(['access', user.name, user.host, access])
+  }
+
+  async setUserQueryStats(_id: string, user: DbUser, on: boolean): Promise<void> {
+    if (user.queryStatsFixed) {
+      throw 'It cannot be changed here.'
+    }
+    this.calls.push(['queryStats', user.name, user.host, on])
   }
 
   async setUserPassword(_id: string, user: DbUser, password: string): Promise<void> {
@@ -112,6 +133,25 @@ test('create, drop and set access call the api and load the list again', async f
     ['access', 'bob', 'localhost', 'none'],
     ['drop', 'bob', 'localhost'],
   ])
+})
+
+test('query stats call the api, set the status and load the list again', async function () {
+  const api = new FakeApi()
+  const session = await connected(api)
+
+  await session.setUserQueryStats(BOB, true)
+  expect(session.status).toBe('Query stats given to "bob"')
+  expect(api.lists).toBe(2)
+  await session.setUserQueryStats(BOB, false)
+  expect(session.status).toBe('Query stats taken from "bob"')
+  expect(api.lists).toBe(3)
+  expect(api.calls).toEqual([
+    ['queryStats', 'bob', 'localhost', true],
+    ['queryStats', 'bob', 'localhost', false],
+  ])
+
+  expect(await session.run(session.setUserQueryStats(ROOT, false))).toBe(false)
+  expect(session.error).toBe('It cannot be changed here.')
 })
 
 test('a password change calls the api and keeps the password out of the status', async function () {

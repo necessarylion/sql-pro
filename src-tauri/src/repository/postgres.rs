@@ -87,7 +87,8 @@ const USER_SCHEMAS_SQL: &str = "SELECT nspname FROM pg_namespace n \
 const CAN_MANAGE_SQL: &str =
     "SELECT rolcreaterole OR rolsuper FROM pg_roles WHERE rolname = current_user";
 
-/// Every role that can log in: name, access level, and whether it is the current role.
+/// Every role that can log in: name, access level, whether it is the current role,
+/// whether it may read the query stats (`pg_read_all_stats`), and whether that cannot be revoked.
 ///
 /// The level comes from the rights granted to the role itself, in this database:
 /// - `admin`: a superuser, or the owner of the database (or a member of the owner).
@@ -108,7 +109,10 @@ const USERS_SQL: &str = "SELECT r.rolname, \
         WHEN t.sets = ARRAY['DELETE,INSERT,SELECT,UPDATE'] THEN 'write' \
         ELSE 'custom' \
     END, \
-    r.rolname = current_user \
+    r.rolname = current_user, \
+    pg_has_role(r.oid, 'pg_read_all_stats', 'MEMBER'), \
+    r.rolsuper OR NOT EXISTS (SELECT 1 FROM pg_auth_members m \
+        WHERE m.member = r.oid AND m.roleid = 'pg_read_all_stats'::regrole) \
     FROM pg_roles r \
     CROSS JOIN (SELECT datdba, datacl FROM pg_database WHERE datname = current_database()) d \
     CROSS JOIN LATERAL ( \
@@ -562,6 +566,10 @@ impl Repository for PostgresRepository {
                 host: None,
                 access,
                 current: cell(row, 2) == "t",
+                query_stats: cell(row, 3) == "t",
+                // Only a direct member can be revoked. A superuser or a member through
+                // another role (like pg_monitor) keeps the right.
+                query_stats_fixed: cell(row, 3) == "t" && cell(row, 4) == "t",
             });
         }
         Ok(UserList { can_manage, users })
@@ -634,6 +642,22 @@ impl Repository for PostgresRepository {
             statements.extend(Self::grant_sql(&role, &database, &schemas, write));
         }
         self.run_all(&statements).await
+    }
+
+    async fn set_user_query_stats(
+        &self,
+        name: &str,
+        _host: Option<&str>,
+        on: bool,
+    ) -> AppResult<()> {
+        let role = self.quote(name);
+        let sql = if on {
+            format!("GRANT pg_read_all_stats TO {role}")
+        } else {
+            format!("REVOKE pg_read_all_stats FROM {role}")
+        };
+        self.query(&sql).await?;
+        Ok(())
     }
 
     /// Only client connections. The time is how long the connection is in its state.

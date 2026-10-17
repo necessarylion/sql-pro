@@ -255,6 +255,10 @@ export interface DbUser {
   access: AccessLevel
   /** True for the account this connection is logged in as. */
   current: boolean
+  /** True when the account may read the server query stats. */
+  queryStats: boolean
+  /** True when `queryStats` comes from a wider right (like a superuser) and cannot be changed here. */
+  queryStatsFixed: boolean
 }
 
 /** `canManage` is false when the logged-in account may not manage users. */

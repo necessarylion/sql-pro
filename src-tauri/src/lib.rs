@@ -100,6 +100,7 @@ pub fn run() {
             commands::create_user,
             commands::drop_user,
             commands::set_user_access,
+            commands::set_user_query_stats,
             commands::set_user_password,
             commands::list_processes,
             commands::kill_process,

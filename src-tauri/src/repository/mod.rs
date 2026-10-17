@@ -215,6 +215,17 @@ pub trait Repository: Send + Sync {
         Err(NO_USER_ACCOUNTS.into())
     }
 
+    /// Gives (`on`) or takes away the right to read the server query stats.
+    /// The caller has checked that the account has it now only by this right.
+    async fn set_user_query_stats(
+        &self,
+        _name: &str,
+        _host: Option<&str>,
+        _on: bool,
+    ) -> AppResult<()> {
+        Err(NO_USER_ACCOUNTS.into())
+    }
+
     /// The SQL that lists the connections of the server. It gives these columns in this
     /// order: id, user, host, database, state, seconds, query, current (1 or 0).
     fn processes_sql(&self) -> AppResult<&'static str> {
