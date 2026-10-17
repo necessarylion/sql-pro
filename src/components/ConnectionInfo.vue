@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { DRIVER_LABELS } from '../constants'
+import { DEFAULT_SSL_CONFIG, DRIVER_LABELS, SSL_MODE_LABELS } from '../constants'
 import type { ConnectionConfig } from '../types'
 import DbBadge from './DbBadge.vue'
 import EnvBadge from './EnvBadge.vue'
@@ -59,6 +59,18 @@ function buildRows(): InfoRow[] {
     secret('Password', config.password),
     row('Database', config.database, false),
   )
+  const ssl = config.ssl ?? DEFAULT_SSL_CONFIG
+  list.push(row('SSL', SSL_MODE_LABELS[ssl.mode], false))
+  // Only the files that are set. Most connections have none.
+  for (const [label, path] of [
+    ['CA file', ssl.caPath],
+    ['Client cert', ssl.certPath],
+    ['Client key', ssl.keyPath],
+  ]) {
+    if (path) {
+      list.push(row(label, path, true))
+    }
+  }
   if (config.ssh) {
     list.push(
       row('SSH Host', address(config.ssh.host, config.ssh.port), true),

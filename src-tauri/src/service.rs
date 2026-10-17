@@ -1368,6 +1368,7 @@ mod tests {
             password: String::new(),
             database: path.to_string_lossy().into_owned(),
             ssh: None,
+            ssl: crate::model::SslConfig::default(),
         };
         let service = ConnectionService::new(RepositoryFactory);
         service
@@ -1416,6 +1417,7 @@ mod tests {
             password: String::new(),
             database: path.to_string_lossy().into_owned(),
             ssh: None,
+            ssl: crate::model::SslConfig::default(),
         };
         let service = ConnectionService::new(RepositoryFactory);
         service.test_connection(&config).await.expect("test");
@@ -1445,6 +1447,7 @@ mod tests {
             password: String::new(),
             database: path.to_string_lossy().into_owned(),
             ssh: None,
+            ssl: crate::model::SslConfig::default(),
         };
         let service = ConnectionService::new(RepositoryFactory);
         service

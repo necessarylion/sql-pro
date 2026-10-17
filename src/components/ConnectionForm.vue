@@ -13,7 +13,13 @@ import {
   XIcon,
 } from 'lucide-vue-next'
 import { confirm, open, save } from '@tauri-apps/plugin-dialog'
-import { DEFAULT_CONFIGS, DEFAULT_SSH_CONFIG, DRIVER_LABELS } from '../constants'
+import {
+  DEFAULT_CONFIGS,
+  DEFAULT_SSH_CONFIG,
+  DEFAULT_SSL_CONFIG,
+  DRIVER_LABELS,
+  SSL_MODE_LABELS,
+} from '../constants'
 import {
   DEFAULT_ENVIRONMENT,
   ENVIRONMENT_HINT,
@@ -37,7 +43,7 @@ import { Environment } from '../services/Environment'
 import type { Favorite, FavoriteSection, Folder } from '../services/FavoriteStore'
 import { CONNECTION_TRANSFER, FAVORITE_STORE, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
-import type { ConnectionConfig, Driver } from '../types'
+import type { ConnectionConfig, Driver, SslConfig, SslMode } from '../types'
 import ConnectionInfo from './ConnectionInfo.vue'
 import ContextMenu from './ContextMenu.vue'
 import DbBadge from './DbBadge.vue'
@@ -369,6 +375,36 @@ function fillFromString(): void {
 /** Turns the SSH fields on or off. */
 function toggleSsh(): void {
   form.config.ssh = form.config.ssh ? null : { ...DEFAULT_SSH_CONFIG }
+}
+
+/** The SSL mode in the form. A connection saved before SSL support has none: then `prefer`. */
+function sslMode(): SslMode {
+  return form.config.ssl?.mode ?? DEFAULT_SSL_CONFIG.mode
+}
+
+function setSslMode(event: Event): void {
+  const mode = (event.target as HTMLSelectElement).value as SslMode
+  form.config.ssl = { ...(form.config.ssl ?? DEFAULT_SSL_CONFIG), mode }
+}
+
+/**
+ * The certificate files show only for the modes that need them, so the form stays short.
+ * SQL Server reads the CA file only when it checks the certificate.
+ */
+function showsSslFiles(): boolean {
+  const mode = sslMode()
+  if (form.config.driver === 'mssql') {
+    return mode === 'verifyCa' || mode === 'verifyFull'
+  }
+  return mode !== 'off' && mode !== 'prefer'
+}
+
+/** Picks a certificate or key file for one SSL field. */
+async function browseSsl(field: keyof Omit<SslConfig, 'mode'>): Promise<void> {
+  const path = await open({ multiple: false, directory: false })
+  if (typeof path === 'string' && form.config.ssl) {
+    form.config.ssl[field] = path
+  }
 }
 
 /** The form values as a clean config. An empty port field becomes 0. */
@@ -824,6 +860,53 @@ async function browseKey(): Promise<void> {
                   "
                 />
               </div>
+
+              <div class="row">
+                <label>SSL</label>
+                <select :value="sslMode()" @change="setSslMode">
+                  <option v-for="(label, mode) in SSL_MODE_LABELS" :key="mode" :value="mode">
+                    {{ label }}
+                  </option>
+                </select>
+              </div>
+              <template v-if="form.config.ssl && showsSslFiles()">
+                <div class="row">
+                  <label>CA file</label>
+                  <input
+                    v-model="form.config.ssl.caPath"
+                    class="mono"
+                    placeholder="Optional. Empty = system CAs."
+                    spellcheck="false"
+                  />
+                  <button type="button" @click="session.run(browseSsl('caPath'))">Choose…</button>
+                </div>
+                <template v-if="form.config.driver !== 'mssql'">
+                  <div class="row">
+                    <label>Client cert</label>
+                    <input
+                      v-model="form.config.ssl.certPath"
+                      class="mono"
+                      placeholder="Optional"
+                      spellcheck="false"
+                    />
+                    <button type="button" @click="session.run(browseSsl('certPath'))">
+                      Choose…
+                    </button>
+                  </div>
+                  <div class="row">
+                    <label>Client key</label>
+                    <input
+                      v-model="form.config.ssl.keyPath"
+                      class="mono"
+                      placeholder="Optional"
+                      spellcheck="false"
+                    />
+                    <button type="button" @click="session.run(browseSsl('keyPath'))">
+                      Choose…
+                    </button>
+                  </div>
+                </template>
+              </template>
 
               <div class="row">
                 <label></label>

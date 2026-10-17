@@ -82,6 +82,7 @@ fn config_from_env(name: &str, driver: Driver) -> Option<ConnectionConfig> {
         password: password.to_owned(),
         database: database.to_owned(),
         ssh: ssh_from_env(),
+        ssl: sql_pro_lib::model::SslConfig::default(),
     })
 }
 
@@ -1877,6 +1878,7 @@ async fn sqlite() {
         password: String::new(),
         database: path.to_string_lossy().into_owned(),
         ssh: None,
+        ssl: sql_pro_lib::model::SslConfig::default(),
     })
     .await;
     std::fs::remove_file(&path).expect("remove temp file");

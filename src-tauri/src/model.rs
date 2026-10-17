@@ -28,6 +28,44 @@ pub struct ConnectionConfig {
     /// Set to reach the database through an SSH server. Not used for `SQLite`.
     #[serde(default)]
     pub ssh: Option<SshConfig>,
+    /// Missing in connections saved before SSL support. Then the default is used,
+    /// which connects the same way as before.
+    #[serde(default)]
+    pub ssl: SslConfig,
+}
+
+/// How a connection uses SSL/TLS. Not used for `SQLite`.
+/// An empty path means "not set".
+#[derive(Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SslConfig {
+    pub mode: SslMode,
+    /// The CA certificate that signed the server certificate.
+    pub ca_path: String,
+    /// The client certificate and its key. Not for SQL Server: its driver has no option for them.
+    pub cert_path: String,
+    pub key_path: String,
+    /// The host name the server certificate must hold, when it is not `host`.
+    /// The SSH tunnel sets it, because then `host` is `127.0.0.1`. Only SQL Server can use it.
+    #[serde(skip)]
+    pub server_name: String,
+}
+
+/// The SSL modes, like the `sslmode` of `PostgreSQL`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SslMode {
+    /// No encryption.
+    Off,
+    /// Encrypt when the server can. The certificate is not checked. This is the old behaviour.
+    #[default]
+    Prefer,
+    /// Always encrypt. The certificate is not checked.
+    Require,
+    /// Always encrypt. The certificate must be signed by a trusted CA.
+    VerifyCa,
+    /// Like `VerifyCa`, and the certificate must also hold the host name.
+    VerifyFull,
 }
 
 /// An SSH server to tunnel through.
@@ -462,4 +500,20 @@ pub struct CsvPreview {
     pub rows: Vec<Vec<String>>,
     /// All rows of the file, the header row too.
     pub count: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ConnectionConfig, SslMode};
+
+    #[test]
+    fn a_connection_saved_before_ssl_support_still_loads() {
+        let json = r#"{"driver":"mysql","host":"h","port":3306,"user":"u","password":"","database":"","ssh":null}"#;
+        let config: ConnectionConfig = serde_json::from_str(json).expect("config");
+        assert_eq!(config.ssl.mode, SslMode::Prefer);
+        let json = r#"{"driver":"mysql","host":"h","port":3306,"user":"u","password":"","database":"","ssl":{"mode":"verifyCa","caPath":"/ca.pem"}}"#;
+        let config: ConnectionConfig = serde_json::from_str(json).expect("config");
+        assert_eq!(config.ssl.mode, SslMode::VerifyCa);
+        assert_eq!(config.ssl.ca_path, "/ca.pem");
+    }
 }
