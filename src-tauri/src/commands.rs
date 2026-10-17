@@ -27,6 +27,11 @@ pub async fn connect(service: Service<'_>, id: String, config: ConnectionConfig)
 }
 
 #[tauri::command]
+pub async fn test_connection(service: Service<'_>, config: ConnectionConfig) -> AppResult<()> {
+    service.test_connection(&config).await
+}
+
+#[tauri::command]
 pub async fn disconnect(service: Service<'_>, id: String) -> AppResult<()> {
     service.disconnect(&id).await;
     Ok(())
