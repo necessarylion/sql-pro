@@ -63,6 +63,16 @@ export class DatabaseApi {
     return invoke('list_databases', { id })
   }
 
+  /** Creates a database. `charset` and `collation` are only for MySQL. Empty means the default. */
+  createDatabase(id: string, name: string, charset: string, collation: string): Promise<void> {
+    return invoke('create_database', { id, name, charset, collation })
+  }
+
+  /** Drops a database. The backend refuses the one the tab uses now. */
+  dropDatabase(id: string, name: string): Promise<void> {
+    return invoke('drop_database', { id, name })
+  }
+
   listTables(id: string): Promise<TableRef[]> {
     return invoke('list_tables', { id })
   }

@@ -127,6 +127,11 @@ pub const NO_USER_ACCOUNTS: &str = "SQLite has no user accounts";
 pub const MSSQL_NO_USER_ACCOUNTS: &str = "User accounts are not supported for SQL Server yet";
 pub const MSSQL_NO_BACKUP: &str = "Backups are not supported for SQL Server yet";
 
+/// The errors for creating and dropping a database.
+pub const SQLITE_NO_DATABASES: &str = "SQLite has no databases to create or drop";
+pub const CHARSET_ONLY_MYSQL: &str = "Charset and collation are only for MySQL";
+pub const DROP_CURRENT_DATABASE: &str = "Switch to another database before you drop this one";
+
 /// The error for a foreign key change on `SQLite`.
 pub const SQLITE_FOREIGN_KEYS_FIXED: &str =
     "SQLite cannot add or drop a foreign key of an existing table";

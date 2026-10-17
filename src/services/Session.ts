@@ -6,6 +6,7 @@ import {
   QUERY_CANCELLED_STATUS,
   QUERY_RESULT_NAME,
 } from '../constants'
+import { FALLBACK_DATABASES } from '../constants/databases'
 import { DIAGRAM_SAVED_STATUS_MS } from '../constants/diagram'
 import { RAW_FILTER_COLUMN, VALUELESS_OPERATORS } from '../constants/filters'
 import { ACCESS_LABELS } from '../constants/users'
@@ -372,6 +373,61 @@ export class Session {
     if (this.view === 'diagram') {
       await this.loadDiagram()
     }
+  }
+
+  /** SQLite has no databases to create or drop. */
+  get canChangeDatabases(): boolean {
+    return this.config !== null && this.config.driver !== 'sqlite'
+  }
+
+  /** Creates a database, loads the list again and switches to the new one. */
+  async createDatabase(name: string, charset = '', collation = ''): Promise<void> {
+    const trimmed = name.trim()
+    await this.api.createDatabase(this.id, trimmed, charset.trim(), collation.trim())
+    this.databases = await this.api.listDatabases(this.id)
+    await this.useDatabase(trimmed)
+    this.status = `Database "${trimmed}" created`
+  }
+
+  /**
+   * Drops a database and loads the list again. When it is the current one, the tab first
+   * switches to another database, because PostgreSQL and SQL Server cannot drop it while
+   * it is in use. MySQL switches to no database at all.
+   */
+  async dropDatabase(name: string): Promise<void> {
+    if (this.config?.database === name) {
+      await this.useDatabase(this.otherDatabase(name))
+      // The user kept the unsaved changes, so the tab is still on this database.
+      if (this.config?.database === name) {
+        return
+      }
+    }
+    try {
+      await this.api.dropDatabase(this.id, name)
+    } finally {
+      this.databases = await this.api.listDatabases(this.id)
+    }
+    this.status = `Database "${name}" dropped`
+  }
+
+  /** The database to switch to before `name` is dropped. A system database comes first. */
+  private otherDatabase(name: string): string {
+    if (this.config?.driver === 'mysql') {
+      return ''
+    }
+    let other: string | null = null
+    for (const database of this.databases) {
+      if (FALLBACK_DATABASES.includes(database)) {
+        return database
+      }
+      if (database !== name && other === null) {
+        other = database
+      }
+    }
+    if (other === null) {
+      throw 'There is no other database to switch to'
+    }
+    return other
   }
 
   /** Loads the tables and views, then the triggers and routines. */

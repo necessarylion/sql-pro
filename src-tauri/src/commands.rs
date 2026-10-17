@@ -53,6 +53,24 @@ pub async fn list_databases(service: Service<'_>, id: String) -> AppResult<Vec<S
 }
 
 #[tauri::command]
+pub async fn create_database(
+    service: Service<'_>,
+    id: String,
+    name: String,
+    charset: String,
+    collation: String,
+) -> AppResult<()> {
+    service
+        .create_database(&id, &name, &charset, &collation)
+        .await
+}
+
+#[tauri::command]
+pub async fn drop_database(service: Service<'_>, id: String, name: String) -> AppResult<()> {
+    service.drop_database(&id, &name).await
+}
+
+#[tauri::command]
 pub async fn list_tables(service: Service<'_>, id: String) -> AppResult<Vec<TableRef>> {
     service.tables(&id).await
 }
