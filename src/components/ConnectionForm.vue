@@ -18,8 +18,10 @@ import {
   DEFAULT_SSH_CONFIG,
   DEFAULT_SSL_CONFIG,
   DRIVER_LABELS,
+  FORM_TABS,
   SSL_MODE_LABELS,
 } from '../constants'
+import type { FormTab } from '../constants'
 import {
   DEFAULT_ENVIRONMENT,
   ENVIRONMENT_HINT,
@@ -85,6 +87,28 @@ const connecting = ref(false)
  */
 const test = reactive({ running: false, done: false, error: '' })
 watch(form, clearTest)
+
+/** The tab of the form that shows. SQLite has no SSL or SSH, so it always shows General. */
+const tab = ref<FormTab>('general')
+watch(driverOf, showGeneralForSqlite)
+
+function driverOf(): Driver {
+  return form.config.driver
+}
+
+function showGeneralForSqlite(driver: Driver): void {
+  if (driver === 'sqlite') {
+    tab.value = 'general'
+  }
+}
+
+/** True when the tab's feature is on: SSL that is required or checked, or SSH. */
+function tabIsOn(name: FormTab): boolean {
+  if (name === 'ssl') {
+    return sslMode() !== 'off' && sslMode() !== 'prefer'
+  }
+  return name === 'ssh' && !!form.config.ssh
+}
 
 /** The pasted connection string. It can hold a password, so it is cleared after use. */
 const pasted = ref('')
@@ -351,6 +375,7 @@ function typeCustom(event: Event): void {
 function reset(): void {
   setNote('', '')
   editing.value = true
+  tab.value = 'general'
   form.id = ''
   form.name = ''
   form.folderId = ''
@@ -437,6 +462,7 @@ function title(): string {
  */
 async function load(favorite: Favorite): Promise<boolean> {
   const loaded = await store.fullConfig(favorite)
+  tab.value = 'general'
   form.id = favorite.id
   form.name = favorite.name
   form.folderId = store.folderOf(favorite)
@@ -737,11 +763,7 @@ async function browseKey(): Promise<void> {
     </aside>
 
     <div class="main">
-      <form
-        class="form"
-        :class="{ wide: editing && form.config.driver !== 'sqlite' }"
-        @submit.prevent="session.run(connect())"
-      >
+      <form class="form" @submit.prevent="session.run(connect())">
         <ConnectionInfo
           v-if="!editing"
           :name="form.name"
@@ -751,7 +773,23 @@ async function browseKey(): Promise<void> {
         />
         <template v-else>
           <header>
-            <h1>{{ form.id ? 'Edit connection' : 'New connection' }}</h1>
+            <div class="title-line">
+              <h1>{{ form.id ? 'Edit connection' : 'New connection' }}</h1>
+              <div class="db-pick">
+                <button
+                  v-for="(label, driver) in DRIVER_LABELS"
+                  :key="driver"
+                  type="button"
+                  :class="{ active: form.config.driver === driver }"
+                  :title="label"
+                  :aria-label="label"
+                  :aria-pressed="form.config.driver === driver"
+                  @click="setDriver(driver)"
+                >
+                  <DbBadge :driver="driver" />
+                </button>
+              </div>
+            </div>
             <p v-if="!form.id">Pick a database type, then fill in the details.</p>
           </header>
 
@@ -771,21 +809,23 @@ async function browseKey(): Promise<void> {
             <button type="button" @click="fillFromString">Fill</button>
           </div>
 
-          <div class="segmented">
+          <div v-if="form.config.driver !== 'sqlite'" class="segmented form-tabs" role="tablist">
             <button
-              v-for="(label, driver) in DRIVER_LABELS"
-              :key="driver"
+              v-for="(label, name) in FORM_TABS"
+              :key="name"
               type="button"
-              :class="{ active: form.config.driver === driver }"
-              @click="setDriver(driver)"
+              role="tab"
+              :aria-selected="tab === name"
+              :class="{ active: tab === name }"
+              @click="tab = name"
             >
-              <DbBadge :driver="driver" />
               {{ label }}
+              <span v-if="tabIsOn(name)" class="on-dot" />
             </button>
           </div>
 
-          <div class="fields">
-            <div class="col">
+          <div class="fields" :class="{ tabbed: form.config.driver !== 'sqlite' }">
+            <template v-if="tab === 'general'">
               <div class="row">
                 <label>Name</label>
                 <input v-model="form.name" placeholder="Optional" />
@@ -878,10 +918,9 @@ async function browseKey(): Promise<void> {
                   />
                 </div>
               </template>
-            </div>
+            </template>
 
-            <!-- SSL and SSH. SQLite has neither, so it gets one column. -->
-            <div v-if="form.config.driver !== 'sqlite'" class="col">
+            <template v-else-if="tab === 'ssl'">
               <div class="row">
                 <label>SSL</label>
                 <select :value="sslMode()" @change="setSslMode">
@@ -964,9 +1003,10 @@ async function browseKey(): Promise<void> {
                   </div>
                 </template>
               </template>
+            </template>
 
+            <template v-else>
               <div class="row">
-                <label></label>
                 <label class="check">
                   <input type="checkbox" :checked="!!form.config.ssh" @change="toggleSsh" />
                   Connect over SSH
@@ -1018,7 +1058,7 @@ async function browseKey(): Promise<void> {
                   <button type="button" @click="session.run(browseKey())">Choose…</button>
                 </div>
               </template>
-            </div>
+            </template>
           </div>
         </template>
 
@@ -1080,7 +1120,7 @@ async function browseKey(): Promise<void> {
 
     <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" @close="closeMenu">
       <template v-if="menu.folder">
-        <button role="menuitem" @click="folderDialog?.open(menu.folder)">Rename…</button>
+        <button role="menuitem" @click="folderDialog?.open(menu.folder)">Edit folder…</button>
         <span class="menu-line" />
         <button class="danger" role="menuitem" @click="session.run(deleteFolder(menu.folder))">
           Delete folder…
@@ -1110,7 +1150,6 @@ async function browseKey(): Promise<void> {
           <button role="menuitem" @click="moveTo(menu.favorite, '')">Move out of the folder</button>
         </template>
       </template>
-      <!-- Right-click on the empty part of the list. -->
       <button v-else role="menuitem" @click="folderDialog?.open(null)">New Folder…</button>
     </ContextMenu>
     <FolderDialog ref="folderDialog" />
@@ -1338,7 +1377,6 @@ li:hover .remove {
   min-width: 0;
   padding: 24px;
   overflow: auto;
-  container-type: inline-size;
 }
 
 .form {
@@ -1371,6 +1409,59 @@ header p {
   border-radius: 5px;
 }
 
+/* The title and the database logos share one line. */
+.title-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.title-line h1 {
+  margin: 0;
+}
+
+/* Logo-only database picker. Not .segmented, so it does not look like the tab bar. */
+.db-pick {
+  display: flex;
+  gap: 4px;
+}
+
+.db-pick button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  opacity: 0.5;
+}
+
+.db-pick button:hover {
+  opacity: 1;
+}
+
+.db-pick button.active {
+  border-color: var(--accent);
+  background: var(--seg-active);
+  opacity: 1;
+}
+
+.db-pick :deep(.badge) {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+}
+
+.db-pick :deep(.badge svg) {
+  width: 15px;
+  height: 15px;
+}
+
 /* The small switch inside a form row. */
 .segmented.env-switch {
   height: 24px;
@@ -1384,28 +1475,35 @@ header p {
   border-radius: 4px;
 }
 
-.fields,
-.fields .col {
+.fields {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-/*
-  Two columns when there is room: connection on the left, SSL and SSH on the right.
-  At the minimum window size (800px) with the sidebar there is not, so it stays one column.
-*/
-@container (min-width: 820px) {
-  .form.wide {
-    width: 820px;
-  }
+/* As tall as the General tab (7 rows), so the buttons do not move when the tab changes. */
+.fields.tabbed {
+  min-height: calc(7 * 24px + 6 * 8px);
+}
 
-  .form.wide .fields {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 8px 28px;
-    align-items: start;
-  }
+/* The small tab bar. It uses the env-switch size. */
+.segmented.form-tabs {
+  height: 26px;
+  border-radius: 6px;
+}
+
+.segmented.form-tabs button {
+  gap: 5px;
+  height: 22px;
+  border-radius: 4px;
+}
+
+/* Says that SSL or SSH is on, without opening the tab. */
+.on-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-text);
 }
 
 .row {

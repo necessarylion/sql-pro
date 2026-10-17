@@ -119,6 +119,10 @@ export const SSL_MODE_LABELS: Record<SslMode, string> = {
   verifyFull: 'Verify CA and host name',
 }
 
+/** The tabs of the connection form. SSL and SSH show only for server databases. */
+export const FORM_TABS = { general: 'General', ssl: 'SSL', ssh: 'SSH' } as const
+export type FormTab = keyof typeof FORM_TABS
+
 /** Added to a favorite id to get the keychain entry of its SSH password. */
 export const SSH_PASSWORD_SUFFIX = ':ssh'
 
