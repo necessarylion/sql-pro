@@ -2,7 +2,7 @@
 //! It only reads. It never changes a setting of the server.
 
 use super::ConnectionService;
-use crate::constants::{QUERY_STATS_MAX_DAYS, QUERY_STATS_MIN_DAYS};
+use crate::constants::{QUERY_STATS_MAX_DAYS, QUERY_STATS_MIN_DAYS, QUERY_STATS_NOT_SET_UP};
 use crate::error::{AppError, AppResult};
 use crate::model::QueryStat;
 
@@ -24,7 +24,9 @@ impl ConnectionService {
                 .and_then(|set| set.rows.first())
                 .and_then(|row| row.first());
             if on.cloned().flatten().as_deref() != Some("1") {
-                return Err(setup.into());
+                return Err(AppError::Message(format!(
+                    "{QUERY_STATS_NOT_SET_UP} {setup}"
+                )));
             }
         }
         let sets = repository
@@ -64,10 +66,11 @@ fn number(text: Option<String>) -> Option<f64> {
 
 /// A server error here most often means the stats are off or not allowed. So it says how
 /// to fix that, and keeps the text of the server. Other errors stay as they are.
+/// The text starts with `QUERY_STATS_NOT_SET_UP`, so the view shows its setup guide.
 fn hint(setup: &str, error: AppError) -> AppError {
     match error {
         AppError::Database(sqlx::Error::Database(_)) => {
-            AppError::Message(format!("{setup} ({error})"))
+            AppError::Message(format!("{QUERY_STATS_NOT_SET_UP} {setup} ({error})"))
         }
         other => other,
     }

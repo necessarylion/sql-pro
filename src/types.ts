@@ -80,6 +80,12 @@ export interface ResultSet {
   truncated: boolean
 }
 
+/** What a Query stats setup snippet gave when it ran. `error` is '' on success. */
+export interface SnippetOutput {
+  error: string
+  set: ResultSet | null
+}
+
 export interface TablePage {
   columns: ColumnInfo[]
   rows: Row[]

@@ -10,9 +10,13 @@ import { FALLBACK_DATABASES } from '../constants/databases'
 import { DIAGRAM_SAVED_STATUS_MS } from '../constants/diagram'
 import { RAW_FILTER_COLUMN, VALUELESS_OPERATORS } from '../constants/filters'
 import {
+  MYSQL_CURRENT_USER_SQL,
   QUERY_STATS_DEFAULT_DAYS,
   QUERY_STATS_MAX_DAYS,
   QUERY_STATS_MIN_DAYS,
+  QUERY_STATS_RUN_DONE,
+  QUERY_STATS_RUN_TITLE,
+  QUERY_STATS_RUN_WARNING,
 } from '../constants/queryStats'
 import { ACCESS_LABELS } from '../constants/users'
 import type {
@@ -41,6 +45,7 @@ import type {
   Row,
   RowUpdate,
   SessionView,
+  SnippetOutput,
   TableKeys,
   TablePage,
   TableRef,
@@ -50,6 +55,7 @@ import { AiChat } from './AiChat'
 import type { DatabaseApi } from './DatabaseApi'
 import type { DiscardPrompt } from './DiscardPrompt'
 import { Environment } from './Environment'
+import { QueryStatList } from './QueryStatList'
 import { TableDraft } from './TableDraft'
 import { TableSelection } from './TableSelection'
 import type { ColumnDraft } from './TableDraft'
@@ -120,6 +126,12 @@ export class Session {
   processes: DbProcess[] = []
   /** The query shapes of the server, for the Query stats view. */
   queryStats: QueryStat[] = []
+  /** The error text when the server does not collect query stats. '' = they work. The view shows a setup guide. */
+  queryStatsSetup = ''
+  /** MySQL CURRENT_USER() when the stats are off, like app@%. The guide grants to it. '' = not known. */
+  queryStatsAccount = ''
+  /** The output of each setup snippet that ran, by its SQL. It stays when the stats load again. */
+  snippetOutputs: Record<string, SnippetOutput> = {}
   /** The Query stats view shows the queries of the last this many days. */
   queryStatsDays = QUERY_STATS_DEFAULT_DAYS
   /** What the Diagram view shows. null = not loaded. */
@@ -379,6 +391,9 @@ export class Session {
       this.diagram = null
       this.processes = []
       this.queryStats = []
+      this.queryStatsSetup = ''
+      this.queryStatsAccount = ''
+      this.snippetOutputs = {}
       this.clearTable()
       this.setUsers([], false)
     }
@@ -402,7 +417,8 @@ export class Session {
     if (this.view === 'diagram') {
       await this.loadDiagram()
     }
-    // The stats are per database.
+    // The stats are per database. So is the output of the setup snippets.
+    this.snippetOutputs = {}
     if (this.view === 'queryStats') {
       await this.loadQueryStats()
     }
@@ -1051,13 +1067,60 @@ export class Session {
    * bounds are fixed first. With no database selected the list is empty.
    */
   async loadQueryStats(): Promise<void> {
+    this.queryStatsSetup = ''
     if (!this.config?.database) {
       this.queryStats = []
       return
     }
     const days = Math.round(this.queryStatsDays) || QUERY_STATS_MIN_DAYS
     this.queryStatsDays = Math.min(Math.max(days, QUERY_STATS_MIN_DAYS), QUERY_STATS_MAX_DAYS)
-    this.queryStats = await this.api.queryStats(this.id, this.queryStatsDays)
+    try {
+      this.queryStats = await this.api.queryStats(this.id, this.queryStatsDays)
+    } catch (error) {
+      // Stats that are off are not an error line. The view shows how to turn them on.
+      const detail = QueryStatList.setupDetail(String(error))
+      if (detail === null) {
+        throw error
+      }
+      this.queryStats = []
+      this.queryStatsSetup = detail
+      this.queryStatsAccount = this.config?.driver === 'mysql' ? await this.mysqlCurrentUser() : ''
+    }
+  }
+
+  /**
+   * Runs one SQL snippet of the Query stats setup guide on this tab, only after OK in the warning.
+   * The snippet may change the server (GRANT, ALTER SYSTEM). Then the stats load again, so the
+   * guide goes away when they work now. The output or the server error goes into
+   * `snippetOutputs`, so the guide shows it under the snippet.
+   */
+  async runQueryStatsSnippet(sql: string): Promise<void> {
+    if (!(await this.prompt.ask(`${QUERY_STATS_RUN_WARNING}\n\n${sql}`, QUERY_STATS_RUN_TITLE))) {
+      return
+    }
+    let output: SnippetOutput
+    try {
+      const sets = await this.api.runQuery(this.id, sql)
+      output = { error: '', set: sets[0] ?? null }
+    } catch (error) {
+      output = { error: String(error), set: null }
+    }
+    this.snippetOutputs = { ...this.snippetOutputs, [sql]: output }
+    if (output.error) {
+      return
+    }
+    await this.loadQueryStats()
+    this.status = QUERY_STATS_RUN_DONE
+  }
+
+  /** The account MySQL matched for this tab, for the GRANT in the setup guide. '' when it cannot be read. */
+  private async mysqlCurrentUser(): Promise<string> {
+    try {
+      const sets = await this.api.runQuery(this.id, MYSQL_CURRENT_USER_SQL)
+      return sets[0]?.rows[0]?.[0] ?? ''
+    } catch {
+      return ''
+    }
   }
 
   /** `queryOnly` stops only the running statement. Else the whole connection ends. */
