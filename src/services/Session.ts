@@ -7,6 +7,12 @@ import {
   QUERY_RESULT_NAME,
 } from '../constants'
 import { FALLBACK_DATABASES } from '../constants/databases'
+import {
+  AUTO_COLUMN_EXTRA,
+  GENERATED_COLUMN_EXTRA,
+  SEQUENCE_DEFAULT,
+  SQLITE_ROWID_TYPE,
+} from '../constants/columns'
 import { DIAGRAM_SAVED_STATUS_MS } from '../constants/diagram'
 import { RAW_FILTER_COLUMN, VALUELESS_OPERATORS } from '../constants/filters'
 import {
@@ -141,6 +147,8 @@ export class Session {
   diagram: Diagram | null = null
   /** Goes up by one on each press of the export shortcut. The workspace then opens the export dialog. */
   exportAsked = 0
+  /** Counts up on Cmd+D (Ctrl+D). The Content view sees it and duplicates the selected rows. */
+  duplicateAsked = 0
   /** The Ask AI chat of this tab. */
   chat: AiChat
   /** A question that waits for the Ask AI view. The view sends it once, in read-only mode. */
@@ -793,6 +801,59 @@ export class Session {
     if (this.page) {
       this.newRows.push(new Array<string | null>(this.page.columns.length).fill(null))
     }
+  }
+
+  /**
+   * Adds a copy of each row as a new row, with the values the grid shows (also unsaved edits).
+   * Columns the database fills itself (auto increment, identity, serial, generated) stay empty.
+   * Any other primary key is copied: the user changes it before Save.
+   * Gives the row numbers of the copies. Nothing is sent before `saveChanges`.
+   */
+  duplicateRows(indexes: number[]): number[] {
+    if (!this.page) {
+      return []
+    }
+    const shown = this.shownRows
+    const auto = this.autoColumns()
+    const added: number[] = []
+    for (const index of [...indexes].sort(Session.byNumber)) {
+      const source = shown[index]
+      if (!source) {
+        continue
+      }
+      const copy: Row = []
+      for (const [column, value] of source.entries()) {
+        copy.push(auto[column] ? null : value)
+      }
+      this.newRows.push(copy)
+      added.push(this.page.rows.length + this.newRows.length - 1)
+    }
+    return added
+  }
+
+  /** True for each column of the page that the database fills by itself. */
+  private autoColumns(): boolean[] {
+    const columns = this.page?.columns ?? []
+    let keys = 0
+    for (const column of columns) {
+      if (column.primaryKey) {
+        keys += 1
+      }
+    }
+    const sqlite = this.config?.driver === 'sqlite'
+    const auto: boolean[] = []
+    for (const column of columns) {
+      auto.push(
+        AUTO_COLUMN_EXTRA.test(column.extra) ||
+          GENERATED_COLUMN_EXTRA.test(column.extra) ||
+          SEQUENCE_DEFAULT.test(column.default ?? '') ||
+          (sqlite &&
+            keys === 1 &&
+            column.primaryKey &&
+            column.dataType.toLowerCase() === SQLITE_ROWID_TYPE),
+      )
+    }
+    return auto
   }
 
   /** Drops all pending edits, all new rows and all delete marks. */
@@ -1535,5 +1596,9 @@ export class Session {
 
   private plural(count: number, word: string): string {
     return `${count.toLocaleString('en-US')} ${word}${count === 1 ? '' : 's'}`
+  }
+
+  private static byNumber(first: number, second: number): number {
+    return first - second
   }
 }

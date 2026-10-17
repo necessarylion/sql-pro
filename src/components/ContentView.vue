@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, useTemplateRef, watch } from 'vue'
+import { computed, nextTick, ref, useTemplateRef, watch } from 'vue'
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -55,6 +55,22 @@ const deletedRows = computed(deletedOfSession)
 
 // Row numbers mean other rows after a reload. Drop the selection.
 watch(sessionPage, clearSelection)
+// Cmd+D (Ctrl+D) in App.vue.
+watch(duplicateAsked, duplicateSelected)
+
+function duplicateAsked(): number {
+  return props.session.duplicateAsked
+}
+
+/** Adds a copy of each selected row as a new row, then selects the copies and shows them. */
+async function duplicateSelected(): Promise<void> {
+  if (!props.session.editable || selected.value.length === 0) {
+    return
+  }
+  selected.value = props.session.duplicateRows(selected.value)
+  await nextTick()
+  grid.value?.showSelected()
+}
 
 function sessionPage(): TablePage | null {
   return props.session.page
@@ -260,6 +276,10 @@ function deleteSelected(): void {
       <button role="menuitem" @click="showDetail(menu.row)">
         Show row details
         <span class="hint">{{ shortcuts.hint('I') }}</span>
+      </button>
+      <button role="menuitem" :disabled="!session.editable" @click="duplicateSelected">
+        Duplicate
+        <span class="hint">{{ shortcuts.hint('D') }}</span>
       </button>
       <span class="menu-line" />
     </template>

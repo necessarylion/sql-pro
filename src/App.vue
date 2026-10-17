@@ -31,7 +31,7 @@ function detail(session: Session): string {
 }
 
 /**
- * The one place for the save, refresh, export, detail panel and zoom keys. Only the active tab saves, refreshes or exports.
+ * The one place for the save, refresh, export, detail panel, duplicate and zoom keys. Only the active tab saves, refreshes or exports.
  * The default is always stopped. It would save or reload the whole page of the app.
  */
 function onKey(event: KeyboardEvent): void {
@@ -75,6 +75,11 @@ function onKey(event: KeyboardEvent): void {
   if (action === 'export') {
     // The workspace of the tab sees this and opens the export dialog.
     session.exportAsked += 1
+  } else if (action === 'duplicate') {
+    if (session.view === 'content' && session.editable) {
+      // The Content view sees this and duplicates its selected rows.
+      session.duplicateAsked += 1
+    }
   } else if (action === 'refresh') {
     session.run(session.refresh())
   } else if (session.view === 'content') {
