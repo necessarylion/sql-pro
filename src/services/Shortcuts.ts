@@ -1,6 +1,7 @@
 import {
   CANCEL_KEY,
   CANCEL_SHORTCUT_KEY,
+  COPY_KEY,
   MAC_PLATFORM_PATTERN,
   SELECT_ALL_KEY,
   SHIFT_SHORTCUT_KEYS,
@@ -50,6 +51,16 @@ export class Shortcuts {
     const { metaKey, ctrlKey, shiftKey, altKey } = event
     return (
       event.key.toLowerCase() === SELECT_ALL_KEY &&
+      this.hasModifier({ metaKey, ctrlKey, shiftKey, altKey })
+    )
+  }
+
+  /** True for Cmd+C (macOS) or Ctrl+C (Windows, Linux). Caps Lock gives 'C', so the case does not matter. */
+  copies(event: ModifierKeys & { key: string }): boolean {
+    // Read each key by name. A spread copy of a real KeyboardEvent has none of them.
+    const { metaKey, ctrlKey, shiftKey, altKey } = event
+    return (
+      event.key.toLowerCase() === COPY_KEY &&
       this.hasModifier({ metaKey, ctrlKey, shiftKey, altKey })
     )
   }

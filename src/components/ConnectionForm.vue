@@ -665,14 +665,6 @@ async function browseKey(): Promise<void> {
             <DbBadge :driver="row.favorite.config.driver" />
             <span class="name">{{ row.favorite.name }}</span>
             <EnvBadge class="env" :name="row.favorite.environment" />
-            <button
-              type="button"
-              class="icon remove"
-              title="Delete connection"
-              @click.stop="session.run(removeFavorite(row.favorite))"
-            >
-              <XIcon :size="11" />
-            </button>
           </li>
           <li
             v-else-if="row.section.folder"
@@ -1149,6 +1141,10 @@ async function browseKey(): Promise<void> {
           <span class="menu-line" />
           <button role="menuitem" @click="moveTo(menu.favorite, '')">Move out of the folder</button>
         </template>
+        <span class="menu-line" />
+        <button class="danger" role="menuitem" @click="session.run(removeFavorite(menu.favorite))">
+          Delete connection
+        </button>
       </template>
       <button v-else role="menuitem" @click="folderDialog?.open(null)">New Folder…</button>
     </ContextMenu>
@@ -1356,18 +1352,6 @@ async function browseKey(): Promise<void> {
   width: 32px;
   padding: 0;
   border-left: 1px solid var(--border);
-}
-
-/* The delete mark shows only under the mouse. */
-.remove {
-  visibility: hidden;
-  width: 16px;
-  height: 16px;
-  color: inherit;
-}
-
-li:hover .remove {
-  visibility: visible;
 }
 
 /* `margin: auto` centres the form. A long form can still scroll from its top. */

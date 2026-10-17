@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, useTemplateRef, watch } from 'vue'
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -28,6 +28,7 @@ const layout = injectRequired(LAYOUT_SERVICE)
 const columnOrders = injectRequired(COLUMN_ORDERS)
 
 const selected = ref<number[]>([])
+const grid = useTemplateRef<InstanceType<typeof DataGrid>>('grid')
 // Where the export menu is open. null = closed.
 // `row` is the right-clicked row, or -1 when the menu was opened from the bottom bar.
 const menu = ref<{ x: number; y: number; row: number } | null>(null)
@@ -214,6 +215,7 @@ function deleteSelected(): void {
 
   <div class="body">
     <DataGrid
+      ref="grid"
       v-model:selected="selected"
       :columns="gridColumns"
       :rows="shownRows"
@@ -249,7 +251,9 @@ function deleteSelected(): void {
     :columns="exportColumns"
     :rows="exportRows"
     :table="session.table"
+    :copies="menu.row >= 0"
     @close="closeMenu"
+    @copy="grid?.copyRows()"
   >
     <template v-if="menu.row >= 0">
       <button role="menuitem" @click="showDetail(menu.row)">
