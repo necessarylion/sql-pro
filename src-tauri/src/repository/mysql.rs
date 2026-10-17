@@ -284,6 +284,13 @@ impl MysqlRepository {
         Ok(rights)
     }
 
+    /// The grantees with SELECT on `performance_schema`. The Query stats view reads it.
+    async fn query_stats_grantees(&self) -> AppResult<Vec<String>> {
+        let sql = "SELECT GRANTEE FROM information_schema.schema_privileges \
+            WHERE TABLE_SCHEMA = 'performance_schema' AND PRIVILEGE_TYPE = 'SELECT'";
+        Ok(first_column(&single(self.query(sql).await?)))
+    }
+
     /// A database name as a pattern that matches only this name.
     /// In a grant on a database, `_` and `%` are wildcards.
     fn pattern(database: &str) -> String {
@@ -620,6 +627,7 @@ impl Repository for MysqlRepository {
             }
         }
         let global = self.global_rights().await?;
+        let stats = self.query_stats_grantees().await?;
         let grants = match self.database().await? {
             Some(database) => self.grants(&database).await?,
             None => Vec::new(),
@@ -632,9 +640,14 @@ impl Repository for MysqlRepository {
                 .iter()
                 .filter(|grant| grant.grantee == grantee)
                 .collect();
+            // SELECT on all databases covers performance_schema too, and a REVOKE
+            // on performance_schema alone cannot take it away.
+            let global_select = own_global.iter().any(|right| right == "SELECT");
             users.push(DbUser {
                 access: Self::level(own_global, &own_grants),
                 current: name == me.0 && host == me.1,
+                query_stats: global_select || stats.contains(&grantee),
+                query_stats_fixed: global_select,
                 name,
                 host: Some(host),
             });
@@ -695,6 +708,22 @@ impl Repository for MysqlRepository {
             )
         };
         self.run_secret(&sql, password).await
+    }
+
+    async fn set_user_query_stats(
+        &self,
+        name: &str,
+        host: Option<&str>,
+        on: bool,
+    ) -> AppResult<()> {
+        let account = self.account(name, host).await?;
+        let sql = if on {
+            format!("GRANT SELECT ON performance_schema.* TO {account}")
+        } else {
+            format!("REVOKE SELECT ON performance_schema.* FROM {account}")
+        };
+        self.query(&sql).await?;
+        Ok(())
     }
 
     // ponytail: the statements run one by one, MySQL cannot roll back a GRANT.

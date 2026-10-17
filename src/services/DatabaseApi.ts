@@ -298,6 +298,11 @@ export class DatabaseApi {
     return invoke('set_user_access', { id, name: user.name, host: user.host, access })
   }
 
+  /** Gives or takes away the right to read the server query stats. */
+  setUserQueryStats(id: string, user: DbUser, on: boolean): Promise<void> {
+    return invoke('set_user_query_stats', { id, name: user.name, host: user.host, on })
+  }
+
   setUserPassword(id: string, user: DbUser, password: string): Promise<void> {
     return invoke('set_user_password', { id, name: user.name, host: user.host, password })
   }

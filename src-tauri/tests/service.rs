@@ -1178,6 +1178,8 @@ async fn no_users(service: &ConnectionService) {
     assert!(changed.await.is_err());
     let changed = service.set_user_password(ID, USER, None, PASSWORD);
     assert!(changed.await.is_err());
+    let changed = service.set_user_query_stats(ID, USER, None, true);
+    assert!(changed.await.is_err());
 }
 
 /// Bad input and forbidden changes. None of them may change anything.
@@ -1265,6 +1267,56 @@ async fn special_rights(service: &ConnectionService, driver: Driver) {
     assert_eq!(access_of(service, USER).await, Some(AccessLevel::None));
 }
 
+/// The right to read the query stats: give it, take it away, and the cases that are refused.
+async fn query_stats_right(service: &ConnectionService, driver: Driver, me: &DbUser) {
+    let stats_of = async |name: &str| {
+        let user = find_user(service, name).await.expect("listed");
+        (user.query_stats, user.query_stats_fixed)
+    };
+    assert_eq!(stats_of(USER).await, (false, false));
+    let changed = service.set_user_query_stats(ID, USER, None, true);
+    changed.await.expect("give query stats");
+    assert_eq!(stats_of(USER).await, (true, false));
+    // Asking again for what is already there changes nothing.
+    let changed = service.set_user_query_stats(ID, USER, None, true);
+    changed.await.expect("give again");
+    let changed = service.set_user_query_stats(ID, USER, None, false);
+    changed.await.expect("take query stats");
+    assert_eq!(stats_of(USER).await, (false, false));
+
+    // The admin has it through a wider right, so it cannot be taken away here.
+    assert!(me.query_stats && me.query_stats_fixed);
+    let host = me.host.as_deref();
+    let changed = service.set_user_query_stats(ID, &me.name, host, false);
+    assert!(changed.await.is_err(), "a wider right is refused");
+    let unknown = format!("{USER}'; DROP TABLE {TABLE}; --");
+    let changed = service.set_user_query_stats(ID, &unknown, None, true);
+    assert!(changed.await.is_err());
+
+    let account = if driver == Driver::Mysql {
+        format!("'{USER}'@'%'")
+    } else {
+        USER.to_owned()
+    };
+    let (give, take) = if driver == Driver::Mysql {
+        (
+            format!("GRANT SELECT ON *.* TO {account}"),
+            format!("REVOKE SELECT ON *.* FROM {account}"),
+        )
+    } else {
+        (
+            format!("ALTER ROLE {account} SUPERUSER"),
+            format!("ALTER ROLE {account} NOSUPERUSER"),
+        )
+    };
+    service.run_query(ID, &give).await.expect("wider right");
+    assert_eq!(stats_of(USER).await, (true, true));
+    let changed = service.set_user_query_stats(ID, USER, None, false);
+    assert!(changed.await.is_err());
+    service.run_query(ID, &take).await.expect("take it back");
+    assert_eq!(stats_of(USER).await, (false, false));
+}
+
 /// `MySQL` with no database chosen: the list works, but a level cannot be set.
 async fn no_database(service: &ConnectionService, config: &ConnectionConfig) {
     let mut plain = config.clone();
@@ -1310,6 +1362,8 @@ async fn passwords(service: &ConnectionService, config: &ConnectionConfig, me: &
     let changed = service.set_user_access(USER_ID, &me.name, host, AccessLevel::None);
     assert!(changed.await.is_err());
     let changed = service.set_user_password(USER_ID, &me.name, host, "stolen-1");
+    assert!(changed.await.is_err());
+    let changed = service.set_user_query_stats(USER_ID, USER, None, true);
     assert!(changed.await.is_err());
     // Everyone may change their own password. The connection keeps working.
     let own = service.set_user_password(USER_ID, USER, None, PASSWORD);
@@ -1376,6 +1430,7 @@ async fn users(service: &ConnectionService, config: &ConnectionConfig, table: &T
 
     user_refusals(service, me, table).await;
     special_rights(service, driver).await;
+    query_stats_right(service, driver, me).await;
 
     passwords(service, config, me).await;
     if driver == Driver::Mysql {

@@ -24,6 +24,7 @@ const selected = ref<number[]>([])
 const target = computed(selectedUser)
 const accessTitle = computed(describeAccessSelect)
 const removeTitle = computed(describeRemove)
+const statsTitle = computed(describeQueryStats)
 /** The user to select again after the rows move. Set only while an access change runs. */
 let keepKey = ''
 const count = computed(describeCount)
@@ -97,6 +98,20 @@ function describeAccessSelect(): string {
   return lockReason(user) || `Access of ${user.name}`
 }
 
+function describeQueryStats(): string {
+  const user = target.value
+  if (!user) {
+    return 'Select a user first'
+  }
+  if (!props.session.canManageUsers) {
+    return 'Your account is not allowed to manage users'
+  }
+  if (user.queryStatsFixed) {
+    return 'This user reads the query stats through a wider right, like a superuser or SELECT on all databases. It cannot be changed here.'
+  }
+  return `Whether ${user.name} may read the server query stats (the Query stats view)`
+}
+
 function describeRemove(): string {
   const user = target.value
   if (!user) {
@@ -158,6 +173,34 @@ async function sendAccess(user: DbUser, access: GrantableAccess): Promise<void> 
   keepKey = UserList.key(user)
   try {
     await props.session.setUserAccess(user, access)
+  } finally {
+    keepKey = ''
+  }
+}
+
+function changeQueryStats(event: Event): void {
+  const user = target.value
+  const box = event.target as HTMLInputElement
+  if (!user) {
+    return
+  }
+  const on = box.checked
+  // Show the old state again. The new one shows when the list is loaded again.
+  box.checked = user.queryStats
+  props.session.run(sendQueryStats(user, on))
+}
+
+/** Asks first. Changes the right only on yes. */
+async function sendQueryStats(user: DbUser, on: boolean): Promise<void> {
+  const question = on
+    ? `Let "${user.name}" read the query stats of the server? The user can then see the queries of all users.`
+    : `Take away the query stats right from "${user.name}"? The Query stats view stops working for this user.`
+  if (!(await confirm(question, { title: 'Query stats', kind: 'warning' }))) {
+    return
+  }
+  keepKey = UserList.key(user)
+  try {
+    await props.session.setUserQueryStats(user, on)
   } finally {
     keepKey = ''
   }
@@ -280,6 +323,15 @@ async function sendNewUser(): Promise<void> {
         {{ ACCESS_LABELS[level] }}
       </option>
     </select>
+    <label class="stats" :title="statsTitle">
+      <input
+        type="checkbox"
+        :checked="target?.queryStats ?? false"
+        :disabled="!target || !session.canManageUsers || target.queryStatsFixed"
+        @change="changeQueryStats"
+      />
+      Query stats
+    </label>
     <button
       class="icon"
       :title="target ? 'Change the password of the selected user' : 'Select a user first'"
@@ -427,6 +479,22 @@ button.danger:disabled {
   height: 22px;
   border-radius: 5px;
   font-size: 11px;
+}
+
+.stats {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.stats:has(input:disabled) {
+  color: var(--text-3);
+}
+
+.stats input {
+  margin: 0;
 }
 
 /* The same look as the settings dialog. */

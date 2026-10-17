@@ -408,6 +408,7 @@ pub enum AccessLevel {
 
 /// One login account of the database server.
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DbUser {
     pub name: String,
     /// The host part of a `MySQL` account. `None` for `PostgreSQL`.
@@ -415,6 +416,11 @@ pub struct DbUser {
     pub access: AccessLevel,
     /// True for the account this connection is logged in as.
     pub current: bool,
+    /// True when the account may read the server query stats (the Query stats view).
+    pub query_stats: bool,
+    /// True when `query_stats` comes from a wider right, like a superuser.
+    /// Then the app cannot change it.
+    pub query_stats_fixed: bool,
 }
 
 /// The accounts of a server, and whether the logged-in account may manage them.

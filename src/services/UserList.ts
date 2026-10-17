@@ -1,13 +1,14 @@
 import { ACCESS_LABELS, ACCESS_ORDER } from '../constants/users'
 import type { DbUser, GridColumn, Row } from '../types'
 
-export type UserColumn = 'name' | 'host' | 'access'
+export type UserColumn = 'name' | 'host' | 'access' | 'queryStats'
 
 /** The grid columns in shown order. Host is only there for MySQL. */
 const COLUMNS: { key: UserColumn; name: string }[] = [
   { key: 'name', name: 'Name' },
   { key: 'host', name: 'Host' },
   { key: 'access', name: 'Access' },
+  { key: 'queryStats', name: 'Query stats' },
 ]
 
 /** The sort order and the grid text of the Users view. It works on the loaded list. */
@@ -48,8 +49,10 @@ export class UserList {
         row.push(user.current ? `${user.name} (you)` : user.name)
       } else if (column.key === 'host') {
         row.push(user.host)
-      } else {
+      } else if (column.key === 'access') {
         row.push(ACCESS_LABELS[user.access])
+      } else {
+        row.push(user.queryStats ? 'Yes' : 'No')
       }
     }
     return row
@@ -90,14 +93,19 @@ export class UserList {
     return this.column === null ? shown : shown.sort(this.compare.bind(this))
   }
 
-  /** Access sorts from the fewest rights to the most. Text by letters. An empty host goes last in both orders. */
+  /**
+   * Access sorts from the fewest rights to the most, query stats "No" before "Yes".
+   * Text by letters. An empty host goes last in both orders.
+   */
   private compare(a: DbUser, b: DbUser): number {
     let order: number
     if (this.column === 'access') {
       order = ACCESS_ORDER.indexOf(a.access) - ACCESS_ORDER.indexOf(b.access)
+    } else if (this.column === 'queryStats') {
+      order = Number(a.queryStats) - Number(b.queryStats)
     } else {
-      const left = a[this.column as UserColumn]
-      const right = b[this.column as UserColumn]
+      const left = a[this.column as 'name' | 'host']
+      const right = b[this.column as 'name' | 'host']
       if (left === null || right === null) {
         return Number(left === null) - Number(right === null)
       }

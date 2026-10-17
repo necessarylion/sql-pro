@@ -84,7 +84,7 @@ export class Session {
   table: TableRef | null = null
   /** The SQL of a view, trigger or routine. It is shown in the place of a table. */
   definition: ObjectDefinition | null = null
-  view: SessionView = 'content'
+  private shownView: SessionView = 'content'
   page: TablePage | null = null
   /** The indexes and foreign keys of the open table. Loaded only for the Structure view. */
   keys: TableKeys | null = null
@@ -139,6 +139,18 @@ export class Session {
     this.api = api
     this.prompt = prompt
     this.chat = new AiChat(api, prompt)
+  }
+
+  /** The shown view. A new view clears the error of the old one. */
+  get view(): SessionView {
+    return this.shownView
+  }
+
+  set view(view: SessionView) {
+    if (view !== this.shownView) {
+      this.error = ''
+    }
+    this.shownView = view
   }
 
   /** True when rows of the open table can be changed. */
@@ -1085,6 +1097,12 @@ export class Session {
   async setUserAccess(user: DbUser, access: GrantableAccess): Promise<void> {
     await this.api.setUserAccess(this.id, user, access)
     this.status = `Access of "${user.name}" set to ${ACCESS_LABELS[access]}`
+    await this.loadUsers()
+  }
+
+  async setUserQueryStats(user: DbUser, on: boolean): Promise<void> {
+    await this.api.setUserQueryStats(this.id, user, on)
+    this.status = `Query stats ${on ? 'given to' : 'taken from'} "${user.name}"`
     await this.loadUsers()
   }
 

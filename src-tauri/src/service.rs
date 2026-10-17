@@ -20,7 +20,7 @@ use crate::constants::{
     AI_IMAGE_MAX_BYTES, ANY_HOST, CANNOT_MANAGE_USERS, CHARSET_ONLY_MYSQL, CLAUDE_READ_ONLY_NOTE,
     DROP_CURRENT_DATABASE, EXPLAIN_ONE_STATEMENT, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS,
     MSSQL_NO_USER_ACCOUNTS, NO_EXPLAIN, NO_USER_ACCOUNTS, NOT_A_READ, OPEN_TRANSACTION,
-    PRIMARY_KEY_NOT_DROPPED, SQLITE_NO_DATABASES, VIEW,
+    PRIMARY_KEY_NOT_DROPPED, QUERY_STATS_FIXED, SQLITE_NO_DATABASES, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -1002,6 +1002,30 @@ impl ConnectionService {
         }
         repository
             .set_user_access(&user.name, user.host.as_deref(), access)
+            .await
+    }
+
+    /// Gives or takes away the right to read the server query stats.
+    pub async fn set_user_query_stats(
+        &self,
+        id: &str,
+        name: &str,
+        host: Option<&str>,
+        on: bool,
+    ) -> AppResult<()> {
+        let (repository, list) = self.user_list(id).await?;
+        if !list.can_manage {
+            return Err(CANNOT_MANAGE_USERS.into());
+        }
+        let user = Self::user(&list.users, name, host)?;
+        if user.query_stats_fixed {
+            return Err(QUERY_STATS_FIXED.into());
+        }
+        if user.query_stats == on {
+            return Ok(());
+        }
+        repository
+            .set_user_query_stats(&user.name, user.host.as_deref(), on)
             .await
     }
 

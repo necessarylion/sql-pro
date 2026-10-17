@@ -434,6 +434,18 @@ pub async fn set_user_access(
 }
 
 #[tauri::command]
+pub async fn set_user_query_stats(
+    service: Service<'_>,
+    id: String,
+    name: String,
+    host: Option<String>,
+    on: bool,
+) -> AppResult<()> {
+    let host = host.as_deref();
+    service.set_user_query_stats(&id, &name, host, on).await
+}
+
+#[tauri::command]
 pub async fn set_user_password(
     service: Service<'_>,
     id: String,

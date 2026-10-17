@@ -120,6 +120,10 @@ pub const MYSQL_DATABASE_PRIVILEGES: [&str; 18] = [
 /// The error for an account that may not create, change or drop users.
 pub const CANNOT_MANAGE_USERS: &str = "Your account is not allowed to manage users";
 
+/// The error when the query stats right comes from a wider right that the app cannot take away.
+pub const QUERY_STATS_FIXED: &str = "This account reads the query stats through a wider right, \
+    like a superuser or SELECT on all databases. It cannot be changed here.";
+
 /// The error for a database kind that has no accounts.
 pub const NO_USER_ACCOUNTS: &str = "SQLite has no user accounts";
 
@@ -148,11 +152,13 @@ pub const QUERY_STATS_MAX_DAYS: u32 = 3650;
 /// What to do when the server does not collect query stats, or the account may not read them.
 pub const MYSQL_NO_QUERY_STATS: &str = "Query stats need performance_schema, and it is off or not readable. \
     Set performance_schema=ON in my.cnf and restart the server. \
-    Your account also needs SELECT on performance_schema.";
+    Your account also needs SELECT on performance_schema. \
+    An admin can give it on the Users screen (Query stats).";
 pub const POSTGRES_NO_QUERY_STATS: &str = "Query stats need the pg_stat_statements extension. \
     Add pg_stat_statements to shared_preload_libraries, restart the server, \
     then run CREATE EXTENSION pg_stat_statements; in this database. \
-    To see the queries of other users, your account needs the pg_read_all_stats role.";
+    To see the queries of other users, your account needs the pg_read_all_stats role. \
+    An admin can give it on the Users screen (Query stats).";
 pub const MSSQL_NO_QUERY_STATS: &str = "Query stats need the VIEW SERVER STATE permission \
     (on Azure SQL: VIEW DATABASE STATE).";
 
