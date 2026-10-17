@@ -48,6 +48,7 @@ pub fn run() {
         .manage(open_file::OpenedFiles::default())
         .invoke_handler(tauri::generate_handler![
             commands::connect,
+            commands::test_connection,
             commands::disconnect,
             commands::clone_connection,
             commands::use_database,

@@ -41,6 +41,11 @@ export class DatabaseApi {
     return invoke('connect', { id, config })
   }
 
+  /** Opens a connection with `config`, checks it and closes it again. Nothing is kept. */
+  testConnection(config: ConnectionConfig): Promise<void> {
+    return invoke('test_connection', { config })
+  }
+
   /** Opens a new connection `newId` with the same settings as connection `id` uses now. */
   cloneConnection(id: string, newId: string): Promise<void> {
     return invoke('clone_connection', { id, newId })

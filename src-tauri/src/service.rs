@@ -70,6 +70,17 @@ impl ConnectionService {
         self.open(id, config, None, Arc::default()).await
     }
 
+    /// Opens a connection with `config` (and its SSH tunnel), reads the table list and
+    /// closes it all again. No tab, no spare, nothing is kept. The table list reads the
+    /// schema, so a `SQLite` file that is not a database fails too (`SELECT 1` would pass).
+    pub async fn test_connection(&self, config: &ConnectionConfig) -> AppResult<()> {
+        // The tunnel stops when `_tunnel` is dropped at the end, after the close.
+        let (repository, _tunnel) = self.factory.create(config, None).await?;
+        let result = repository.tables().await;
+        repository.close().await;
+        result.map(drop)
+    }
+
     /// Like `connect`, but goes through `tunnel` when it is set, and keeps `spare`.
     /// A shared tunnel stops when the last connection that uses it is closed.
     async fn open(
@@ -1390,6 +1401,34 @@ mod tests {
         }
         assert!(spare.ready().is_none());
         std::fs::remove_file(&path).ok();
+    }
+
+    /// A test opens the file and keeps nothing. A missing file is an error, not a new file.
+    #[tokio::test]
+    async fn test_connection_keeps_nothing() {
+        let path = std::env::temp_dir().join(format!("sqlpro-test-{}.sqlite", std::process::id()));
+        std::fs::File::create(&path).expect("create file");
+        let config = ConnectionConfig {
+            driver: Driver::Sqlite,
+            host: String::new(),
+            port: 0,
+            user: String::new(),
+            password: String::new(),
+            database: path.to_string_lossy().into_owned(),
+            ssh: None,
+        };
+        let service = ConnectionService::new(RepositoryFactory);
+        service.test_connection(&config).await.expect("test");
+        assert!(service.connections.lock().is_empty());
+
+        std::fs::write(&path, "not a database, only some plain text for the header")
+            .expect("write");
+        assert!(service.test_connection(&config).await.is_err());
+        std::fs::remove_file(&path).ok();
+
+        // A missing file is not created.
+        assert!(service.test_connection(&config).await.is_err());
+        assert!(!path.exists());
     }
 
     /// `query_only` blocks a write that the classifier would let through, and it is

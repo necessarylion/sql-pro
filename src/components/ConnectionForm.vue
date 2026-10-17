@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref, useTemplateRef } from 'vue'
+import { computed, nextTick, reactive, ref, useTemplateRef, watch } from 'vue'
 import {
   ChevronRightIcon,
   CircleAlertIcon,
+  CircleCheckIcon,
   DownloadIcon,
   FolderPlusIcon,
   LoaderCircleIcon,
@@ -12,12 +13,7 @@ import {
   XIcon,
 } from 'lucide-vue-next'
 import { confirm, open, save } from '@tauri-apps/plugin-dialog'
-import {
-  CONNECTION_STRING_EXAMPLE,
-  DEFAULT_CONFIGS,
-  DEFAULT_SSH_CONFIG,
-  DRIVER_LABELS,
-} from '../constants'
+import { DEFAULT_CONFIGS, DEFAULT_SSH_CONFIG, DRIVER_LABELS } from '../constants'
 import {
   DEFAULT_ENVIRONMENT,
   ENVIRONMENT_HINT,
@@ -76,6 +72,13 @@ const env = reactive({ kind: DEFAULT_ENVIRONMENT as EnvironmentKind, custom: '' 
 const note = reactive({ text: '', detail: '' })
 /** True while a connect runs. The form then says "Connecting…", not only "Working…". */
 const connecting = ref(false)
+
+/**
+ * The result of the Test button. `error` is '' when the test worked.
+ * `done` is false while no result is shown. Any change in the form clears it.
+ */
+const test = reactive({ running: false, done: false, error: '' })
+watch(form, clearTest)
 
 /** The pasted connection string. It can hold a password, so it is cleared after use. */
 const pasted = ref('')
@@ -415,6 +418,28 @@ async function connect(): Promise<void> {
   }
 }
 
+/**
+ * Opens a connection with the values in the form, checks it and closes it again.
+ * A saved password is in the form already, because `load` puts it there.
+ */
+async function testConnection(): Promise<void> {
+  clearTest()
+  test.running = true
+  try {
+    await props.session.testConnection(currentConfig())
+  } catch (error) {
+    test.error = String(error)
+  } finally {
+    test.running = false
+    test.done = true
+  }
+}
+
+function clearTest(): void {
+  test.done = false
+  test.error = ''
+}
+
 /** Does not connect with an empty password. The user types it first. */
 async function loadAndConnect(favorite: Favorite): Promise<void> {
   if (await load(favorite)) {
@@ -683,7 +708,7 @@ async function browseKey(): Promise<void> {
             <input
               v-model="pasted"
               class="mono"
-              :placeholder="`Paste a connection string: ${CONNECTION_STRING_EXAMPLE}`"
+              placeholder="Paste a URL, like mysql://user:pass@host/db"
               aria-label="Connection string"
               autocomplete="off"
               autocorrect="off"
@@ -873,9 +898,23 @@ async function browseKey(): Promise<void> {
           <span>{{ note.text }}</span>
         </div>
 
+        <div v-if="test.done" class="banner" :class="test.error ? 'error' : 'success'">
+          <CircleAlertIcon v-if="test.error" :size="13" />
+          <CircleCheckIcon v-else :size="13" />
+          <span>{{ test.error || 'Connection works.' }}</span>
+        </div>
+
         <div class="actions">
           <span class="spacer" />
           <template v-if="editing">
+            <button
+              type="button"
+              :disabled="session.busy || test.running"
+              @click="testConnection()"
+            >
+              <LoaderCircleIcon v-if="test.running" :size="13" class="spin" />
+              {{ test.running ? 'Testing…' : 'Test' }}
+            </button>
             <button
               v-if="form.id"
               type="button"
@@ -1297,6 +1336,10 @@ header p {
 
 .banner.error {
   background: var(--deleted);
+}
+
+.banner.success {
+  color: var(--success-text);
 }
 
 .banner.note {

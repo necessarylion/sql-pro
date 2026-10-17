@@ -292,6 +292,11 @@ export class Session {
     return this.cancelling
   }
 
+  /** Checks that `config` can connect. It does not touch this tab. */
+  testConnection(config: ConnectionConfig): Promise<void> {
+    return this.api.testConnection(config)
+  }
+
   async connect(config: ConnectionConfig, title: string, environment = ''): Promise<void> {
     await this.api.connect(this.id, config)
     try {
