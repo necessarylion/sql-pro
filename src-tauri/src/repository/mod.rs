@@ -31,7 +31,7 @@ pub use tunnel::SshTunnel;
 
 use crate::constants::{
     CANCEL_NOT_REACHED, CONNECT_TIMEOUT_SECONDS, LOCALHOST, MAX_QUERY_ROWS, NO_PROCESSES,
-    NO_USER_ACCOUNTS, PASSWORD_ERROR_HIDDEN, PROCEDURE, TRIGGER,
+    NO_QUERY_STATS, NO_USER_ACCOUNTS, PASSWORD_ERROR_HIDDEN, PROCEDURE, TRIGGER,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -225,6 +225,27 @@ pub trait Repository: Send + Sync {
     /// statement and the connection stays open.
     fn kill_sql(&self, _id: i64, _query_only: bool) -> AppResult<String> {
         Err(NO_PROCESSES.into())
+    }
+
+    /// The SQL for the Query stats view: the statements that ran on the server from all
+    /// clients, one row per query shape, the most total time first, at most
+    /// `QUERY_STATS_LIMIT` rows. Only shapes that ran in the last `days` days, when the
+    /// server keeps a last run time. `days` is a number, so it is safe inside the SQL.
+    /// It gives these columns in this order: query, database, runs, last run,
+    /// total ms, average ms, max ms, rows.
+    fn query_stats_sql(&self, _days: u32) -> AppResult<String> {
+        Err(NO_QUERY_STATS.into())
+    }
+
+    /// SQL that gives 1 when the server collects query stats. `None` when the stats SQL
+    /// fails by itself while they are off.
+    fn query_stats_on_sql(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// The plain text that says how to turn on query stats and which rights they need.
+    fn query_stats_setup(&self) -> &'static str {
+        NO_QUERY_STATS
     }
 
     /// The statement that deletes all rows of a table. `table` is already quoted.

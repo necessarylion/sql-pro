@@ -1,9 +1,11 @@
 # Local test databases for SQL Pro. All of them give full admin access.
-# Host ports are 5433, 3307 and 1434, so they do not clash with a local Postgres, MySQL or SQL Server.
+# Host ports are 5433, 3307, 3308 and 1434, so they do not clash with a local Postgres, MySQL or SQL Server.
 # Ports are open on 127.0.0.1 only, because the passwords are weak.
 services:
   postgres:
     image: postgres:17
+    # pg_stat_statements must be loaded at start for the Query stats view.
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     environment:
       # "postgres" is the superuser.
       POSTGRES_PASSWORD: root
@@ -23,6 +25,17 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
 
+  mariadb:
+    image: mariadb:11.4
+    # MariaDB has performance_schema off by default. The Query stats view needs it.
+    command: ["--performance-schema=ON"]
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+    ports:
+      - "127.0.0.1:3308:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
     # Microsoft only builds this image for x86. Apple silicon runs it through Rosetta.
@@ -39,4 +52,5 @@ services:
 volumes:
   postgres_data:
   mysql_data:
+  mariadb_data:
   sqlserver_data:

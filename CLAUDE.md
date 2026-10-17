@@ -29,12 +29,13 @@ cargo test --test service  # the end-to-end flow only
 cargo fmt
 ```
 
-Backend tests run on SQLite by default. MySQL, PostgreSQL and SQL Server run only when these are set
-(`docker-compose.yml` starts local test servers on ports 3307 and 5433 with password `root`, and SQL Server on
-port 1434 with user `sa` and password `Root1234!`):
+Backend tests run on SQLite by default. MySQL, MariaDB, PostgreSQL and SQL Server run only when these are set
+(`docker-compose.yml` starts local test servers on ports 3307 (MySQL), 3308 (MariaDB) and 5433 with password
+`root`, and SQL Server on port 1434 with user `sa` and password `Root1234!`):
 
 ```sh
 SQLPRO_TEST_MYSQL=host:port:user:password:database
+SQLPRO_TEST_MARIADB=host:port:user:password:database # MariaDB, through the MySQL driver
 SQLPRO_TEST_POSTGRES=host:port:user:password:database
 SQLPRO_TEST_MSSQL=host:port:user:password:database   # the test creates the database when it is missing
 SQLPRO_TEST_SSH=host:port:user:password      # optional, runs them through an SSH tunnel

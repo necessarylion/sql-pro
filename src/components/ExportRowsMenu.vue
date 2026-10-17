@@ -2,6 +2,7 @@
 import { save } from '@tauri-apps/plugin-dialog'
 import type { Session } from '../services/Session'
 import type { ExportFormat, Row, TableRef } from '../types'
+import { SHORTCUTS, injectRequired } from '../services/keys'
 import ContextMenu from './ContextMenu.vue'
 
 // The menu that exports grid rows to a file. The parent picks the rows.
@@ -13,8 +14,11 @@ const props = defineProps<{
   columns: string[]
   rows: Row[]
   table: TableRef | null
+  /** Shows a Copy item first. A click on it sends `copy`: the parent copies the selected grid rows. */
+  copies?: boolean
 }>()
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; copy: [] }>()
+const shortcuts = injectRequired(SHORTCUTS)
 
 // A click on an item also closes the menu. So the values are read here, before that.
 function exportAs(format: ExportFormat): void {
@@ -40,6 +44,10 @@ async function write(
   }
 }
 
+function copy(): void {
+  emit('copy')
+}
+
 function close(): void {
   emit('close')
 }
@@ -47,6 +55,13 @@ function close(): void {
 
 <template>
   <ContextMenu :x="x" :y="y" @close="close">
+    <template v-if="copies">
+      <button role="menuitem" @click="copy">
+        Copy
+        <span class="hint">{{ shortcuts.hint('C') }}</span>
+      </button>
+      <span class="menu-line" />
+    </template>
     <!-- The parent can put its own items above the export items. -->
     <slot />
     <button role="menuitem" :disabled="rows.length === 0" @click="exportAs('csv')">

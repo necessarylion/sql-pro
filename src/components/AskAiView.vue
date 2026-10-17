@@ -89,18 +89,40 @@ function send(): void {
   props.session.run(askAndSave(text))
 }
 
+/** A question from another view, like "Explain with AI" in Query stats. */
+function readOnlyQuestion(): string | null {
+  return props.session.readOnlyQuestion
+}
+
+/** Sends the waiting question once. It is always read-only, whatever mode the user picked. */
+function sendReadOnly(): void {
+  const text = props.session.readOnlyQuestion
+  if (!text) {
+    return
+  }
+  props.session.readOnlyQuestion = null
+  props.session.run(askAndSave(text, true))
+}
+
 /**
  * Saves the chat also when the question fails, so the question is not lost.
  * A production connection asks once before its data goes to the AI.
+ * `forceReadOnly` is for a prepared question: it does not come from the input, so the input keeps its text.
  */
-async function askAndSave(text: string): Promise<void> {
+async function askAndSave(text: string, forceReadOnly = false): Promise<void> {
   const allowed = await store.allowSend(connection.value, props.session.environment, props.session)
   if (!allowed) {
     return
   }
-  question.value = ''
+  const options = store.options(chatProvider())
+  if (forceReadOnly) {
+    // Only for this send. The saved mode of the user stays as it is.
+    options.readOnly = true
+  } else {
+    question.value = ''
+  }
   try {
-    await props.session.askAi(text, store.options(chatProvider()))
+    await props.session.askAi(text, options)
   } finally {
     const chat = props.session.chat.snapshot(connection.value, props.session.config?.database ?? '')
     if (chat) {
@@ -336,6 +358,7 @@ onBeforeUnmount(unobserve)
 onBeforeUnmount(stopListening)
 // A new message, the busy line, its text ("Running SQL…" or "thinking") and a new result all move the end.
 watch([entryCount, working, phase, hasResult], scrollDown)
+watch(readOnlyQuestion, sendReadOnly, { immediate: true })
 </script>
 
 <template>

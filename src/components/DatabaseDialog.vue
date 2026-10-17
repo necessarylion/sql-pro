@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { reactive, useTemplateRef } from 'vue'
+import { MYSQL_COLLATIONS } from '../constants/databases'
 import type { Session } from '../services/Session'
 
 // The dialog to create a database. Charset and collation are only shown for MySQL.
@@ -24,6 +25,15 @@ function closeOnOutsideClick(event: MouseEvent): void {
   if (event.target === dialog.value) {
     close()
   }
+}
+
+const charsets = Object.keys(MYSQL_COLLATIONS)
+
+/** The collations of the chosen charset. With no known charset, all common ones. */
+function collations(): readonly string[] {
+  return (
+    MYSQL_COLLATIONS[form.charset.trim().toLowerCase()] ?? Object.values(MYSQL_COLLATIONS).flat()
+  )
 }
 
 function isMysql(): boolean {
@@ -55,18 +65,26 @@ defineExpose({ open })
           <input
             id="database-charset"
             v-model="form.charset"
+            list="database-charsets"
             placeholder="Server default"
             spellcheck="false"
           />
+          <datalist id="database-charsets">
+            <option v-for="charset in charsets" :key="charset" :value="charset" />
+          </datalist>
         </div>
         <div class="row">
           <label for="database-collation">Collation</label>
           <input
             id="database-collation"
             v-model="form.collation"
+            list="database-collations"
             placeholder="Server default"
             spellcheck="false"
           />
+          <datalist id="database-collations">
+            <option v-for="collation in collations()" :key="collation" :value="collation" />
+          </datalist>
         </div>
       </template>
       <div class="actions">

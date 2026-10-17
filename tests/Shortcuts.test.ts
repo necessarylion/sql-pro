@@ -73,3 +73,14 @@ test('Cmd+A on macOS and Ctrl+A on Windows and Linux select all rows', function 
   expect(windows.selectsAll({ ...NONE, key: 'a', ctrlKey: true })).toBe(true)
   expect(windows.selectsAll({ ...NONE, key: 'a', metaKey: true })).toBe(false)
 })
+
+test('Cmd+C on macOS and Ctrl+C elsewhere copy rows', function () {
+  const mac = new Shortcuts('MacIntel')
+  expect(mac.copies({ ...NONE, key: 'c', metaKey: true })).toBe(true)
+  expect(mac.copies({ ...NONE, key: 'C', metaKey: true })).toBe(true)
+  expect(mac.copies({ ...NONE, key: 'c', ctrlKey: true })).toBe(false)
+  expect(mac.copies({ ...NONE, key: 'c', metaKey: true, shiftKey: true })).toBe(false)
+  const windows = new Shortcuts('Win32')
+  expect(windows.copies({ ...NONE, key: 'c', ctrlKey: true })).toBe(true)
+  expect(windows.copies({ ...NONE, key: 'c', metaKey: true })).toBe(false)
+})

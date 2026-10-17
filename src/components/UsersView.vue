@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, useTemplateRef } from 'vue'
+import { computed, onMounted, reactive, ref, useTemplateRef, watch } from 'vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { EyeIcon, EyeOffIcon, KeyRoundIcon, Trash2Icon, UsersIcon } from 'lucide-vue-next'
 import {
@@ -9,11 +9,23 @@ import {
   GRANTABLE_ACCESS,
 } from '../constants/users'
 import type { Session } from '../services/Session'
-import type { DbUser, GrantableAccess } from '../types'
+import { UserList } from '../services/UserList'
+import type { DbUser, GrantableAccess, GridColumn, Row } from '../types'
 import BottomBar from './BottomBar.vue'
+import DataGrid from './DataGrid.vue'
 
 const props = defineProps<{ session: Session }>()
 const hasHosts = computed(usesHosts)
+const list = reactive(new UserList())
+const columns = computed(gridColumns)
+const shown = computed(showUsers)
+const rows = computed(gridRows)
+const selected = ref<number[]>([])
+const target = computed(selectedUser)
+const accessTitle = computed(describeAccessSelect)
+const removeTitle = computed(describeRemove)
+/** The user to select again after the rows move. Set only while an access change runs. */
+let keepKey = ''
 const count = computed(describeCount)
 const note = computed(describeAccess)
 
@@ -34,9 +46,63 @@ const mismatch = computed(passwordsDiffer)
 
 // A query may have changed users or rights. So load the list each time the view opens.
 onMounted(reload)
+// A new sort or load moves the rows. The old selection would point to other rows.
+watch(shown, selectAfterMove)
 
 function reload(): void {
   props.session.loadUsers()
+}
+
+function sortColumn(name: string): void {
+  list.sortByName(name)
+}
+
+/** Clears the selection. After an access change the same user stays selected. */
+function selectAfterMove(): void {
+  const index = keepKey ? shown.value.findIndex(isKept) : -1
+  selected.value = index === -1 ? [] : [index]
+}
+
+function isKept(user: DbUser): boolean {
+  return UserList.key(user) === keepKey
+}
+
+function gridColumns(): GridColumn[] {
+  return UserList.columns(hasHosts.value)
+}
+
+function showUsers(): DbUser[] {
+  return list.visible(props.session.users)
+}
+
+function gridRows(): Row[] {
+  const rows: Row[] = []
+  for (const user of shown.value) {
+    rows.push(UserList.row(user, hasHosts.value))
+  }
+  return rows
+}
+
+/** The last selected user. */
+function selectedUser(): DbUser | null {
+  const index = selected.value.at(-1)
+  return (index === undefined ? undefined : shown.value[index]) ?? null
+}
+
+function describeAccessSelect(): string {
+  const user = target.value
+  if (!user) {
+    return 'Select a user first'
+  }
+  return lockReason(user) || `Access of ${user.name}`
+}
+
+function describeRemove(): string {
+  const user = target.value
+  if (!user) {
+    return 'Select a user first'
+  }
+  return user.current ? 'You cannot remove your own account' : 'Remove the selected user'
 }
 
 /** Only MySQL accounts have a host. */
@@ -63,8 +129,12 @@ function lockReason(user: DbUser): string {
   return user.access === 'admin' ? 'Admin access cannot be changed here' : ''
 }
 
-function changeAccess(user: DbUser, event: Event): void {
+function changeAccess(event: Event): void {
+  const user = target.value
   const select = event.target as HTMLSelectElement
+  if (!user) {
+    return
+  }
   const access = select.value as GrantableAccess
   // Show the old level again. The new one shows when the list is loaded again.
   select.value = user.access
@@ -81,8 +151,27 @@ async function sendAccess(user: DbUser, access: GrantableAccess): Promise<void> 
   if (ACCESS_ORDER.indexOf(access) < ACCESS_ORDER.indexOf(user.access)) {
     question += ' The user loses rights at once.'
   }
-  if (await confirm(question, { title: 'Change access', kind: 'warning' })) {
+  if (!(await confirm(question, { title: 'Change access', kind: 'warning' }))) {
+    return
+  }
+  // The new list comes in before setUserAccess returns. So the key is read in time.
+  keepKey = UserList.key(user)
+  try {
     await props.session.setUserAccess(user, access)
+  } finally {
+    keepKey = ''
+  }
+}
+
+function removeSelected(): void {
+  if (target.value && !target.value.current) {
+    props.session.run(remove(target.value))
+  }
+}
+
+function changeSelectedPassword(): void {
+  if (target.value) {
+    openPasswordDialog(target.value)
   }
 }
 
@@ -172,59 +261,50 @@ async function sendNewUser(): Promise<void> {
     <span class="name">Users</span>
     <span class="dim">{{ count }}</span>
     <span class="dim">{{ note }}</span>
+    <span class="spacer" />
+    <select
+      :value="target?.access ?? ''"
+      :title="accessTitle"
+      :disabled="!target || lockReason(target) !== ''"
+      @change="changeAccess"
+    >
+      <option v-if="!target" value="" disabled>Access</option>
+      <option
+        v-else-if="!GRANTABLE_ACCESS.includes(target.access as GrantableAccess)"
+        :value="target.access"
+        disabled
+      >
+        {{ ACCESS_LABELS[target.access] }}
+      </option>
+      <option v-for="level in GRANTABLE_ACCESS" :key="level" :value="level">
+        {{ ACCESS_LABELS[level] }}
+      </option>
+    </select>
+    <button
+      class="icon"
+      :title="target ? 'Change the password of the selected user' : 'Select a user first'"
+      :disabled="!target"
+      @click="changeSelectedPassword"
+    >
+      <KeyRoundIcon :size="13" />
+    </button>
+    <button
+      class="icon danger"
+      :title="removeTitle"
+      :disabled="!target || target.current"
+      @click="removeSelected"
+    >
+      <Trash2Icon :size="13" />
+    </button>
   </div>
-  <div class="grid">
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th v-if="hasHosts">Host</th>
-          <th>Access</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="user in session.users" :key="`${user.name}@${user.host}`">
-          <td>
-            {{ user.name }}
-            <span v-if="user.current" class="pill">you</span>
-          </td>
-          <td v-if="hasHosts">{{ user.host }}</td>
-          <td>
-            <span v-if="lockReason(user)" class="dim" :title="lockReason(user)">
-              {{ ACCESS_LABELS[user.access] }}
-            </span>
-            <select
-              v-else
-              :value="user.access"
-              :title="`Access of ${user.name}`"
-              @change="changeAccess(user, $event)"
-            >
-              <option v-if="user.access === 'custom'" value="custom" disabled>
-                {{ ACCESS_LABELS.custom }}
-              </option>
-              <option v-for="level in GRANTABLE_ACCESS" :key="level" :value="level">
-                {{ ACCESS_LABELS[level] }}
-              </option>
-            </select>
-          </td>
-          <td>
-            <button class="icon" title="Change password" @click="openPasswordDialog(user)">
-              <KeyRoundIcon :size="12" />
-            </button>
-            <button
-              class="icon"
-              :title="user.current ? 'You cannot remove your own account' : 'Remove this user'"
-              :disabled="user.current"
-              @click="session.run(remove(user))"
-            >
-              <Trash2Icon :size="12" />
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
+  <DataGrid
+    v-model:selected="selected"
+    :columns="columns"
+    :rows="rows"
+    :order-by="list.columnName"
+    :descending="list.descending"
+    @sort="sortColumn"
+  />
 
   <BottomBar :session="session">
     <input
@@ -338,80 +418,15 @@ async function sendNewUser(): Promise<void> {
   font-weight: 600;
 }
 
-/* The same look as the DataGrid. A small table of its own, because rows hold controls. */
-.grid {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  background: var(--bg);
-  font-size: 11px;
-}
-
-table {
-  border-spacing: 0;
-}
-
-th,
-td {
-  height: 22px;
-  padding: 0 8px;
-  text-align: left;
-  white-space: nowrap;
-}
-
-th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: var(--header);
-  border-right: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  color: var(--text-2);
-  font-weight: 600;
-}
-
-td {
-  border-right: 1px solid var(--border-soft);
-  font-family: var(--font-mono);
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-tbody tr:last-child td {
-  border-bottom: 1px solid var(--border-soft);
-}
-
-tbody tr:nth-child(even) {
-  background: var(--row-alt);
-}
-
-td .pill {
-  height: 14px;
-  margin-left: 4px;
-  padding: 0 6px;
-  font-family: var(--font-ui);
-  font-size: 10px;
-}
-
-td .dim,
-select {
-  font-family: var(--font-ui);
-  font-size: 11px;
-}
-
-select {
-  height: 18px;
-  padding: 0 4px;
-  border-radius: 4px;
-}
-
-td button.icon {
-  height: 18px;
+/* The global danger colour wins over the disabled grey. Keep the normal disabled look. */
+button.danger:disabled {
+  color: var(--text-3);
 }
 
 .bar select {
   height: 22px;
   border-radius: 5px;
+  font-size: 11px;
 }
 
 /* The same look as the settings dialog. */

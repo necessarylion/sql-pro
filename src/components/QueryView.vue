@@ -36,6 +36,7 @@ const savedKey = computed(savedQueriesKey)
 const host = useTemplateRef<HTMLDivElement>('host')
 const columns = computed(resultColumns)
 const selected = ref<number[]>([])
+const grid = useTemplateRef<InstanceType<typeof DataGrid>>('grid')
 // Where the export menu is open. null = closed.
 const menu = ref<{ x: number; y: number } | null>(null)
 const exportRows = computed(rowsToExport)
@@ -243,6 +244,7 @@ watch(sessionResult, clearSelection)
     <div class="body">
       <DataGrid
         v-if="session.result"
+        ref="grid"
         v-model:selected="selected"
         :columns="columns"
         :rows="session.result.rows"
@@ -275,7 +277,9 @@ watch(sessionResult, clearSelection)
       :columns="session.result.columns"
       :rows="exportRows"
       :table="null"
+      copies
       @close="closeMenu"
+      @copy="grid?.copyRows()"
     />
     <SavedQueryDialog ref="savedDialog" :connection-key="savedKey" />
     <div class="bar bottom result">
