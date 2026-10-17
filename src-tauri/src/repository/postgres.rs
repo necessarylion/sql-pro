@@ -659,11 +659,13 @@ impl Repository for PostgresRepository {
     /// count since the last reset. It has one row per user too, so rows of the same
     /// shape in the same database are added up. The column names are those of
     /// `PostgreSQL` 13 and newer (`total_time` became `total_exec_time`). Older ones fail.
+    /// Only the current database.
     fn query_stats_sql(&self, _days: u32) -> AppResult<String> {
         Ok(format!(
             "SELECT min(s.query), d.datname, sum(s.calls), NULL, sum(s.total_exec_time), \
             sum(s.total_exec_time) / NULLIF(sum(s.calls), 0), max(s.max_exec_time), sum(s.rows) \
             FROM pg_stat_statements s LEFT JOIN pg_database d ON d.oid = s.dbid \
+            WHERE s.dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) \
             GROUP BY s.queryid, d.datname \
             ORDER BY sum(s.total_exec_time) DESC LIMIT {QUERY_STATS_LIMIT}"
         ))

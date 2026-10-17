@@ -688,7 +688,7 @@ impl Repository for MssqlRepository {
     /// One row per `query_hash`. The offsets cut the statement out of its batch; they
     /// count bytes of UTF-16 text, so they are halved. Ad hoc SQL has no `dbid` in
     /// `dm_exec_sql_text`, so the database then comes from the plan. Times are in
-    /// microseconds: / 1000 gives milliseconds.
+    /// microseconds: / 1000 gives milliseconds. Only the database of this connection.
     fn query_stats_sql(&self, days: u32) -> AppResult<String> {
         Ok(format!(
             "SELECT TOP ({QUERY_STATS_LIMIT}) MAX(x.statement), MAX(x.db), SUM(x.execution_count), \
@@ -706,7 +706,8 @@ impl Repository for MssqlRepository {
             CROSS APPLY sys.dm_exec_sql_text(s.sql_handle) t \
             OUTER APPLY (SELECT value FROM sys.dm_exec_plan_attributes(s.plan_handle) \
             WHERE attribute = 'dbid') a \
-            WHERE s.last_execution_time >= DATEADD(DAY, -{days}, GETDATE())) x \
+            WHERE s.last_execution_time >= DATEADD(DAY, -{days}, GETDATE()) \
+            AND COALESCE(t.dbid, CONVERT(int, a.value)) = DB_ID()) x \
             GROUP BY x.query_hash ORDER BY SUM(x.total_elapsed_time) DESC"
         ))
     }

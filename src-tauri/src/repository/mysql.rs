@@ -759,6 +759,7 @@ impl Repository for MysqlRepository {
     }
 
     /// The digest table has the same columns on `MySQL` 8 and `MariaDB`.
+    /// Only the current database: with none selected, `DATABASE()` is NULL and no row matches.
     /// Its timers are in picoseconds: / 1e9 gives milliseconds.
     fn query_stats_sql(&self, days: u32) -> AppResult<String> {
         Ok(format!(
@@ -766,7 +767,8 @@ impl Repository for MysqlRepository {
             SUM_TIMER_WAIT / 1000000000, AVG_TIMER_WAIT / 1000000000, \
             MAX_TIMER_WAIT / 1000000000, SUM_ROWS_SENT \
             FROM performance_schema.events_statements_summary_by_digest \
-            WHERE DIGEST_TEXT IS NOT NULL AND LAST_SEEN >= NOW() - INTERVAL {days} DAY \
+            WHERE DIGEST_TEXT IS NOT NULL AND SCHEMA_NAME = DATABASE() \
+            AND LAST_SEEN >= NOW() - INTERVAL {days} DAY \
             ORDER BY SUM_TIMER_WAIT DESC LIMIT {QUERY_STATS_LIMIT}"
         ))
     }

@@ -1,13 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { ActivityIcon, CircleStopIcon, RefreshCwIcon, XIcon } from 'lucide-vue-next'
 import { PROCESS_REFRESH_MS } from '../constants/processes'
+import { ProcessList } from '../services/ProcessList'
 import type { Session } from '../services/Session'
-import type { DbProcess } from '../types'
+import type { DbProcess, Row } from '../types'
 import BottomBar from './BottomBar.vue'
+import DataGrid from './DataGrid.vue'
 
 const props = defineProps<{ session: Session }>()
+const list = reactive(new ProcessList())
+const columns = ProcessList.columns()
+const shown = computed(showProcesses)
+const rows = computed(gridRows)
+const selected = ref<number[]>([])
+const target = computed(selectedProcess)
+const stopTitle = computed(describeStop)
 const count = computed(describeCount)
 const stopsQueries = computed(canStopQueries)
 /** Auto refresh is off by default. */
@@ -17,9 +26,46 @@ let timer: ReturnType<typeof setInterval> | undefined
 // Processes change all the time. So load the list each time the view opens.
 onMounted(reload)
 onUnmounted(stopTimer)
+// A new sort or load moves the rows. The old selection would point to other rows.
+watch(shown, clearSelection)
+
+function sortColumn(name: string): void {
+  list.sortByName(name)
+}
 
 function reload(): void {
   props.session.run(props.session.loadProcesses())
+}
+
+function clearSelection(): void {
+  selected.value = []
+}
+
+function showProcesses(): DbProcess[] {
+  return list.visible(props.session.processes)
+}
+
+function gridRows(): Row[] {
+  const rows: Row[] = []
+  for (const process of shown.value) {
+    rows.push(ProcessList.row(process))
+  }
+  return rows
+}
+
+/** The last selected process. The connection of this tab cannot be stopped, so it gives none. */
+function selectedProcess(): DbProcess | null {
+  const index = selected.value.at(-1)
+  const process = index === undefined ? undefined : shown.value[index]
+  return process && !process.current ? process : null
+}
+
+function describeStop(): string {
+  const index = selected.value.at(-1)
+  if (index === undefined) {
+    return 'Select a process first'
+  }
+  return target.value ? '' : 'This is the connection of this tab'
 }
 
 /** Skips a turn while the tab is busy, so slow loads do not pile up. */
@@ -51,18 +97,10 @@ function canStopQueries(): boolean {
   return props.session.config?.driver !== 'mssql'
 }
 
-/** Like "12s", "3m 5s" or "2h 4m". */
-function duration(seconds: number | null): string {
-  if (seconds === null) {
-    return ''
+function stop(queryOnly: boolean): void {
+  if (target.value) {
+    props.session.run(kill(target.value, queryOnly))
   }
-  if (seconds < 60) {
-    return `${seconds}s`
-  }
-  if (seconds < 3600) {
-    return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-  }
-  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
 }
 
 /** Asks first. Stops the process only on yes. */
@@ -87,6 +125,23 @@ async function kill(process: DbProcess, queryOnly: boolean): Promise<void> {
     <span class="name">Processes</span>
     <span class="dim">{{ count }}</span>
     <span class="spacer" />
+    <button
+      v-if="stopsQueries"
+      class="icon warn"
+      :title="stopTitle || 'Stop the query of the selected process'"
+      :disabled="!target"
+      @click="stop(true)"
+    >
+      <CircleStopIcon :size="13" />
+    </button>
+    <button
+      class="icon danger"
+      :title="stopTitle || 'Kill the selected process'"
+      :disabled="!target"
+      @click="stop(false)"
+    >
+      <XIcon :size="13" />
+    </button>
     <label class="dim" :title="`Load the list every ${PROCESS_REFRESH_MS / 1000} seconds`">
       <input v-model="auto" type="checkbox" @change="toggleAuto" />
       Auto refresh
@@ -95,60 +150,30 @@ async function kill(process: DbProcess, queryOnly: boolean): Promise<void> {
       <RefreshCwIcon :size="13" />
     </button>
   </div>
-  <div class="grid">
-    <table>
-      <thead>
-        <tr>
-          <th>Id</th>
-          <th>User</th>
-          <th>Host</th>
-          <th>Database</th>
-          <th>State</th>
-          <th>Time</th>
-          <th>Query</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="process in session.processes" :key="process.id">
-          <td>
-            {{ process.id }}
-            <span v-if="process.current" class="pill">this tab</span>
-          </td>
-          <td>{{ process.user }}</td>
-          <td>{{ process.host }}</td>
-          <td>{{ process.database }}</td>
-          <td>{{ process.state }}</td>
-          <td class="number">{{ duration(process.seconds) }}</td>
-          <td class="query" :title="process.query ?? ''">{{ process.query }}</td>
-          <td>
-            <button
-              v-if="stopsQueries"
-              class="icon"
-              :title="process.current ? 'This is the connection of this tab' : 'Stop the query'"
-              :disabled="process.current"
-              @click="session.run(kill(process, true))"
-            >
-              <CircleStopIcon :size="12" />
-            </button>
-            <button
-              class="icon"
-              :title="process.current ? 'This is the connection of this tab' : 'Kill the process'"
-              :disabled="process.current"
-              @click="session.run(kill(process, false))"
-            >
-              <XIcon :size="12" />
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
+  <DataGrid
+    v-model:selected="selected"
+    :columns="columns"
+    :rows="rows"
+    :order-by="list.columnName"
+    :descending="list.descending"
+    @sort="sortColumn"
+  />
 
   <BottomBar :session="session" />
 </template>
 
 <style scoped>
+/* Stop query is a warning, kill is a delete. Only the icon has the colour. */
+button.warn {
+  color: var(--warn);
+}
+
+/* The colours above and the global danger colour win over the disabled grey. Keep the normal disabled look. */
+button.warn:disabled,
+button.danger:disabled {
+  color: var(--text-3);
+}
+
 .info {
   gap: 10px;
   padding: 0 10px;
@@ -168,75 +193,5 @@ label {
   gap: 4px;
   align-items: center;
   font-size: 11px;
-}
-
-/* The same look as the Users view. */
-.grid {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  background: var(--bg);
-  font-size: 11px;
-}
-
-table {
-  border-spacing: 0;
-}
-
-th,
-td {
-  height: 22px;
-  padding: 0 8px;
-  text-align: left;
-  white-space: nowrap;
-}
-
-th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  background: var(--header);
-  border-right: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  color: var(--text-2);
-  font-weight: 600;
-}
-
-td {
-  border-right: 1px solid var(--border-soft);
-  font-family: var(--font-mono);
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-td.number {
-  text-align: right;
-}
-
-/* A long query shows in full on hover. */
-td.query {
-  max-width: 420px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-tbody tr:last-child td {
-  border-bottom: 1px solid var(--border-soft);
-}
-
-tbody tr:nth-child(even) {
-  background: var(--row-alt);
-}
-
-td .pill {
-  height: 14px;
-  margin-left: 4px;
-  padding: 0 6px;
-  font-family: var(--font-ui);
-  font-size: 10px;
-}
-
-td button.icon {
-  height: 18px;
 }
 </style>

@@ -1831,9 +1831,11 @@ async fn own_process(service: &ConnectionService, id: &str) -> i64 {
     own.id
 }
 
-/// Runs a query, then finds its shape in the query stats of the server.
+/// Runs a query in the selected database, then finds its shape in the query stats.
+/// The list has only the stats of that database.
 /// `PostgreSQL` needs `pg_stat_statements` in `shared_preload_libraries`.
-async fn query_stats(service: &ConnectionService, driver: Driver) {
+async fn query_stats(service: &ConnectionService, config: &ConnectionConfig) {
+    let driver = config.driver;
     if driver == Driver::Sqlite {
         let listed = service.query_stats(ID, 7).await;
         assert_eq!(
@@ -1861,6 +1863,13 @@ async fn query_stats(service: &ConnectionService, driver: Driver) {
     // Zero days is out of bounds and becomes one day.
     let stats = service.query_stats(ID, 0).await.expect("query stats");
     assert!(stats.len() <= 500);
+    for stat in &stats {
+        assert_eq!(
+            stat.database.as_deref(),
+            Some(config.database.as_str()),
+            "{stat:?}"
+        );
+    }
     let found = stats
         .iter()
         .find(|stat| stat.query.contains("sqlpro_stats_probe"));
@@ -1996,7 +2005,7 @@ async fn exercise(config: ConnectionConfig) {
     save_changes(&service, &table).await;
     clone_connection(&service, &config, &table).await;
     processes(&service, &config).await;
-    query_stats(&service, driver).await;
+    query_stats(&service, &config).await;
     users(&service, &config, &table).await;
 
     // Update: only the row with the given key changes.

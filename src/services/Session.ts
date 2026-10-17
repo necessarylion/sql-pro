@@ -128,6 +128,8 @@ export class Session {
   exportAsked = 0
   /** The Ask AI chat of this tab. */
   chat: AiChat
+  /** A question that waits for the Ask AI view. The view sends it once, in read-only mode. */
+  readOnlyQuestion: string | null = null
   /** The timer that removes the "Diagram saved" status. */
   private statusTimer: ReturnType<typeof setTimeout> | undefined
   private api: DatabaseApi
@@ -387,6 +389,10 @@ export class Session {
     this.chat.clear()
     if (this.view === 'diagram') {
       await this.loadDiagram()
+    }
+    // The stats are per database.
+    if (this.view === 'queryStats') {
+      await this.loadQueryStats()
     }
   }
 
@@ -1028,8 +1034,15 @@ export class Session {
     this.processes = await this.api.listProcesses(this.id)
   }
 
-  /** Loads the query stats. Days that are not a whole number in bounds are fixed first. */
+  /**
+   * Loads the query stats of the selected database. Days that are not a whole number in
+   * bounds are fixed first. With no database selected the list is empty.
+   */
   async loadQueryStats(): Promise<void> {
+    if (!this.config?.database) {
+      this.queryStats = []
+      return
+    }
     const days = Math.round(this.queryStatsDays) || QUERY_STATS_MIN_DAYS
     this.queryStatsDays = Math.min(Math.max(days, QUERY_STATS_MIN_DAYS), QUERY_STATS_MAX_DAYS)
     this.queryStats = await this.api.queryStats(this.id, this.queryStatsDays)
@@ -1295,6 +1308,19 @@ export class Session {
     const current = this.sql.trimEnd()
     this.sql = current ? `${current}\n\n${sql}` : sql
     this.view = 'query'
+  }
+
+  /**
+   * Shows the Ask AI view and asks `question` there in a new chat. It always runs read-only.
+   * The view sends it, so saving and errors work like a typed question. Throws while the AI is busy.
+   */
+  async askAiReadOnly(question: string): Promise<void> {
+    if (this.chat.phase !== '' || this.readOnlyQuestion !== null) {
+      throw 'The AI is still busy with another question. Wait for it, or stop it in the Ask AI view.'
+    }
+    this.chat.clear()
+    this.readOnlyQuestion = question
+    this.view = 'ask'
   }
 
   /** Asks the AI about this database. Its SQL may create or drop tables, so the list is reloaded after a write. */
