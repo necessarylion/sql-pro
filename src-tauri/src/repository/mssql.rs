@@ -639,6 +639,27 @@ impl Repository for MssqlRepository {
         Ok(statements)
     }
 
+    /// User sessions, with the request and the SQL text that run now.
+    /// Without the VIEW SERVER STATE right SQL Server shows only the own session.
+    fn processes_sql(&self) -> AppResult<&'static str> {
+        Ok("SELECT s.session_id, s.login_name, s.host_name, \
+            DB_NAME(COALESCE(r.database_id, s.database_id)), COALESCE(r.status, s.status), \
+            DATEDIFF(SECOND, COALESCE(r.start_time, s.last_request_start_time), GETDATE()), \
+            t.text, CASE WHEN s.session_id = @@SPID THEN 1 ELSE 0 END \
+            FROM sys.dm_exec_sessions s \
+            LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id \
+            OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t \
+            WHERE s.is_user_process = 1 ORDER BY s.session_id")
+    }
+
+    /// SQL Server cannot stop only the statement from outside. `KILL` ends the session.
+    fn kill_sql(&self, id: i64, query_only: bool) -> AppResult<String> {
+        if query_only {
+            return Err("SQL Server can only end the whole session".into());
+        }
+        Ok(format!("KILL {id}"))
+    }
+
     async fn close(&self) {
         self.pool.close().await;
     }

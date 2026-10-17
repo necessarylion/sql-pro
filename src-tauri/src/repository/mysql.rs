@@ -714,6 +714,21 @@ impl Repository for MysqlRepository {
         Ok(())
     }
 
+    /// `information_schema` works on `MySQL` and `MariaDB`. The state is the command,
+    /// plus the state when there is one: `Query: executing`.
+    fn processes_sql(&self) -> AppResult<&'static str> {
+        Ok(
+            "SELECT ID, USER, HOST, DB, CONCAT_WS(': ', COMMAND, NULLIF(STATE, '')), TIME, INFO, \
+            CASE WHEN ID = CONNECTION_ID() THEN 1 ELSE 0 END \
+            FROM information_schema.PROCESSLIST ORDER BY ID",
+        )
+    }
+
+    fn kill_sql(&self, id: i64, query_only: bool) -> AppResult<String> {
+        let what = if query_only { "QUERY " } else { "" };
+        Ok(format!("KILL {what}{id}"))
+    }
+
     async fn close(&self) {
         self.pool.close().await;
     }

@@ -31,6 +31,7 @@ import {
   UsersIcon,
   WorkflowIcon,
   ZapIcon,
+  ActivityIcon,
 } from 'lucide-vue-next'
 import { OBJECT_KIND_LABELS, VIEW_LABELS } from '../constants'
 import {
@@ -57,6 +58,7 @@ import QueryView from './QueryView.vue'
 import StructureView from './StructureView.vue'
 import TableDialog from './TableDialog.vue'
 import UsersView from './UsersView.vue'
+import ProcessesView from './ProcessesView.vue'
 
 const props = defineProps<{ session: Session }>()
 const manager = injectRequired(SESSION_MANAGER)
@@ -70,6 +72,7 @@ const VIEW_ICONS: Record<SessionView, Component> = {
   query: TerminalIcon,
   ask: SparklesIcon,
   users: UsersIcon,
+  processes: ActivityIcon,
   diagram: WorkflowIcon,
 }
 
@@ -536,6 +539,14 @@ function hasView(): boolean {
   return false
 }
 
+/** Users is only for an account that may manage users. SQLite has no server processes. */
+function showsView(view: SessionView): boolean {
+  if (view === 'users') {
+    return props.session.canManageUsers
+  }
+  return view !== 'processes' || props.session.config?.driver !== 'sqlite'
+}
+
 /** MySQL can be connected without a database. Then there is nothing to back up. */
 function hasNoDatabase(): boolean {
   return props.session.config?.driver === 'mysql' && props.session.config.database === ''
@@ -594,9 +605,8 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
       </div>
       <div class="segmented">
         <template v-for="(text, view) in VIEW_LABELS" :key="view">
-          <!-- Users is only for an account that may manage users. -->
           <button
-            v-if="view !== 'users' || session.canManageUsers"
+            v-if="showsView(view)"
             :class="{ active: session.view === view }"
             @click="session.view = view"
           >
@@ -738,6 +748,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
         <template v-if="session.view !== 'query' && session.view !== 'ask'">
           <!-- The Users view needs no table. It has its own bottom bar for errors. -->
           <UsersView v-if="session.view === 'users'" :session="session" />
+          <ProcessesView v-else-if="session.view === 'processes'" :session="session" />
           <!-- The diagram shows all tables. It has its own bottom bar too. -->
           <DiagramView v-else-if="session.view === 'diagram'" :session="session" />
           <!-- No table is open, so no view with a bottom bar. Show the error or the status here. -->

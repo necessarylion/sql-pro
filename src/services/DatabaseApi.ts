@@ -11,6 +11,7 @@ import type {
   CsvImport,
   CsvPreview,
   DbObject,
+  DbProcess,
   DbUser,
   Diagram,
   ExportRequest,
@@ -283,6 +284,15 @@ export class DatabaseApi {
 
   setUserPassword(id: string, user: DbUser, password: string): Promise<void> {
     return invoke('set_user_password', { id, name: user.name, host: user.host, password })
+  }
+
+  listProcesses(id: string): Promise<DbProcess[]> {
+    return invoke('list_processes', { id })
+  }
+
+  /** `queryOnly` stops only the running statement. Else the whole connection ends. */
+  killProcess(id: string, process: number, queryOnly: boolean): Promise<void> {
+    return invoke('kill_process', { id, process, queryOnly })
   }
 
   savePassword(id: string, password: string): Promise<void> {

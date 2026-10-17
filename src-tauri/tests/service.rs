@@ -1747,6 +1747,70 @@ async fn cancel(service: &ConnectionService, driver: Driver) {
     assert_eq!(sets[0].rows[0], vec![text("2")]);
 }
 
+/// The id of the process that runs the connection `id`.
+async fn own_process(service: &ConnectionService, id: &str) -> i64 {
+    let listed = service.list_processes(id).await.expect("list processes");
+    let mut current = listed.iter().filter(|process| process.current);
+    let own = current.next().expect("the own connection is listed");
+    assert!(current.next().is_none(), "only one is marked as current");
+    own.id
+}
+
+/// Lists the processes and stops one. The tab cannot stop its own connection.
+/// Leaves `ID` connected.
+async fn processes(service: &ConnectionService, config: &ConnectionConfig) {
+    if config.driver == Driver::Sqlite {
+        let listed = service.list_processes(ID).await;
+        assert_eq!(
+            listed.expect_err("no processes").to_string(),
+            "SQLite has no server processes"
+        );
+        return;
+    }
+    let own = own_process(service, ID).await;
+    let refused = service.kill_process(ID, own, false).await;
+    assert!(
+        refused
+            .expect_err("own connection")
+            .to_string()
+            .contains("this tab")
+    );
+    let gone = service.kill_process(ID, i64::MAX, false).await;
+    assert_eq!(
+        gone.expect_err("unknown id").to_string(),
+        "This process is not running any more"
+    );
+
+    let connected = service.connect(CLONE_ID.to_owned(), config.clone()).await;
+    connected.expect("connect a second tab");
+    let other = own_process(service, CLONE_ID).await;
+    assert_ne!(other, own);
+    if config.driver == Driver::Mssql {
+        assert!(service.kill_process(ID, other, true).await.is_err());
+    } else {
+        // Stopping only the statement keeps the connection.
+        let stopped = service.kill_process(ID, other, true).await;
+        stopped.expect("stop the query");
+        assert_eq!(own_process(service, CLONE_ID).await, other);
+    }
+    service
+        .kill_process(ID, other, false)
+        .await
+        .expect("kill the second tab");
+    // PostgreSQL ends the process a moment after the signal.
+    let mut ended = false;
+    for _ in 0..30 {
+        let listed = service.list_processes(ID).await.expect("list processes");
+        if listed.iter().all(|process| process.id != other) {
+            ended = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(ended, "the killed process is gone");
+    service.disconnect(CLONE_ID).await;
+}
+
 #[allow(clippy::too_many_lines, reason = "one end-to-end flow")]
 async fn exercise(config: ConnectionConfig) {
     let driver = config.driver;
@@ -1817,6 +1881,7 @@ async fn exercise(config: ConnectionConfig) {
     filters(&service, &table).await;
     save_changes(&service, &table).await;
     clone_connection(&service, &config, &table).await;
+    processes(&service, &config).await;
     users(&service, &config, &table).await;
 
     // Update: only the row with the given key changes.

@@ -607,6 +607,25 @@ impl Repository for PostgresRepository {
         self.run_all(&statements).await
     }
 
+    /// Only client connections. The time is how long the connection is in its state.
+    fn processes_sql(&self) -> AppResult<&'static str> {
+        Ok(
+            "SELECT pid, usename, COALESCE(client_hostname, host(client_addr)), datname, state, \
+            EXTRACT(EPOCH FROM now() - state_change)::int8, query, \
+            CASE WHEN pid = pg_backend_pid() THEN 1 ELSE 0 END \
+            FROM pg_stat_activity WHERE backend_type = 'client backend' ORDER BY pid",
+        )
+    }
+
+    fn kill_sql(&self, id: i64, query_only: bool) -> AppResult<String> {
+        let function = if query_only {
+            "pg_cancel_backend"
+        } else {
+            "pg_terminate_backend"
+        };
+        Ok(format!("SELECT {function}({id})"))
+    }
+
     async fn close(&self) {
         self.pool.close().await;
     }

@@ -127,6 +127,12 @@ pub const NO_USER_ACCOUNTS: &str = "SQLite has no user accounts";
 pub const MSSQL_NO_USER_ACCOUNTS: &str = "User accounts are not supported for SQL Server yet";
 pub const MSSQL_NO_BACKUP: &str = "Backups are not supported for SQL Server yet";
 
+/// The error for a database kind that has no server processes.
+pub const NO_PROCESSES: &str = "SQLite has no server processes";
+
+/// The error when the process to stop is not in the list any more.
+pub const PROCESS_GONE: &str = "This process is not running any more";
+
 /// The error for a foreign key change on `SQLite`.
 pub const SQLITE_FOREIGN_KEYS_FIXED: &str =
     "SQLite cannot add or drop a foreign key of an existing table";

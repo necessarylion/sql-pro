@@ -17,6 +17,7 @@ import type {
   CsvImport,
   CsvPreview,
   DbObject,
+  DbProcess,
   DbUser,
   Diagram,
   ExportFormat,
@@ -108,6 +109,8 @@ export class Session {
   users: DbUser[] = []
   /** True when the logged-in account may manage users. The Users view needs it. */
   canManageUsers = false
+  /** The connections of the server, for the Processes view. */
+  processes: DbProcess[] = []
   /** What the Diagram view shows. null = not loaded. */
   diagram: Diagram | null = null
   /** Goes up by one on each press of the export shortcut. The workspace then opens the export dialog. */
@@ -349,6 +352,7 @@ export class Session {
       this.result = null
       this.status = ''
       this.diagram = null
+      this.processes = []
       this.clearTable()
       this.setUsers([], false)
     }
@@ -466,6 +470,8 @@ export class Session {
   async refresh(): Promise<void> {
     if (this.view === 'users') {
       await this.loadUsers()
+    } else if (this.view === 'processes') {
+      await this.loadProcesses()
     } else if (this.view === 'diagram') {
       await this.loadDiagram()
     } else if (this.view !== 'query' && this.view !== 'ask') {
@@ -947,6 +953,19 @@ export class Session {
       return `${kind} "${tables[0].name}" ${verb}`
     }
     return `${tables.length} ${TableSelection.noun(tables)} ${verb}`
+  }
+
+  async loadProcesses(): Promise<void> {
+    this.processes = await this.api.listProcesses(this.id)
+  }
+
+  /** `queryOnly` stops only the running statement. Else the whole connection ends. */
+  async killProcess(process: DbProcess, queryOnly: boolean): Promise<void> {
+    await this.api.killProcess(this.id, process.id, queryOnly)
+    this.status = queryOnly
+      ? `Query of process ${process.id} stopped`
+      : `Process ${process.id} killed`
+    await this.loadProcesses()
   }
 
   /**
