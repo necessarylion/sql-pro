@@ -64,7 +64,7 @@ const rowCopy = new RowCopy()
 // Without a listener the grid shows its own menu with Copy only. null = closed.
 const ownMenu = !getCurrentInstance()?.vnode.props?.onMenu
 const menu = ref<{ x: number; y: number } | null>(null)
-defineExpose({ copyRows, pickedRows })
+defineExpose({ copyRows, pickedRows, showSelected })
 const grid = useTemplateRef<HTMLElement>('grid')
 // The mouse button can be let go in the middle of a drag when the grid goes away.
 onBeforeUnmount(endDrag)
