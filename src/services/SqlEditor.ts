@@ -16,6 +16,7 @@ import {
 import { tags } from '@lezer/highlight'
 import { SQL_DIALECTS } from '../constants/sql'
 import type { Driver, TableRef } from '../types'
+import type { SqlFormat } from './SqlFormat'
 
 // All colours are CSS variables, so the editor follows the theme of the app.
 const HIGHLIGHT = HighlightStyle.define([
@@ -84,6 +85,8 @@ export interface SqlEditorOptions {
   onChange?(text: string): void
   /** Called on Cmd+Enter or Ctrl+Enter. */
   onRun?(): void
+  /** Called on Shift+Cmd+F or Ctrl+Shift+F. */
+  onFormat?(): void
   /** True to only show the text. It can still be selected and copied. */
   readOnly?: boolean
 }
@@ -103,7 +106,12 @@ export class SqlEditor {
         doc: options.text,
         extensions: [
           // Before the default keys, which use Mod-Enter for a new line.
-          Prec.highest(keymap.of([{ key: 'Mod-Enter', run: this.handleRun.bind(this) }])),
+          Prec.highest(
+            keymap.of([
+              { key: 'Mod-Enter', run: this.handleRun.bind(this) },
+              { key: 'Mod-Shift-f', run: this.handleFormat.bind(this) },
+            ]),
+          ),
           lineNumbers(),
           highlightActiveLine(),
           highlightActiveLineGutter(),
@@ -152,12 +160,33 @@ export class SqlEditor {
     return this.view.state.sliceDoc(range.from, range.to)
   }
 
+  /**
+   * Formats the selected text, or all text when nothing is selected.
+   * It is one change, so one undo brings the old text back.
+   * Throws when the SQL cannot be parsed. The text then stays as it is.
+   */
+  format(formatter: SqlFormat): void {
+    const range = this.view.state.selection.main
+    const from = range.empty ? 0 : range.from
+    const to = range.empty ? this.view.state.doc.length : range.to
+    const insert = formatter.format(this.view.state.sliceDoc(from, to))
+    this.view.dispatch({
+      changes: { from, to, insert },
+      selection: { anchor: from, head: from + insert.length },
+    })
+  }
+
   destroy(): void {
     this.view.destroy()
   }
 
   private handleRun(): boolean {
     this.options.onRun?.()
+    return true
+  }
+
+  private handleFormat(): boolean {
+    this.options.onFormat?.()
     return true
   }
 

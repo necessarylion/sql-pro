@@ -7,10 +7,12 @@ import {
   DownloadIcon,
   HistoryIcon,
   PlayIcon,
+  WandSparklesIcon,
 } from 'lucide-vue-next'
 import { QUERY_HISTORY, SHORTCUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
 import { SqlEditor } from '../services/SqlEditor'
+import { SqlFormat } from '../services/SqlFormat'
 import { SqlRisk } from '../services/SqlRisk'
 import type { GridColumn, ResultSet, Row } from '../types'
 import DataGrid from './DataGrid.vue'
@@ -73,6 +75,17 @@ function run(): void {
   }
 }
 
+/** Formats the selected text, or everything. Bad SQL stays as it is and shows a short error. */
+function formatSql(): void {
+  try {
+    editor?.format(new SqlFormat(props.session.config?.driver))
+    props.session.error = ''
+  } catch (error) {
+    // The parser message has more lines about the dialect. The first line says where it failed.
+    props.session.error = `Cannot format: ${String(error).split('\n')[0]}`
+  }
+}
+
 /** Asks first when the SQL can change or remove a lot of data. */
 async function runChecked(sql: string): Promise<void> {
   const warning = new SqlRisk(props.session.config?.driver).message(sql)
@@ -121,6 +134,7 @@ function createEditor(): void {
     text: props.session.sql,
     onChange: saveText,
     onRun: run,
+    onFormat: formatSql,
   })
   updateSchema()
 }
@@ -153,6 +167,13 @@ watch(sessionResult, clearSelection)
       >
         <HistoryIcon :size="11" />
         History
+      </button>
+      <button
+        :title="`Format the selected text, or everything (${shortcuts.hint('F', true)})`"
+        @click="formatSql"
+      >
+        <WandSparklesIcon :size="11" />
+        Format
       </button>
       <span class="spacer" />
       <span class="dim">Select text to run only that part.</span>
