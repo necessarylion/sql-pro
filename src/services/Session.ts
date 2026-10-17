@@ -1249,6 +1249,19 @@ export class Session {
     await this.loadTables()
   }
 
+  /** Shows the query plan of one statement in the result grid. The statement does not run. */
+  async explain(sql: string): Promise<void> {
+    const sets = await this.api.explain(this.id, sql)
+    let plan: ResultSet | null = null
+    for (const set of sets) {
+      if (set.columns.length > 0) {
+        plan = set
+      }
+    }
+    this.result = plan && markRaw(plan)
+    this.status = 'Query plan. The statement did not run.'
+  }
+
   /** Asks a yes or no question in a dialog. */
   confirm(message: string, title: string): Promise<boolean> {
     return this.prompt.ask(message, title)

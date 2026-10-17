@@ -58,6 +58,7 @@ pub fn run() {
             commands::list_tables,
             commands::browse,
             commands::run_query,
+            commands::explain,
             commands::cancel_query,
             commands::ask_claude,
             commands::run_ai_read,

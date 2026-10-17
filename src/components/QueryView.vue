@@ -6,6 +6,7 @@ import {
   CircleCheckIcon,
   DownloadIcon,
   HistoryIcon,
+  ListTreeIcon,
   PlayIcon,
 } from 'lucide-vue-next'
 import { QUERY_HISTORY, SHORTCUTS, injectRequired } from '../services/keys'
@@ -62,14 +63,28 @@ function closeMenu(): void {
   menu.value = null
 }
 
+/** The selected text, or everything when nothing is selected. */
+function pickedSql(): string {
+  const selection = editor?.selectedText() ?? ''
+  return selection.trim() ? selection : props.session.sql
+}
+
 /** Runs the selected text. Runs everything when nothing is selected. */
 function run(): void {
-  const selection = editor?.selectedText() ?? ''
-  const sql = selection.trim() ? selection : props.session.sql
+  const sql = pickedSql()
   if (sql.trim()) {
     // Show the result, not the history.
     showHistory.value = false
     props.session.run(runChecked(sql))
+  }
+}
+
+/** Shows the query plan of the selected text, or of everything. Nothing runs. */
+function explain(): void {
+  const sql = pickedSql()
+  if (sql.trim()) {
+    showHistory.value = false
+    props.session.run(props.session.explain(sql))
   }
 }
 
@@ -156,6 +171,16 @@ watch(sessionResult, clearSelection)
       </button>
       <span class="spacer" />
       <span class="dim">Select text to run only that part.</span>
+      <!-- SQL Server: the driver cannot read a SHOWPLAN result for sure. -->
+      <button
+        v-if="session.config?.driver !== 'mssql'"
+        title="Show the query plan of one statement. It does not run."
+        :disabled="session.busy"
+        @click="explain"
+      >
+        <ListTreeIcon :size="11" />
+        Explain
+      </button>
       <button
         class="primary"
         title="Run the selected text, or everything"

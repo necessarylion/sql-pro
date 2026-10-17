@@ -290,6 +290,12 @@ pub trait Repository: Send + Sync {
         None
     }
 
+    /// The words in front of a statement that give its query plan without running it.
+    /// `None` when this database has no such words in the app.
+    fn explain_prefix(&self) -> Option<&'static str> {
+        None
+    }
+
     /// The words that make a primary key column number its rows itself.
     /// They go right after `PRIMARY KEY` in a `CREATE TABLE`.
     fn auto_increment(&self) -> &'static str;
