@@ -873,22 +873,46 @@ async function browseKey(): Promise<void> {
                 <div class="row">
                   <label>CA file</label>
                   <input
-                    v-model="form.config.ssl.caPath"
+                    :value="form.config.ssl.caPath"
                     class="mono"
                     placeholder="Optional. Empty = system CAs."
                     spellcheck="false"
+                    readonly
+                    @click="session.run(browseSsl('caPath'))"
                   />
+                  <button
+                    v-if="form.config.ssl.caPath"
+                    type="button"
+                    class="icon"
+                    title="Clear"
+                    aria-label="Clear"
+                    @click="form.config.ssl.caPath = ''"
+                  >
+                    <XIcon :size="11" />
+                  </button>
                   <button type="button" @click="session.run(browseSsl('caPath'))">Choose…</button>
                 </div>
                 <template v-if="form.config.driver !== 'mssql'">
                   <div class="row">
                     <label>Client cert</label>
                     <input
-                      v-model="form.config.ssl.certPath"
+                      :value="form.config.ssl.certPath"
                       class="mono"
                       placeholder="Optional"
                       spellcheck="false"
+                      readonly
+                      @click="session.run(browseSsl('certPath'))"
                     />
+                    <button
+                      v-if="form.config.ssl.certPath"
+                      type="button"
+                      class="icon"
+                      title="Clear"
+                      aria-label="Clear"
+                      @click="form.config.ssl.certPath = ''"
+                    >
+                      <XIcon :size="11" />
+                    </button>
                     <button type="button" @click="session.run(browseSsl('certPath'))">
                       Choose…
                     </button>
@@ -896,11 +920,23 @@ async function browseKey(): Promise<void> {
                   <div class="row">
                     <label>Client key</label>
                     <input
-                      v-model="form.config.ssl.keyPath"
+                      :value="form.config.ssl.keyPath"
                       class="mono"
                       placeholder="Optional"
                       spellcheck="false"
+                      readonly
+                      @click="session.run(browseSsl('keyPath'))"
                     />
+                    <button
+                      v-if="form.config.ssl.keyPath"
+                      type="button"
+                      class="icon"
+                      title="Clear"
+                      aria-label="Clear"
+                      @click="form.config.ssl.keyPath = ''"
+                    >
+                      <XIcon :size="11" />
+                    </button>
                     <button type="button" @click="session.run(browseSsl('keyPath'))">
                       Choose…
                     </button>
