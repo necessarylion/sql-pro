@@ -10,13 +10,14 @@ import {
   PlayIcon,
   SaveIcon,
   WandSparklesIcon,
+  XIcon,
 } from 'lucide-vue-next'
 import { QUERY_HISTORY, SAVED_QUERIES, SHORTCUTS, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
 import { SqlEditor } from '../services/SqlEditor'
 import { SqlFormat } from '../services/SqlFormat'
 import { SqlRisk } from '../services/SqlRisk'
-import type { GridColumn, ResultSet, Row } from '../types'
+import type { ColumnInfo, GridColumn, ResultSet, Row, TableRef } from '../types'
 import DataGrid from './DataGrid.vue'
 import ExportRowsMenu from './ExportRowsMenu.vue'
 import PaneResizer from './PaneResizer.vue'
@@ -38,7 +39,7 @@ const selected = ref<number[]>([])
 // Where the export menu is open. null = closed.
 const menu = ref<{ x: number; y: number } | null>(null)
 const exportRows = computed(rowsToExport)
-// True when the history list is shown in the place of the result.
+// True when the history panel is open on the right of the result, like the row detail panel.
 const showHistory = ref(false)
 // Not a ref: Vue must not wrap the CodeMirror objects.
 let editor: SqlEditor | null = null
@@ -86,8 +87,6 @@ function pickedSql(): string {
 function run(): void {
   const sql = pickedSql()
   if (sql.trim()) {
-    // Show the result, not the history.
-    showHistory.value = false
     props.session.run(runChecked(sql))
   }
 }
@@ -96,7 +95,6 @@ function run(): void {
 function explain(): void {
   const sql = pickedSql()
   if (sql.trim()) {
-    showHistory.value = false
     props.session.run(props.session.explain(sql))
   }
 }
@@ -123,9 +121,13 @@ async function runChecked(sql: string): Promise<void> {
   await props.session.runQuery(sql)
 }
 
-/** Puts SQL from the history into the editor and closes the list. */
+/** Puts SQL from the history into the editor and closes the panel. */
 function useHistory(sql: string): void {
   props.session.sql = sql
+  showHistory.value = false
+}
+
+function closeHistory(): void {
   showHistory.value = false
 }
 
@@ -150,6 +152,10 @@ function updateSchema(): void {
   editor?.setSchema(props.session.config?.driver, props.session.tables)
 }
 
+function listColumns(table: TableRef): Promise<ColumnInfo[]> {
+  return props.session.listColumns(table)
+}
+
 /** The editor is built one time here. Later changes go through its methods. */
 function createEditor(): void {
   if (!host.value) {
@@ -161,6 +167,7 @@ function createEditor(): void {
     onChange: saveText,
     onRun: run,
     onFormat: formatSql,
+    columns: listColumns,
   })
   updateSchema()
 }
@@ -183,7 +190,8 @@ watch(sessionResult, clearSelection)
     <div ref="host" class="host" />
     <PaneResizer size="editorHeight" />
   </div>
-  <div class="below">
+  <!-- Escape anywhere below the editor closes the history panel. -->
+  <div class="below" @keydown.esc="closeHistory">
     <div class="bar tools">
       <button
         title="Show the saved queries and the SQL that was run before"
@@ -232,22 +240,33 @@ watch(sessionResult, clearSelection)
         <span class="hint">{{ shortcuts.hint('↵') }}</span>
       </button>
     </div>
-    <div v-if="showHistory" class="queries">
-      <SavedQueryList
-        :connection-key="savedKey"
-        @pick="useHistory"
-        @rename="savedDialog?.rename($event)"
+    <div class="body">
+      <DataGrid
+        v-if="session.result"
+        v-model:selected="selected"
+        :columns="columns"
+        :rows="session.result.rows"
+        @menu="openMenu"
       />
-      <QueryHistoryList @pick="useHistory" />
+      <div v-else class="empty">No result</div>
+      <!-- tabindex: a click inside takes the focus, so Escape reaches the handler above. -->
+      <aside v-if="showHistory" class="queries" tabindex="-1">
+        <PaneResizer size="detailWidth" />
+        <div class="head">
+          <span class="title">History</span>
+          <span class="spacer" />
+          <button class="icon" title="Hide the history (Esc)" @click="closeHistory">
+            <XIcon :size="12" />
+          </button>
+        </div>
+        <SavedQueryList
+          :connection-key="savedKey"
+          @pick="useHistory"
+          @rename="savedDialog?.rename($event)"
+        />
+        <QueryHistoryList @pick="useHistory" />
+      </aside>
     </div>
-    <DataGrid
-      v-else-if="session.result"
-      v-model:selected="selected"
-      :columns="columns"
-      :rows="session.result.rows"
-      @menu="openMenu"
-    />
-    <div v-else class="empty">No result</div>
     <ExportRowsMenu
       v-if="menu && session.result"
       :session="session"
@@ -280,7 +299,7 @@ watch(sessionResult, clearSelection)
         <span class="message">{{ session.status }}</span>
       </template>
       <button
-        v-if="session.result && !showHistory"
+        v-if="session.result"
         class="icon export"
         :title="selected.length > 0 ? 'Export selected rows' : 'Export all result rows'"
         :disabled="exportRows.length === 0"
@@ -342,12 +361,61 @@ watch(sessionResult, clearSelection)
   text-overflow: ellipsis;
 }
 
-/* The saved queries above the history. */
-.queries {
+/* The result and the history panel, side by side. Like the Content view. */
+.body {
   display: flex;
   flex: 1;
-  flex-direction: column;
   min-height: 0;
+}
+
+.body > .grid {
+  min-width: 0;
+}
+
+/* The history panel on the right: the saved queries above the history. Same look as RowDetail.vue. */
+.queries {
+  position: relative;
+  /* Above the grid header (z-index 2), below menus and dialogs (100). */
+  z-index: 3;
+  box-shadow: var(--panel-shadow);
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: var(--detail-width);
+  /* The grid keeps some room, also with a wide saved width. */
+  max-width: calc(100% - 160px);
+  min-height: 0;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  outline: none;
+}
+
+.head {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+  /* Same height as the grid header next to it, so the bottom borders line up. */
+  height: 28px;
+  padding: 0 4px 0 10px;
+  background: var(--detail-header);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.head .title {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.head .spacer {
+  flex: 1;
+}
+
+.head button.icon {
+  width: 18px;
+  height: 18px;
 }
 
 /* The History button while the list is open. */

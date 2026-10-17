@@ -1,4 +1,10 @@
-import { autocompletion, completionKeymap } from '@codemirror/autocomplete'
+import {
+  autocompletion,
+  completionKeymap,
+  type Completion,
+  type CompletionContext,
+  type CompletionResult,
+} from '@codemirror/autocomplete'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { sql } from '@codemirror/lang-sql'
 import { HighlightStyle, bracketMatching, syntaxHighlighting } from '@codemirror/language'
@@ -15,8 +21,9 @@ import {
 } from '@codemirror/view'
 import { tags } from '@lezer/highlight'
 import { SQL_DIALECTS } from '../constants/sql'
-import type { Driver, TableRef } from '../types'
+import type { ColumnInfo, Driver, TableRef } from '../types'
 import type { SqlFormat } from './SqlFormat'
+import { SQL_NAME_PART, SqlTableNames } from './SqlTableNames'
 
 // All colours are CSS variables, so the editor follows the theme of the app.
 const HIGHLIGHT = HighlightStyle.define([
@@ -26,6 +33,9 @@ const HIGHLIGHT = HighlightStyle.define([
   { tag: [tags.number, tags.bool, tags.null, tags.typeName], color: 'var(--syntax-type)' },
   { tag: tags.comment, color: 'var(--text-3)', fontStyle: 'italic' },
 ])
+
+// A table or alias, a dot and the start of a column name: `a.em`, `"admins".em`.
+const QUALIFIED = new RegExp(`(${SQL_NAME_PART})\\.(\\w*)$`)
 
 const SELECTION = 'color-mix(in srgb, var(--accent) 35%, transparent)'
 
@@ -89,6 +99,8 @@ export interface SqlEditorOptions {
   onFormat?(): void
   /** True to only show the text. It can still be selected and copied. */
   readOnly?: boolean
+  /** Loads the columns of one table. Without it, column names are not completed. */
+  columns?(table: TableRef): Promise<ColumnInfo[]>
 }
 
 /** The SQL editor: CodeMirror with our look, our keys and the table names. */
@@ -97,6 +109,9 @@ export class SqlEditor {
   private options: SqlEditorOptions
   // The dialect and the table names change while the editor lives.
   private language = new Compartment()
+  private tables: TableRef[] = []
+  // Column names per table, loaded the first time a query names the table.
+  private columnCache = new Map<string, Promise<string[]>>()
 
   constructor(options: SqlEditorOptions) {
     this.options = options
@@ -134,12 +149,19 @@ export class SqlEditor {
 
   /** Sets the dialect of the driver and the table names for completion. */
   setSchema(driver: Driver | undefined, tables: TableRef[]): void {
+    this.tables = tables
+    // A new table list can mean another database. Its columns are not the same.
+    this.columnCache.clear()
     const schema: Record<string, string[]> = {}
     for (const table of tables) {
-      schema[table.schema ? `${table.schema}.${table.name}` : table.name] = []
+      schema[this.key(table)] = []
     }
     const dialect = driver ? SQL_DIALECTS[driver] : undefined
-    const language: Extension = sql({ dialect, schema, defaultSchema: 'public' })
+    const support = sql({ dialect, schema, defaultSchema: 'public' })
+    // lang-sql completes columns only after `table.`. This source adds the columns of the
+    // tables in the query without a table name in front.
+    const columns = support.language.data.of({ autocomplete: this.completeColumns.bind(this) })
+    const language: Extension = [support, columns]
     this.view.dispatch({ effects: this.language.reconfigure(language) })
   }
 
@@ -178,6 +200,93 @@ export class SqlEditor {
 
   destroy(): void {
     this.view.destroy()
+  }
+
+  /**
+   * Offers column names. After `x.` they are the columns of table or alias x. Without a
+   * qualifier they are the columns of all tables in the query, ranked above keywords and tables.
+   */
+  private async completeColumns(context: CompletionContext): Promise<CompletionResult | null> {
+    if (!this.options.columns) {
+      return null
+    }
+    // ponytail: scans the whole text, so tables of other statements count too.
+    const text = context.state.doc.toString()
+    const qualified = context.matchBefore(QUALIFIED)
+    if (qualified) {
+      const parts = QUALIFIED.exec(qualified.text)
+      // A schema (`public.`) is no table here. lang-sql then completes its tables.
+      const table = parts ? this.findTable(SqlTableNames.resolve(text, parts[1])) : undefined
+      if (!parts || !table) {
+        return null
+      }
+      // lang-sql adds nothing here: its schema has no columns and it skips keywords after a dot.
+      const options = await this.columnOptions([table])
+      return { from: qualified.to - parts[2].length, options, validFor: /^\w*$/ }
+    }
+    const word = context.matchBefore(/\w*/)
+    if (!word || (word.from === word.to && !context.explicit)) {
+      return null
+    }
+    const tables = []
+    for (const name of SqlTableNames.find(text)) {
+      const table = this.findTable(name)
+      if (table) {
+        tables.push(table)
+      }
+    }
+    const options = await this.columnOptions(tables)
+    return options.length > 0 ? { from: word.from, options, validFor: /^\w*$/ } : null
+  }
+
+  private async columnOptions(tables: TableRef[]): Promise<Completion[]> {
+    const options: Completion[] = []
+    for (const table of tables) {
+      for (const column of await this.loadColumns(table)) {
+        options.push({ label: column, type: 'property', detail: table.name, boost: 1 })
+      }
+    }
+    return options
+  }
+
+  /** The known table for `name` or `schema.name`. Case does not matter. */
+  private findTable(name: string): TableRef | undefined {
+    const wanted = name.toLowerCase()
+    for (const table of this.tables) {
+      if (table.name.toLowerCase() === wanted || this.key(table).toLowerCase() === wanted) {
+        return table
+      }
+    }
+    return undefined
+  }
+
+  private loadColumns(table: TableRef): Promise<string[]> {
+    const key = this.key(table)
+    let names = this.columnCache.get(key)
+    if (!names) {
+      names = this.fetchColumns(table)
+      this.columnCache.set(key, names)
+    }
+    return names
+  }
+
+  private async fetchColumns(table: TableRef): Promise<string[]> {
+    try {
+      const columns = (await this.options.columns?.(table)) ?? []
+      const names = []
+      for (const column of columns) {
+        names.push(column.name)
+      }
+      return names
+    } catch {
+      // Try again on the next completion. A failed load must not stay in the cache.
+      this.columnCache.delete(this.key(table))
+      return []
+    }
+  }
+
+  private key(table: TableRef): string {
+    return table.schema ? `${table.schema}.${table.name}` : table.name
   }
 
   private handleRun(): boolean {
