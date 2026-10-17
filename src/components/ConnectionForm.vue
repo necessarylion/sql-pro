@@ -164,6 +164,11 @@ function openFavoriteMenu(event: MouseEvent, favorite: Favorite): void {
   menu.value = { x: event.clientX, y: event.clientY, folder: null, favorite }
 }
 
+/** Opens the menu of the empty part of the list. */
+function openListMenu(event: MouseEvent): void {
+  menu.value = { x: event.clientX, y: event.clientY, folder: null, favorite: null }
+}
+
 function closeMenu(): void {
   menu.value = null
 }
@@ -602,7 +607,14 @@ async function browseKey(): Promise<void> {
         `data-drop` marks the places that take a dragged row. `data-row` is the index of a row.
         Rows slide to their new place when the list changes.
       -->
-      <TransitionGroup tag="ul" class="list" name="slide" data-drop @before-leave="cancelDrag">
+      <TransitionGroup
+        tag="ul"
+        class="list"
+        name="slide"
+        data-drop
+        @before-leave="cancelDrag"
+        @contextmenu.prevent="openListMenu"
+      >
         <template v-for="(row, index) in rows" :key="row.key">
           <li
             v-if="row.favorite"
@@ -617,7 +629,7 @@ async function browseKey(): Promise<void> {
             :data-row="index"
             @click="clickRow(row.favorite)"
             @dblclick="session.run(loadAndConnect(row.favorite))"
-            @contextmenu.prevent="openFavoriteMenu($event, row.favorite)"
+            @contextmenu.prevent.stop="openFavoriteMenu($event, row.favorite)"
             @pointerdown.left="startDrag($event, row.favorite, null)"
             @pointermove="moveDrag"
             @pointerup="endDrag"
@@ -649,7 +661,7 @@ async function browseKey(): Promise<void> {
             :data-row="index"
             :title="row.section.folder.name"
             @click="toggleFolder(row.section.folder)"
-            @contextmenu.prevent="openFolderMenu($event, row.section.folder)"
+            @contextmenu.prevent.stop="openFolderMenu($event, row.section.folder)"
             @pointerdown.left="startDrag($event, null, row.section.folder)"
             @pointermove="moveDrag"
             @pointerup="endDrag"
@@ -725,7 +737,11 @@ async function browseKey(): Promise<void> {
     </aside>
 
     <div class="main">
-      <form class="form" @submit.prevent="session.run(connect())">
+      <form
+        class="form"
+        :class="{ wide: editing && form.config.driver !== 'sqlite' }"
+        @submit.prevent="session.run(connect())"
+      >
         <ConnectionInfo
           v-if="!editing"
           :name="form.name"
@@ -769,98 +785,103 @@ async function browseKey(): Promise<void> {
           </div>
 
           <div class="fields">
-            <div class="row">
-              <label>Name</label>
-              <input v-model="form.name" placeholder="Optional" />
-            </div>
-            <div class="row">
-              <label>Environment</label>
-              <div class="segmented env-switch">
-                <button
-                  v-for="kind in ENVIRONMENT_KINDS"
-                  :key="kind"
-                  type="button"
-                  :class="{ active: env.kind === kind }"
-                  @click="env.kind = kind"
-                >
-                  {{ kind }}
-                </button>
-              </div>
-              <input
-                v-if="env.kind === 'custom'"
-                :value="env.custom"
-                placeholder="name"
-                :title="ENVIRONMENT_HINT"
-                :maxlength="ENVIRONMENT_MAX_LENGTH"
-                autocapitalize="off"
-                spellcheck="false"
-                @input="typeCustom"
-              />
-            </div>
-
-            <div class="row">
-              <label>Folder</label>
-              <select v-model="form.folderId">
-                <option value="">No folder</option>
-                <option v-for="folder in store.folders" :key="folder.id" :value="folder.id">
-                  {{ folder.name }}
-                </option>
-              </select>
-            </div>
-
-            <div v-if="form.config.driver === 'sqlite'" class="row">
-              <label>Database file</label>
-              <input
-                v-model="form.config.database"
-                class="mono"
-                placeholder="/path/to/database.sqlite"
-                spellcheck="false"
-              />
-              <button type="button" @click="session.run(browse())">Choose…</button>
-            </div>
-            <template v-else>
+            <div class="col">
               <div class="row">
-                <label>Host</label>
+                <label>Name</label>
+                <input v-model="form.name" placeholder="Optional" />
+              </div>
+              <div class="row">
+                <label>Environment</label>
+                <div class="segmented env-switch">
+                  <button
+                    v-for="kind in ENVIRONMENT_KINDS"
+                    :key="kind"
+                    type="button"
+                    :class="{ active: env.kind === kind }"
+                    @click="env.kind = kind"
+                  >
+                    {{ kind }}
+                  </button>
+                </div>
                 <input
-                  v-model="form.config.host"
-                  class="mono"
+                  v-if="env.kind === 'custom'"
+                  :value="env.custom"
+                  placeholder="name"
+                  :title="ENVIRONMENT_HINT"
+                  :maxlength="ENVIRONMENT_MAX_LENGTH"
                   autocapitalize="off"
                   spellcheck="false"
-                />
-                <label class="short">Port</label>
-                <input
-                  v-model.number="form.config.port"
-                  class="port"
-                  type="number"
-                  min="0"
-                  max="65535"
+                  @input="typeCustom"
                 />
               </div>
+
               <div class="row">
-                <label>Username</label>
-                <input
-                  v-model="form.config.user"
-                  class="mono"
-                  autocapitalize="off"
-                  spellcheck="false"
-                />
+                <label>Folder</label>
+                <select v-model="form.folderId">
+                  <option value="">No folder</option>
+                  <option v-for="folder in store.folders" :key="folder.id" :value="folder.id">
+                    {{ folder.name }}
+                  </option>
+                </select>
               </div>
-              <div class="row">
-                <label>Password</label>
-                <input v-model="form.config.password" type="password" />
-              </div>
-              <div class="row">
-                <label>Database</label>
+
+              <div v-if="form.config.driver === 'sqlite'" class="row">
+                <label>Database file</label>
                 <input
                   v-model="form.config.database"
-                  autocapitalize="off"
+                  class="mono"
+                  placeholder="/path/to/database.sqlite"
                   spellcheck="false"
-                  :placeholder="
-                    form.config.driver === 'mysql' ? 'Optional. You can pick one later.' : ''
-                  "
                 />
+                <button type="button" @click="session.run(browse())">Choose…</button>
               </div>
+              <template v-else>
+                <div class="row">
+                  <label>Host</label>
+                  <input
+                    v-model="form.config.host"
+                    class="mono"
+                    autocapitalize="off"
+                    spellcheck="false"
+                  />
+                  <label class="short">Port</label>
+                  <input
+                    v-model.number="form.config.port"
+                    class="port"
+                    type="number"
+                    min="0"
+                    max="65535"
+                  />
+                </div>
+                <div class="row">
+                  <label>Username</label>
+                  <input
+                    v-model="form.config.user"
+                    class="mono"
+                    autocapitalize="off"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="row">
+                  <label>Password</label>
+                  <input v-model="form.config.password" type="password" />
+                </div>
+                <div class="row">
+                  <label>Database</label>
+                  <input
+                    v-model="form.config.database"
+                    autocapitalize="off"
+                    spellcheck="false"
+                    :placeholder="
+                      form.config.driver === 'mysql' ? 'Optional. You can pick one later.' : ''
+                    "
+                  />
+                </div>
+              </template>
+            </div>
 
+            <!-- SSL and SSH. SQLite has neither, so it gets one column. -->
+            <div v-if="form.config.driver !== 'sqlite'" class="col">
               <div class="row">
                 <label>SSL</label>
                 <select :value="sslMode()" @change="setSslMode">
@@ -997,7 +1018,7 @@ async function browseKey(): Promise<void> {
                   <button type="button" @click="session.run(browseKey())">Choose…</button>
                 </div>
               </template>
-            </template>
+            </div>
           </div>
         </template>
 
@@ -1059,7 +1080,7 @@ async function browseKey(): Promise<void> {
 
     <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" @close="closeMenu">
       <template v-if="menu.folder">
-        <button role="menuitem" @click="folderDialog?.open(menu.folder)">Edit folder…</button>
+        <button role="menuitem" @click="folderDialog?.open(menu.folder)">Rename…</button>
         <span class="menu-line" />
         <button class="danger" role="menuitem" @click="session.run(deleteFolder(menu.folder))">
           Delete folder…
@@ -1089,6 +1110,8 @@ async function browseKey(): Promise<void> {
           <button role="menuitem" @click="moveTo(menu.favorite, '')">Move out of the folder</button>
         </template>
       </template>
+      <!-- Right-click on the empty part of the list. -->
+      <button v-else role="menuitem" @click="folderDialog?.open(null)">New Folder…</button>
     </ContextMenu>
     <FolderDialog ref="folderDialog" />
   </div>
@@ -1315,6 +1338,7 @@ li:hover .remove {
   min-width: 0;
   padding: 24px;
   overflow: auto;
+  container-type: inline-size;
 }
 
 .form {
@@ -1360,10 +1384,28 @@ header p {
   border-radius: 4px;
 }
 
-.fields {
+.fields,
+.fields .col {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/*
+  Two columns when there is room: connection on the left, SSL and SSH on the right.
+  At the minimum window size (800px) with the sidebar there is not, so it stays one column.
+*/
+@container (min-width: 820px) {
+  .form.wide {
+    width: 820px;
+  }
+
+  .form.wide .fields {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px 28px;
+    align-items: start;
+  }
 }
 
 .row {
