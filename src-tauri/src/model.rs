@@ -465,6 +465,15 @@ pub struct ExportRequest {
     pub path: PathBuf,
 }
 
+/// Rows the app already shows, to turn into `INSERT` statements for the clipboard.
+#[derive(Debug, Deserialize)]
+pub struct RowsSql {
+    /// The table that the `INSERT` statements name.
+    pub table: TableRef,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+}
+
 /// Rows the app already shows, to write to a SQL or CSV file.
 #[derive(Debug, Deserialize)]
 pub struct RowsExport {

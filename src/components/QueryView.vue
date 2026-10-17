@@ -278,6 +278,7 @@ watch(sessionResult, clearSelection)
       :rows="exportRows"
       :table="null"
       copies
+      :picked="grid?.pickedRows()"
       @close="closeMenu"
       @copy="grid?.copyRows()"
     />
@@ -378,6 +379,7 @@ watch(sessionResult, clearSelection)
 
 /* The history panel on the right: the saved queries above the history. Same look as RowDetail.vue. */
 .queries {
+  animation: slide-in var(--dur-med) var(--ease);
   position: relative;
   /* Above the grid header (z-index 2), below menus and dialogs (100). */
   z-index: 3;

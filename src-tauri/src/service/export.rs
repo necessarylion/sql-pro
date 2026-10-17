@@ -155,23 +155,36 @@ impl<'run> Exporter<'run> {
                 text.push_str(&Self::csv_line(row));
             }
         } else {
-            let mut names = Vec::with_capacity(request.columns.len());
-            for name in &request.columns {
-                names.push(repository.quote(name));
-            }
-            let insert = format!(
-                "INSERT INTO {} ({}) VALUES (",
-                repository.table_name(&request.table),
-                names.join(", ")
-            );
-            for row in &request.rows {
-                text.push_str(&insert);
-                text.push_str(&Self::insert_values(repository, row));
-                text.push_str(");\n");
-            }
+            text = Self::insert_sql(repository, &request.table, &request.columns, &request.rows);
         }
         std::fs::write(&request.path, text)?;
         Ok(())
+    }
+
+    /// One `INSERT` statement per row into `table`, each on its own line.
+    /// Names and values are quoted the way the database of `repository` wants.
+    pub fn insert_sql(
+        repository: &dyn Repository,
+        table: &TableRef,
+        columns: &[String],
+        rows: &[Vec<Option<String>>],
+    ) -> String {
+        let mut names = Vec::with_capacity(columns.len());
+        for name in columns {
+            names.push(repository.quote(name));
+        }
+        let insert = format!(
+            "INSERT INTO {} ({}) VALUES (",
+            repository.table_name(table),
+            names.join(", ")
+        );
+        let mut text = String::new();
+        for row in rows {
+            text.push_str(&insert);
+            text.push_str(&Self::insert_values(repository, row));
+            text.push_str(");\n");
+        }
+        text
     }
 
     /// The columns to export, in the order the user chose. Stops names that are not in the table.

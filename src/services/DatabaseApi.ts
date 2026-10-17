@@ -24,6 +24,7 @@ import type {
   ResultSet,
   RowUpdate,
   RowsExport,
+  RowsSql,
   SaveResult,
   TableKeys,
   TablePage,
@@ -241,6 +242,11 @@ export class DatabaseApi {
   /** Writes rows the app already has to a SQL or CSV file. It does not touch the database. */
   exportRows(id: string, request: RowsExport): Promise<void> {
     return invoke('export_rows', { id, request })
+  }
+
+  /** One INSERT statement per row, quoted for the database of the tab. It does not touch the database. */
+  rowsInsertSql(id: string, request: RowsSql): Promise<string> {
+    return invoke('rows_insert_sql', { id, request })
   }
 
   listColumns(id: string, table: TableRef): Promise<ColumnInfo[]> {

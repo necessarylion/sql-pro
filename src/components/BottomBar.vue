@@ -39,6 +39,7 @@ defineProps<{ session: Session }>()
 }
 
 .status {
+  animation: fade-in var(--dur-med) var(--ease);
   flex: 1;
   min-width: 0;
   overflow: hidden;

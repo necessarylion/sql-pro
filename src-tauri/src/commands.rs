@@ -12,7 +12,7 @@ use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
     ConnectionConfig, CsvImport, CsvPreview, DbObject, DbProcess, Diagram, ExportRequest,
     NewColumn, NewForeignKey, NewIndex, NewUser, QueryStat, ResultSet, RowUpdate, RowsExport,
-    SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
+    RowsSql, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::open_file::OpenedFiles;
 use crate::repository::PasswordRepository;
@@ -333,6 +333,11 @@ pub async fn export_tables(
 // Async, so a large file is not written on the main thread.
 pub async fn export_rows(service: Service<'_>, id: String, request: RowsExport) -> AppResult<()> {
     service.export_rows(&id, &request)
+}
+
+#[tauri::command]
+pub fn rows_insert_sql(service: Service<'_>, id: String, request: RowsSql) -> AppResult<String> {
+    service.rows_insert_sql(&id, &request)
 }
 
 #[tauri::command]

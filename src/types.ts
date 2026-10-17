@@ -365,6 +365,22 @@ export interface Diagram {
 
 export type ExportFormat = 'sql' | 'csv'
 
+/** A format of "Copy Rows As" in the row menu. */
+export type CopyFormat = 'text' | 'json' | 'html' | 'markdown' | 'csv' | 'csvHeader' | 'insert'
+
+/** Rows picked in a grid: the column names and the values, both in the shown column order. */
+export interface RowsPick {
+  columns: string[]
+  rows: Row[]
+}
+
+/** Rows to turn into INSERT statements into `table`. */
+export interface RowsSql {
+  table: TableRef
+  columns: string[]
+  rows: Row[]
+}
+
 /** What to export, and where to write it. */
 export interface ExportRequest {
   tables: TableRef[]

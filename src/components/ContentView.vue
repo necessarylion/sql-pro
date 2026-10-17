@@ -252,6 +252,7 @@ function deleteSelected(): void {
     :rows="exportRows"
     :table="session.table"
     :copies="menu.row >= 0"
+    :picked="menu.row >= 0 ? grid?.pickedRows() : undefined"
     @close="closeMenu"
     @copy="grid?.copyRows()"
   >
