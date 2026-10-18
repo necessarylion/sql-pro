@@ -35,8 +35,8 @@ use crate::constants::{
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, Driver, ForeignKey, IndexInfo,
-    Relation, ResultSet, Row, TableRef, UserList,
+    AccessLevel, ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, Driver,
+    ForeignKey, IndexInfo, Relation, ResultSet, Row, TableKeys, TableRef, UserList,
 };
 
 /// Stops the console window that Windows opens for every tool a window app starts.
@@ -91,6 +91,12 @@ pub trait Repository: Send + Sync {
 
     async fn columns(&self, table: &TableRef) -> AppResult<Vec<ColumnInfo>>;
 
+    /// The character set, collation and comment of each column, for the Structure view.
+    /// It is apart from `columns`, so loading a page does not pay for it.
+    async fn column_details(&self, _table: &TableRef) -> AppResult<Vec<ColumnDetail>> {
+        Ok(Vec::new())
+    }
+
     /// All foreign keys of the current database.
     async fn relations(&self) -> AppResult<Vec<Relation>>;
 
@@ -99,6 +105,16 @@ pub trait Repository: Send + Sync {
 
     /// The foreign keys of one table.
     async fn foreign_keys(&self, table: &TableRef) -> AppResult<Vec<ForeignKey>>;
+
+    /// The indexes, foreign keys and column details of one table, for the Structure view.
+    /// This default runs them one after the other. A server overrides it with one batch.
+    async fn table_keys(&self, table: &TableRef) -> AppResult<TableKeys> {
+        Ok(TableKeys {
+            indexes: self.indexes(table).await?,
+            foreign_keys: self.foreign_keys(table).await?,
+            columns: self.column_details(table).await?,
+        })
+    }
 
     /// Fails when this database cannot add or drop a foreign key of an existing table.
     fn check_foreign_key_change(&self) -> AppResult<()> {
@@ -610,6 +626,35 @@ fn first_column(set: &ResultSet) -> Vec<String> {
         values.push(cell(row, 0));
     }
     values
+}
+
+/// Splits the result sets of one `indexes; foreign keys; column details` batch.
+fn table_keys(sets: Vec<ResultSet>) -> AppResult<TableKeys> {
+    let [index_set, key_set, detail_set] = <[ResultSet; 3]>::try_from(sets).map_err(|sets| {
+        AppError::Message(format!(
+            "The table keys gave {} result sets instead of 3",
+            sets.len()
+        ))
+    })?;
+    Ok(TableKeys {
+        indexes: indexes(&index_set),
+        foreign_keys: foreign_keys(&key_set),
+        columns: details(&detail_set),
+    })
+}
+
+/// Builds column details from rows shaped as: name, charset, collation, comment.
+fn details(set: &ResultSet) -> Vec<ColumnDetail> {
+    let mut details = Vec::with_capacity(set.rows.len());
+    for row in &set.rows {
+        details.push(ColumnDetail {
+            name: cell(row, 0),
+            charset: row.get(1).cloned().flatten(),
+            collation: row.get(2).cloned().flatten(),
+            comment: row.get(3).cloned().flatten(),
+        });
+    }
+    details
 }
 
 /// Builds columns from rows shaped as: name, type, nullable (YES/NO), default, key (PRI), extra.

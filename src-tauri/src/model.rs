@@ -163,12 +163,24 @@ pub struct ForeignKey {
     pub on_update: String,
 }
 
-/// The indexes and foreign keys of one table.
+/// More about one column, for the Structure view. A database without one of these gives `None`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnDetail {
+    pub name: String,
+    pub charset: Option<String>,
+    pub collation: Option<String>,
+    pub comment: Option<String>,
+}
+
+/// The indexes and foreign keys of one table, and more about its columns.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableKeys {
     pub indexes: Vec<IndexInfo>,
     pub foreign_keys: Vec<ForeignKey>,
+    /// Empty when the database gives none (`SQLite`).
+    pub columns: Vec<ColumnDetail>,
 }
 
 /// An index to create.

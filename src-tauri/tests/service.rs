@@ -383,6 +383,7 @@ async fn keys(service: &ConnectionService, driver: Driver) {
     if driver != Driver::Sqlite {
         assert_eq!(first.name, "sqlpro_k_first");
     }
+    column_details(service, &child, driver).await;
 
     index_changes(service, &child).await;
     // The primary key is never dropped as an index.
@@ -452,6 +453,123 @@ async fn keys(service: &ConnectionService, driver: Driver) {
         .run_query(ID, "DROP TABLE sqlpro_k_child; DROP TABLE sqlpro_k_parent")
         .await
         .expect("drop key tables");
+}
+
+/// The character set, collation and comment of the columns, for the Structure view.
+async fn column_details(service: &ConnectionService, child: &TableRef, driver: Driver) {
+    let comment = match driver {
+        Driver::Mysql => {
+            "ALTER TABLE sqlpro_k_child MODIFY note VARCHAR(20) COMMENT 'the note'".to_owned()
+        }
+        Driver::Postgres => "COMMENT ON COLUMN sqlpro_k_child.note IS 'the note'".to_owned(),
+        Driver::Mssql => format!(
+            "EXEC sp_addextendedproperty 'MS_Description', 'the note', 'SCHEMA', '{}', \
+                'TABLE', 'sqlpro_k_child', 'COLUMN', 'note'",
+            child.schema.as_deref().unwrap_or("dbo")
+        ),
+        Driver::Sqlite => String::new(),
+    };
+    if !comment.is_empty() {
+        service
+            .run_query(ID, &comment)
+            .await
+            .expect("column comment");
+    }
+    let details = service
+        .table_keys(ID, child)
+        .await
+        .expect("table keys")
+        .columns;
+    if driver == Driver::Sqlite {
+        // SQLite keeps none of these.
+        assert_eq!(details, []);
+        return;
+    }
+    let names: Vec<&str> = details.iter().map(|detail| detail.name.as_str()).collect();
+    assert_eq!(names, ["id", "parent_id", "code", "note"]);
+    let (id, note) = (&details[0], &details[3]);
+    assert_eq!(
+        (
+            id.charset.as_deref(),
+            id.collation.as_deref(),
+            id.comment.as_deref()
+        ),
+        (None, None, None)
+    );
+    assert_eq!(note.comment.as_deref(), Some("the note"));
+    assert!(
+        note.collation.is_some(),
+        "a text column has a collation: {note:?}"
+    );
+    // Only MySQL keeps a character set per column.
+    assert_eq!(note.charset.is_some(), driver == Driver::Mysql, "{note:?}");
+}
+
+/// `table_keys` sends indexes, foreign keys and column details as one batch.
+/// Each part must land in its own place, also when a part has no rows.
+async fn keys_together(service: &ConnectionService, driver: Driver) {
+    let setup = "DROP TABLE IF EXISTS sqlpro_t_child; DROP TABLE IF EXISTS sqlpro_t_parent; \
+        DROP TABLE IF EXISTS sqlpro_t_bare; \
+        CREATE TABLE sqlpro_t_parent (a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY (a, b)); \
+        CREATE TABLE sqlpro_t_child (id INTEGER PRIMARY KEY, pa INTEGER, pb INTEGER, \
+            note VARCHAR(20), \
+            CONSTRAINT sqlpro_t_fk FOREIGN KEY (pa, pb) REFERENCES sqlpro_t_parent (a, b)); \
+        CREATE TABLE sqlpro_t_bare (x INTEGER, y VARCHAR(10))";
+    service
+        .run_query(ID, setup)
+        .await
+        .expect("batch key tables");
+    let sqlite = driver == Driver::Sqlite;
+    let detail_names = |keys: &sql_pro_lib::model::TableKeys| -> Vec<String> {
+        keys.columns
+            .iter()
+            .map(|detail| detail.name.clone())
+            .collect()
+    };
+
+    // A composite foreign key, and the column details after it.
+    let child = listed(service, "sqlpro_t_child").await.expect("child");
+    let keys = service.table_keys(ID, &child).await.expect("child keys");
+    assert!(keys.indexes[0].primary);
+    assert_eq!(keys.indexes[0].columns, ["id"]);
+    assert_eq!(keys.foreign_keys.len(), 1);
+    let key = &keys.foreign_keys[0];
+    assert_eq!(key.columns, ["pa", "pb"]);
+    assert_eq!(key.ref_table, "sqlpro_t_parent");
+    assert_eq!(key.ref_columns, ["a", "b"]);
+    if sqlite {
+        assert_eq!(keys.columns, []);
+    } else {
+        assert_eq!(detail_names(&keys), ["id", "pa", "pb", "note"]);
+        assert!(keys.columns[3].collation.is_some());
+    }
+
+    // No foreign key: the empty middle set must not shift the details.
+    let parent = listed(service, "sqlpro_t_parent").await.expect("parent");
+    let keys = service.table_keys(ID, &parent).await.expect("parent keys");
+    assert_eq!(keys.indexes.len(), 1);
+    assert_eq!(keys.indexes[0].columns, ["a", "b"]);
+    assert_eq!(keys.foreign_keys, []);
+    if !sqlite {
+        assert_eq!(detail_names(&keys), ["a", "b"]);
+    }
+
+    // No index and no foreign key: only the details have rows.
+    let bare = listed(service, "sqlpro_t_bare").await.expect("bare");
+    let keys = service.table_keys(ID, &bare).await.expect("bare keys");
+    assert_eq!(keys.indexes, []);
+    assert_eq!(keys.foreign_keys, []);
+    if !sqlite {
+        assert_eq!(detail_names(&keys), ["x", "y"]);
+    }
+
+    service
+        .run_query(
+            ID,
+            "DROP TABLE sqlpro_t_child; DROP TABLE sqlpro_t_parent; DROP TABLE sqlpro_t_bare",
+        )
+        .await
+        .expect("drop batch key tables");
 }
 
 async fn listed(service: &ConnectionService, name: &str) -> Option<TableRef> {
@@ -2131,6 +2249,7 @@ async fn exercise(config: ConnectionConfig) {
     create_and_rename(&service).await;
     diagram(&service, driver).await;
     keys(&service, driver).await;
+    keys_together(&service, driver).await;
     cancel(&service, driver).await;
     databases(&service, &config).await;
     save_image();

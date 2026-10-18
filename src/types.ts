@@ -287,6 +287,8 @@ export interface GridColumn {
   nullable?: boolean
   /** Cells of this column cannot be edited, even in an editable grid. */
   readOnly?: boolean
+  /** A cell with a value gets an arrow button. A click on it sends `link`. */
+  link?: boolean
 }
 
 /** One table box of the diagram. */
@@ -336,9 +338,19 @@ export interface ForeignKey {
 }
 
 /** The indexes and foreign keys of one table. */
+/** More about one column, for the Structure view. null = the database has no such thing. */
+export interface ColumnDetail {
+  name: string
+  charset: string | null
+  collation: string | null
+  comment: string | null
+}
+
 export interface TableKeys {
   indexes: IndexInfo[]
   foreignKeys: ForeignKey[]
+  /** Empty when the database gives none (SQLite). */
+  columns: ColumnDetail[]
 }
 
 export interface NewIndex {

@@ -25,6 +25,7 @@ class FakeApi {
     return {
       indexes: [{ name: 'PRIMARY', columns: ['id'], unique: true, primary: true }],
       foreignKeys: [],
+      columns: [],
     }
   }
 
