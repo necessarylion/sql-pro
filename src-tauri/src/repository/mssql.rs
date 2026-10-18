@@ -22,8 +22,8 @@ use super::{
 use crate::constants::{MSSQL_NO_QUERY_STATS, QUERY_CANCELLED, QUERY_STATS_LIMIT};
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, ForeignKey, IndexInfo, Relation, ResultSet,
-    SslMode, TableRef,
+    ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, ForeignKey, IndexInfo,
+    Relation, ResultSet, SslMode, TableRef,
 };
 
 /// The schema a name without a schema lands in.
@@ -556,6 +556,21 @@ impl Repository for MssqlRepository {
             self.object_id(table)
         );
         Ok(standard_columns(&single(self.query(&sql).await?)))
+    }
+
+    /// SQL Server keeps no character set per column. The comment is the `MS_Description`
+    /// property. It is a `sql_variant`, which the driver cannot read, so it is cast.
+    async fn column_details(&self, table: &TableRef) -> AppResult<Vec<ColumnDetail>> {
+        let sql = format!(
+            "SELECT c.name, NULL, c.collation_name, CAST(p.value AS nvarchar(4000)) \
+            FROM sys.columns c \
+            LEFT JOIN sys.extended_properties p ON p.class = 1 AND p.major_id = c.object_id \
+                AND p.minor_id = c.column_id AND p.name = 'MS_Description' \
+            WHERE c.object_id = {} \
+            ORDER BY c.column_id",
+            self.object_id(table)
+        );
+        Ok(super::details(&single(self.query(&sql).await?)))
     }
 
     async fn relations(&self) -> AppResult<Vec<Relation>> {

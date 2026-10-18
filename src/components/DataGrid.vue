@@ -12,7 +12,7 @@ import {
   watch,
   type CSSProperties,
 } from 'vue'
-import { ChevronDownIcon, ChevronUpIcon, KeyRoundIcon } from 'lucide-vue-next'
+import { ArrowRightIcon, ChevronDownIcon, ChevronUpIcon, KeyRoundIcon } from 'lucide-vue-next'
 import {
   BINARY_TYPE_PATTERN,
   CELL_PREVIEW_LENGTH,
@@ -53,6 +53,8 @@ const emit = defineEmits<{
   edit: [rowIndex: number, columnIndex: number, value: string | null]
   /** A right-click on a row. The selection is already updated. */
   menu: [event: MouseEvent, rowIndex: number]
+  /** A click on the arrow of a `link` column. */
+  link: [rowIndex: number, columnIndex: number]
 }>()
 
 const selected = defineModel<number[]>('selected')
@@ -610,6 +612,10 @@ function pickedRows(): RowsPick {
   return { columns, rows }
 }
 
+function openLink(rowIndex: number, columnIndex: number): void {
+  emit('link', rowIndex, columnIndex)
+}
+
 function byNumber(first: number, second: number): number {
   return first - second
 }
@@ -829,6 +835,16 @@ function onEnter(event: KeyboardEvent): void {
             </div>
             <span v-else-if="rows[rowIndex][columnIndex] === null" class="null">NULL</span>
             <template v-else>{{ preview(rows[rowIndex][columnIndex] ?? '') }}</template>
+            <!-- mousedown.stop: the click opens the link and leaves the selection alone. -->
+            <button
+              v-if="columns[columnIndex].link && rows[rowIndex][columnIndex] !== null"
+              class="icon link"
+              title="Open"
+              @mousedown.stop
+              @click.stop="openLink(rowIndex, columnIndex)"
+            >
+              <ArrowRightIcon :size="11" />
+            </button>
           </td>
           <td class="filler" />
         </tr>
@@ -979,6 +995,23 @@ td {
   font-family: var(--font-mono);
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* The arrow of a link cell sits at the right end, over the text. */
+td .link {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-2);
+}
+
+td .link:hover {
+  background: var(--seg-active);
+  color: var(--text);
 }
 
 td.numeric {

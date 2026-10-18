@@ -383,6 +383,7 @@ async fn keys(service: &ConnectionService, driver: Driver) {
     if driver != Driver::Sqlite {
         assert_eq!(first.name, "sqlpro_k_first");
     }
+    column_details(service, &child, driver).await;
 
     index_changes(service, &child).await;
     // The primary key is never dropped as an index.
@@ -452,6 +453,56 @@ async fn keys(service: &ConnectionService, driver: Driver) {
         .run_query(ID, "DROP TABLE sqlpro_k_child; DROP TABLE sqlpro_k_parent")
         .await
         .expect("drop key tables");
+}
+
+/// The character set, collation and comment of the columns, for the Structure view.
+async fn column_details(service: &ConnectionService, child: &TableRef, driver: Driver) {
+    let comment = match driver {
+        Driver::Mysql => {
+            "ALTER TABLE sqlpro_k_child MODIFY note VARCHAR(20) COMMENT 'the note'".to_owned()
+        }
+        Driver::Postgres => "COMMENT ON COLUMN sqlpro_k_child.note IS 'the note'".to_owned(),
+        Driver::Mssql => format!(
+            "EXEC sp_addextendedproperty 'MS_Description', 'the note', 'SCHEMA', '{}', \
+                'TABLE', 'sqlpro_k_child', 'COLUMN', 'note'",
+            child.schema.as_deref().unwrap_or("dbo")
+        ),
+        Driver::Sqlite => String::new(),
+    };
+    if !comment.is_empty() {
+        service
+            .run_query(ID, &comment)
+            .await
+            .expect("column comment");
+    }
+    let details = service
+        .table_keys(ID, child)
+        .await
+        .expect("table keys")
+        .columns;
+    if driver == Driver::Sqlite {
+        // SQLite keeps none of these.
+        assert_eq!(details, []);
+        return;
+    }
+    let names: Vec<&str> = details.iter().map(|detail| detail.name.as_str()).collect();
+    assert_eq!(names, ["id", "parent_id", "code", "note"]);
+    let (id, note) = (&details[0], &details[3]);
+    assert_eq!(
+        (
+            id.charset.as_deref(),
+            id.collation.as_deref(),
+            id.comment.as_deref()
+        ),
+        (None, None, None)
+    );
+    assert_eq!(note.comment.as_deref(), Some("the note"));
+    assert!(
+        note.collation.is_some(),
+        "a text column has a collation: {note:?}"
+    );
+    // Only MySQL keeps a character set per column.
+    assert_eq!(note.charset.is_some(), driver == Driver::Mysql, "{note:?}");
 }
 
 async fn listed(service: &ConnectionService, name: &str) -> Option<TableRef> {

@@ -35,8 +35,8 @@ use crate::constants::{
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, Driver, ForeignKey, IndexInfo,
-    Relation, ResultSet, Row, TableRef, UserList,
+    AccessLevel, ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, Driver,
+    ForeignKey, IndexInfo, Relation, ResultSet, Row, TableRef, UserList,
 };
 
 /// Stops the console window that Windows opens for every tool a window app starts.
@@ -90,6 +90,12 @@ pub trait Repository: Send + Sync {
     async fn tables(&self) -> AppResult<Vec<TableRef>>;
 
     async fn columns(&self, table: &TableRef) -> AppResult<Vec<ColumnInfo>>;
+
+    /// The character set, collation and comment of each column, for the Structure view.
+    /// It is apart from `columns`, so loading a page does not pay for it.
+    async fn column_details(&self, _table: &TableRef) -> AppResult<Vec<ColumnDetail>> {
+        Ok(Vec::new())
+    }
 
     /// All foreign keys of the current database.
     async fn relations(&self) -> AppResult<Vec<Relation>>;
@@ -610,6 +616,20 @@ fn first_column(set: &ResultSet) -> Vec<String> {
         values.push(cell(row, 0));
     }
     values
+}
+
+/// Builds column details from rows shaped as: name, charset, collation, comment.
+fn details(set: &ResultSet) -> Vec<ColumnDetail> {
+    let mut details = Vec::with_capacity(set.rows.len());
+    for row in &set.rows {
+        details.push(ColumnDetail {
+            name: cell(row, 0),
+            charset: row.get(1).cloned().flatten(),
+            collation: row.get(2).cloned().flatten(),
+            comment: row.get(3).cloned().flatten(),
+        });
+    }
+    details
 }
 
 /// Builds columns from rows shaped as: name, type, nullable (YES/NO), default, key (PRI), extra.

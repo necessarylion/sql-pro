@@ -14,6 +14,7 @@ import { DEFAULT_REFERENTIAL_ACTION, REFERENTIAL_ACTIONS } from '../constants/ke
 import { SECTION_MIN_HEIGHT } from '../constants/layout'
 import { LAYOUT_SERVICE, injectRequired } from '../services/keys'
 import type { Session } from '../services/Session'
+import { StructureRows } from '../services/StructureRows'
 import { TableDraft } from '../services/TableDraft'
 import type {
   ColumnSpec,
@@ -31,19 +32,26 @@ import DataGrid from './DataGrid.vue'
 import SectionHeading from './SectionHeading.vue'
 import SectionResizer from './SectionResizer.vue'
 
-// Key and Extra cannot be changed here. Default can be set to "no default" with NULL.
+// Key, Extra and the details cannot be changed here. Default can be set to "no default" with NULL.
+// The order matches the cells of StructureRows.
 const HEADERS: GridColumn[] = [
   { name: 'Field' },
   { name: 'Type' },
+  { name: 'Charset', readOnly: true },
+  { name: 'Collation', readOnly: true },
   { name: 'Null' },
   { name: 'Key', readOnly: true },
   { name: 'Default', nullable: true },
   { name: 'Extra', readOnly: true },
+  // The arrow opens the referenced table.
+  { name: 'Foreign key', readOnly: true, link: true },
+  { name: 'Comment', readOnly: true },
 ]
+const structureRows = new StructureRows()
 
 const props = defineProps<{ session: Session }>()
 const layout = injectRequired(LAYOUT_SERVICE)
-const rows = computed(structureRows)
+const rows = computed(gridRows)
 const rowCount = computed(describeRowCount)
 const selected = ref<number[]>([])
 
@@ -234,19 +242,23 @@ function clearSelection(): void {
 }
 
 /** One grid row per column of the table. */
-function structureRows(): Row[] {
-  const rows: Row[] = []
-  for (const column of props.session.page?.columns ?? []) {
-    rows.push([
-      column.name,
-      column.dataType,
-      column.nullable ? 'YES' : 'NO',
-      column.primaryKey ? 'PRI' : '',
-      column.default,
-      column.extra,
-    ])
+function gridRows(): Row[] {
+  return structureRows.rows(props.session.page?.columns ?? [], props.session.keys)
+}
+
+/** The arrow of a Foreign key cell opens the referenced table. */
+function openReference(rowIndex: number): void {
+  const { session } = props
+  const column = session.page?.columns[rowIndex]
+  if (!column || !session.table) {
+    return
   }
-  return rows
+  const target = structureRows.target(session.keys, column.name, session.table, session.tables)
+  if (target) {
+    session.run(session.selectTable(target))
+  } else {
+    session.status = 'The referenced table is not in the table list'
+  }
 }
 
 /** With a filter on, the total counts only the rows that match. */
@@ -382,6 +394,7 @@ async function dropSelected(): Promise<void> {
         :rows="rows"
         :editable="session.table?.kind === 'table'"
         @edit="edit"
+        @link="openReference"
       />
       <SectionResizer v-if="layout.columnsOpen" size="columnsHeight" />
     </section>

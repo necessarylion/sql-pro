@@ -18,8 +18,8 @@ use crate::constants::{
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser, ForeignKey, IndexInfo,
-    Relation, ResultSet, SslConfig, SslMode, TableRef, UserList,
+    AccessLevel, ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser,
+    ForeignKey, IndexInfo, Relation, ResultSet, SslConfig, SslMode, TableRef, UserList,
 };
 
 const DATABASES_SQL: &str =
@@ -413,6 +413,24 @@ impl Repository for PostgresRepository {
             literal(&self.table_name(table))
         );
         Ok(standard_columns(&single(self.query(&sql).await?)))
+    }
+
+    /// `PostgreSQL` has one encoding per database, so a column has no character set.
+    /// The collation "default" is the one of the database, so its real name is shown.
+    async fn column_details(&self, table: &TableRef) -> AppResult<Vec<ColumnDetail>> {
+        let sql = format!(
+            "SELECT a.attname, NULL, \
+                CASE WHEN co.collname = 'default' \
+                    THEN (SELECT datcollate FROM pg_database WHERE datname = current_database()) \
+                    ELSE co.collname END, \
+                col_description(a.attrelid, a.attnum) \
+            FROM pg_attribute a \
+            LEFT JOIN pg_collation co ON co.oid = a.attcollation \
+            WHERE a.attrelid = {}::regclass AND a.attnum > 0 AND NOT a.attisdropped \
+            ORDER BY a.attnum",
+            literal(&self.table_name(table))
+        );
+        Ok(super::details(&single(self.query(&sql).await?)))
     }
 
     async fn relations(&self) -> AppResult<Vec<Relation>> {

@@ -803,6 +803,7 @@ impl ConnectionService {
         Ok(TableKeys {
             indexes: repository.indexes(table).await?,
             foreign_keys: repository.foreign_keys(table).await?,
+            columns: repository.column_details(table).await?,
         })
     }
 

@@ -21,8 +21,8 @@ use crate::constants::{
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser, ForeignKey, IndexInfo,
-    Relation, ResultSet, SslConfig, SslMode, TableRef, UserList,
+    AccessLevel, ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser,
+    ForeignKey, IndexInfo, Relation, ResultSet, SslConfig, SslMode, TableRef, UserList,
 };
 
 /// The right that is no right. `MySQL` lists it for an account that has nothing.
@@ -529,6 +529,17 @@ impl Repository for MysqlRepository {
             });
         }
         Ok(columns)
+    }
+
+    async fn column_details(&self, table: &TableRef) -> AppResult<Vec<ColumnDetail>> {
+        let sql = format!(
+            "SELECT COLUMN_NAME, CHARACTER_SET_NAME, COLLATION_NAME, NULLIF(COLUMN_COMMENT, '') \
+            FROM information_schema.COLUMNS \
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {} \
+            ORDER BY ORDINAL_POSITION",
+            self.literal(&table.name)
+        );
+        Ok(super::details(&single(self.query(&sql).await?)))
     }
 
     async fn relations(&self) -> AppResult<Vec<Relation>> {
