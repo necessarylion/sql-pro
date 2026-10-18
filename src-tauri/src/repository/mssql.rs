@@ -23,7 +23,7 @@ use crate::constants::{MSSQL_NO_QUERY_STATS, QUERY_CANCELLED, QUERY_STATS_LIMIT}
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, ForeignKey, IndexInfo,
-    Relation, ResultSet, SslMode, TableRef,
+    Relation, ResultSet, SslMode, TableKeys, TableRef,
 };
 
 /// The schema a name without a schema lands in.
@@ -369,6 +369,58 @@ impl MssqlRepository {
     }
 }
 
+/// The catalog SQL of the Structure view. `table_keys` sends all three in one round trip.
+impl MssqlRepository {
+    fn indexes_sql(&self, table: &TableRef) -> String {
+        format!(
+            "SELECT i.name, c.name, CASE WHEN i.is_unique = 1 THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN i.is_primary_key = 1 THEN 'YES' ELSE 'NO' END \
+            FROM sys.indexes i \
+            JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
+            JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
+            WHERE i.object_id = {} AND ic.is_included_column = 0 \
+            ORDER BY i.is_primary_key DESC, i.name, ic.key_ordinal",
+            self.object_id(table)
+        )
+    }
+
+    fn foreign_keys_sql(&self, table: &TableRef) -> String {
+        let schema = table.schema.as_deref().unwrap_or(DEFAULT_SCHEMA);
+        format!(
+            "SELECT fk.object_id, fk.name, pc.name, \
+                CASE WHEN rs.name <> {schema} THEN rs.name END, rt.name, rc.name, \
+                REPLACE(fk.delete_referential_action_desc, '_', ' '), \
+                REPLACE(fk.update_referential_action_desc, '_', ' ') \
+            FROM sys.foreign_keys fk \
+            JOIN sys.foreign_key_columns k ON k.constraint_object_id = fk.object_id \
+            JOIN sys.columns pc ON pc.object_id = k.parent_object_id \
+                AND pc.column_id = k.parent_column_id \
+            JOIN sys.tables rt ON rt.object_id = k.referenced_object_id \
+            JOIN sys.schemas rs ON rs.schema_id = rt.schema_id \
+            JOIN sys.columns rc ON rc.object_id = k.referenced_object_id \
+                AND rc.column_id = k.referenced_column_id \
+            WHERE fk.parent_object_id = {table} \
+            ORDER BY fk.name, fk.object_id, k.constraint_column_id",
+            schema = self.literal(schema),
+            table = self.object_id(table),
+        )
+    }
+
+    /// SQL Server keeps no character set per column. The comment is the `MS_Description`
+    /// property. It is a `sql_variant`, which the driver cannot read, so it is cast.
+    fn column_details_sql(&self, table: &TableRef) -> String {
+        format!(
+            "SELECT c.name, NULL, c.collation_name, CAST(p.value AS nvarchar(4000)) \
+            FROM sys.columns c \
+            LEFT JOIN sys.extended_properties p ON p.class = 1 AND p.major_id = c.object_id \
+                AND p.minor_id = c.column_id AND p.name = 'MS_Description' \
+            WHERE c.object_id = {} \
+            ORDER BY c.column_id",
+            self.object_id(table)
+        )
+    }
+}
+
 #[async_trait]
 impl Repository for MssqlRepository {
     fn quote(&self, identifier: &str) -> String {
@@ -558,19 +610,10 @@ impl Repository for MssqlRepository {
         Ok(standard_columns(&single(self.query(&sql).await?)))
     }
 
-    /// SQL Server keeps no character set per column. The comment is the `MS_Description`
-    /// property. It is a `sql_variant`, which the driver cannot read, so it is cast.
     async fn column_details(&self, table: &TableRef) -> AppResult<Vec<ColumnDetail>> {
-        let sql = format!(
-            "SELECT c.name, NULL, c.collation_name, CAST(p.value AS nvarchar(4000)) \
-            FROM sys.columns c \
-            LEFT JOIN sys.extended_properties p ON p.class = 1 AND p.major_id = c.object_id \
-                AND p.minor_id = c.column_id AND p.name = 'MS_Description' \
-            WHERE c.object_id = {} \
-            ORDER BY c.column_id",
-            self.object_id(table)
-        );
-        Ok(super::details(&single(self.query(&sql).await?)))
+        Ok(super::details(&single(
+            self.query(&self.column_details_sql(table)).await?,
+        )))
     }
 
     async fn relations(&self) -> AppResult<Vec<Relation>> {
@@ -580,40 +623,26 @@ impl Repository for MssqlRepository {
     }
 
     async fn indexes(&self, table: &TableRef) -> AppResult<Vec<IndexInfo>> {
-        let sql = format!(
-            "SELECT i.name, c.name, CASE WHEN i.is_unique = 1 THEN 'YES' ELSE 'NO' END, \
-                CASE WHEN i.is_primary_key = 1 THEN 'YES' ELSE 'NO' END \
-            FROM sys.indexes i \
-            JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
-            JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
-            WHERE i.object_id = {} AND ic.is_included_column = 0 \
-            ORDER BY i.is_primary_key DESC, i.name, ic.key_ordinal",
-            self.object_id(table)
-        );
-        Ok(indexes(&single(self.query(&sql).await?)))
+        Ok(indexes(&single(
+            self.query(&self.indexes_sql(table)).await?,
+        )))
     }
 
     async fn foreign_keys(&self, table: &TableRef) -> AppResult<Vec<ForeignKey>> {
-        let schema = table.schema.as_deref().unwrap_or(DEFAULT_SCHEMA);
+        Ok(foreign_keys(&single(
+            self.query(&self.foreign_keys_sql(table)).await?,
+        )))
+    }
+
+    /// The three catalog queries go as one batch, so they cost one round trip.
+    async fn table_keys(&self, table: &TableRef) -> AppResult<TableKeys> {
         let sql = format!(
-            "SELECT fk.object_id, fk.name, pc.name, \
-                CASE WHEN rs.name <> {schema} THEN rs.name END, rt.name, rc.name, \
-                REPLACE(fk.delete_referential_action_desc, '_', ' '), \
-                REPLACE(fk.update_referential_action_desc, '_', ' ') \
-            FROM sys.foreign_keys fk \
-            JOIN sys.foreign_key_columns k ON k.constraint_object_id = fk.object_id \
-            JOIN sys.columns pc ON pc.object_id = k.parent_object_id \
-                AND pc.column_id = k.parent_column_id \
-            JOIN sys.tables rt ON rt.object_id = k.referenced_object_id \
-            JOIN sys.schemas rs ON rs.schema_id = rt.schema_id \
-            JOIN sys.columns rc ON rc.object_id = k.referenced_object_id \
-                AND rc.column_id = k.referenced_column_id \
-            WHERE fk.parent_object_id = {table} \
-            ORDER BY fk.name, fk.object_id, k.constraint_column_id",
-            schema = self.literal(schema),
-            table = self.object_id(table),
+            "{};\n{};\n{}",
+            self.indexes_sql(table),
+            self.foreign_keys_sql(table),
+            self.column_details_sql(table)
         );
-        Ok(foreign_keys(&single(self.query(&sql).await?)))
+        super::table_keys(self.query(&sql).await?)
     }
 
     /// A view gives its `CREATE VIEW`. A table gives `None`, so the caller builds it.

@@ -19,7 +19,7 @@ use crate::constants::{
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser,
-    ForeignKey, IndexInfo, Relation, ResultSet, SslConfig, SslMode, TableRef, UserList,
+    ForeignKey, IndexInfo, Relation, ResultSet, SslConfig, SslMode, TableKeys, TableRef, UserList,
 };
 
 const DATABASES_SQL: &str =
@@ -317,6 +317,64 @@ impl PostgresRepository {
     }
 }
 
+/// The catalog SQL of the Structure view. `table_keys` sends all three in one round trip.
+impl PostgresRepository {
+    /// A part of an index on an expression shows the expression.
+    fn indexes_sql(&self, table: &TableRef) -> String {
+        format!(
+            "SELECT ic.relname, \
+                coalesce(a.attname, pg_get_indexdef(i.indexrelid, k.position::int, true)), \
+                CASE WHEN i.indisunique THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN i.indisprimary THEN 'YES' ELSE 'NO' END \
+            FROM pg_index i \
+            JOIN pg_class ic ON ic.oid = i.indexrelid \
+            CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(col, position) \
+            LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.col AND k.col > 0 \
+            WHERE i.indrelid = {}::regclass AND k.position <= i.indnkeyatts \
+            ORDER BY NOT i.indisprimary, ic.relname, k.position",
+            literal(&self.table_name(table))
+        )
+    }
+
+    fn foreign_keys_sql(&self, table: &TableRef) -> String {
+        format!(
+            "SELECT con.oid, con.conname, a.attname, \
+                CASE WHEN rn.nspname <> {schema} THEN rn.nspname END, rc.relname, ra.attname, \
+                {on_delete}, {on_update} \
+            FROM pg_constraint con \
+            JOIN pg_class rc ON rc.oid = con.confrelid \
+            JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
+            CROSS JOIN LATERAL unnest(con.conkey, con.confkey) \
+                WITH ORDINALITY AS k(col, ref_col, position) \
+            JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.col \
+            JOIN pg_attribute ra ON ra.attrelid = con.confrelid AND ra.attnum = k.ref_col \
+            WHERE con.contype = 'f' AND con.conrelid = {table}::regclass \
+            ORDER BY con.conname, con.oid, k.position",
+            schema = literal(table.schema.as_deref().unwrap_or_default()),
+            on_delete = Self::rule("con.confdeltype"),
+            on_update = Self::rule("con.confupdtype"),
+            table = literal(&self.table_name(table)),
+        )
+    }
+
+    /// `PostgreSQL` has one encoding per database, so a column has no character set.
+    /// The collation "default" is the one of the database, so its real name is shown.
+    fn column_details_sql(&self, table: &TableRef) -> String {
+        format!(
+            "SELECT a.attname, NULL, \
+                CASE WHEN co.collname = 'default' \
+                    THEN (SELECT datcollate FROM pg_database WHERE datname = current_database()) \
+                    ELSE co.collname END, \
+                col_description(a.attrelid, a.attnum) \
+            FROM pg_attribute a \
+            LEFT JOIN pg_collation co ON co.oid = a.attcollation \
+            WHERE a.attrelid = {}::regclass AND a.attnum > 0 AND NOT a.attisdropped \
+            ORDER BY a.attnum",
+            literal(&self.table_name(table))
+        )
+    }
+}
+
 #[async_trait]
 impl Repository for PostgresRepository {
     fn quote(&self, identifier: &str) -> String {
@@ -415,22 +473,10 @@ impl Repository for PostgresRepository {
         Ok(standard_columns(&single(self.query(&sql).await?)))
     }
 
-    /// `PostgreSQL` has one encoding per database, so a column has no character set.
-    /// The collation "default" is the one of the database, so its real name is shown.
     async fn column_details(&self, table: &TableRef) -> AppResult<Vec<ColumnDetail>> {
-        let sql = format!(
-            "SELECT a.attname, NULL, \
-                CASE WHEN co.collname = 'default' \
-                    THEN (SELECT datcollate FROM pg_database WHERE datname = current_database()) \
-                    ELSE co.collname END, \
-                col_description(a.attrelid, a.attnum) \
-            FROM pg_attribute a \
-            LEFT JOIN pg_collation co ON co.oid = a.attcollation \
-            WHERE a.attrelid = {}::regclass AND a.attnum > 0 AND NOT a.attisdropped \
-            ORDER BY a.attnum",
-            literal(&self.table_name(table))
-        );
-        Ok(super::details(&single(self.query(&sql).await?)))
+        Ok(super::details(&single(
+            self.query(&self.column_details_sql(table)).await?,
+        )))
     }
 
     async fn relations(&self) -> AppResult<Vec<Relation>> {
@@ -439,44 +485,27 @@ impl Repository for PostgresRepository {
         Ok(relations(&keys, &unique))
     }
 
-    /// A part of an index on an expression shows the expression.
     async fn indexes(&self, table: &TableRef) -> AppResult<Vec<IndexInfo>> {
-        let sql = format!(
-            "SELECT ic.relname, \
-                coalesce(a.attname, pg_get_indexdef(i.indexrelid, k.position::int, true)), \
-                CASE WHEN i.indisunique THEN 'YES' ELSE 'NO' END, \
-                CASE WHEN i.indisprimary THEN 'YES' ELSE 'NO' END \
-            FROM pg_index i \
-            JOIN pg_class ic ON ic.oid = i.indexrelid \
-            CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(col, position) \
-            LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.col AND k.col > 0 \
-            WHERE i.indrelid = {}::regclass AND k.position <= i.indnkeyatts \
-            ORDER BY NOT i.indisprimary, ic.relname, k.position",
-            literal(&self.table_name(table))
-        );
-        Ok(indexes(&single(self.query(&sql).await?)))
+        Ok(indexes(&single(
+            self.query(&self.indexes_sql(table)).await?,
+        )))
     }
 
     async fn foreign_keys(&self, table: &TableRef) -> AppResult<Vec<ForeignKey>> {
+        Ok(foreign_keys(&single(
+            self.query(&self.foreign_keys_sql(table)).await?,
+        )))
+    }
+
+    /// The three catalog queries go as one batch, so they cost one round trip.
+    async fn table_keys(&self, table: &TableRef) -> AppResult<TableKeys> {
         let sql = format!(
-            "SELECT con.oid, con.conname, a.attname, \
-                CASE WHEN rn.nspname <> {schema} THEN rn.nspname END, rc.relname, ra.attname, \
-                {on_delete}, {on_update} \
-            FROM pg_constraint con \
-            JOIN pg_class rc ON rc.oid = con.confrelid \
-            JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
-            CROSS JOIN LATERAL unnest(con.conkey, con.confkey) \
-                WITH ORDINALITY AS k(col, ref_col, position) \
-            JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.col \
-            JOIN pg_attribute ra ON ra.attrelid = con.confrelid AND ra.attnum = k.ref_col \
-            WHERE con.contype = 'f' AND con.conrelid = {table}::regclass \
-            ORDER BY con.conname, con.oid, k.position",
-            schema = literal(table.schema.as_deref().unwrap_or_default()),
-            on_delete = Self::rule("con.confdeltype"),
-            on_update = Self::rule("con.confupdtype"),
-            table = literal(&self.table_name(table)),
+            "{};\n{};\n{}",
+            self.indexes_sql(table),
+            self.foreign_keys_sql(table),
+            self.column_details_sql(table)
         );
-        Ok(foreign_keys(&single(self.query(&sql).await?)))
+        super::table_keys(self.query(&sql).await?)
     }
 
     /// A view gives `CREATE VIEW`. A table gives `None`, so the caller builds it from the columns.

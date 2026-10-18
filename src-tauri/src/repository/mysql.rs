@@ -22,7 +22,7 @@ use crate::constants::{
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser,
-    ForeignKey, IndexInfo, Relation, ResultSet, SslConfig, SslMode, TableRef, UserList,
+    ForeignKey, IndexInfo, Relation, ResultSet, SslConfig, SslMode, TableKeys, TableRef, UserList,
 };
 
 /// The right that is no right. `MySQL` lists it for an account that has nothing.
@@ -416,6 +416,47 @@ impl MysqlRepository {
     }
 }
 
+/// The catalog SQL of the Structure view. `table_keys` sends all three in one round trip.
+impl MysqlRepository {
+    /// A part of an index on an expression has no column name. It shows as empty text.
+    fn indexes_sql(&self, table: &TableRef) -> String {
+        format!(
+            "SELECT INDEX_NAME, COLUMN_NAME, CASE WHEN NON_UNIQUE = 0 THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN INDEX_NAME = 'PRIMARY' THEN 'YES' ELSE 'NO' END \
+            FROM information_schema.STATISTICS \
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {} \
+            ORDER BY INDEX_NAME <> 'PRIMARY', INDEX_NAME, SEQ_IN_INDEX",
+            self.literal(&table.name)
+        )
+    }
+
+    fn foreign_keys_sql(&self, table: &TableRef) -> String {
+        format!(
+            "SELECT k.CONSTRAINT_NAME, k.CONSTRAINT_NAME, k.COLUMN_NAME, \
+                CASE WHEN k.REFERENCED_TABLE_SCHEMA <> DATABASE() THEN k.REFERENCED_TABLE_SCHEMA END, \
+                k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.DELETE_RULE, r.UPDATE_RULE \
+            FROM information_schema.KEY_COLUMN_USAGE k \
+            JOIN information_schema.REFERENTIAL_CONSTRAINTS r \
+                ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA \
+                AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND r.TABLE_NAME = k.TABLE_NAME \
+            WHERE k.TABLE_SCHEMA = DATABASE() AND k.TABLE_NAME = {} \
+                AND k.REFERENCED_TABLE_NAME IS NOT NULL \
+            ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION",
+            self.literal(&table.name)
+        )
+    }
+
+    fn column_details_sql(&self, table: &TableRef) -> String {
+        format!(
+            "SELECT COLUMN_NAME, CHARACTER_SET_NAME, COLLATION_NAME, NULLIF(COLUMN_COMMENT, '') \
+            FROM information_schema.COLUMNS \
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {} \
+            ORDER BY ORDINAL_POSITION",
+            self.literal(&table.name)
+        )
+    }
+}
+
 #[async_trait]
 impl Repository for MysqlRepository {
     fn quote(&self, identifier: &str) -> String {
@@ -532,14 +573,9 @@ impl Repository for MysqlRepository {
     }
 
     async fn column_details(&self, table: &TableRef) -> AppResult<Vec<ColumnDetail>> {
-        let sql = format!(
-            "SELECT COLUMN_NAME, CHARACTER_SET_NAME, COLLATION_NAME, NULLIF(COLUMN_COMMENT, '') \
-            FROM information_schema.COLUMNS \
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {} \
-            ORDER BY ORDINAL_POSITION",
-            self.literal(&table.name)
-        );
-        Ok(super::details(&single(self.query(&sql).await?)))
+        Ok(super::details(&single(
+            self.query(&self.column_details_sql(table)).await?,
+        )))
     }
 
     async fn relations(&self) -> AppResult<Vec<Relation>> {
@@ -548,34 +584,27 @@ impl Repository for MysqlRepository {
         Ok(relations(&keys, &unique))
     }
 
-    /// A part of an index on an expression has no column name. It shows as empty text.
     async fn indexes(&self, table: &TableRef) -> AppResult<Vec<IndexInfo>> {
-        let sql = format!(
-            "SELECT INDEX_NAME, COLUMN_NAME, CASE WHEN NON_UNIQUE = 0 THEN 'YES' ELSE 'NO' END, \
-                CASE WHEN INDEX_NAME = 'PRIMARY' THEN 'YES' ELSE 'NO' END \
-            FROM information_schema.STATISTICS \
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {} \
-            ORDER BY INDEX_NAME <> 'PRIMARY', INDEX_NAME, SEQ_IN_INDEX",
-            self.literal(&table.name)
-        );
-        Ok(indexes(&single(self.query(&sql).await?)))
+        Ok(indexes(&single(
+            self.query(&self.indexes_sql(table)).await?,
+        )))
     }
 
     async fn foreign_keys(&self, table: &TableRef) -> AppResult<Vec<ForeignKey>> {
+        Ok(foreign_keys(&single(
+            self.query(&self.foreign_keys_sql(table)).await?,
+        )))
+    }
+
+    /// The three catalog queries go as one batch, so they cost one round trip.
+    async fn table_keys(&self, table: &TableRef) -> AppResult<TableKeys> {
         let sql = format!(
-            "SELECT k.CONSTRAINT_NAME, k.CONSTRAINT_NAME, k.COLUMN_NAME, \
-                CASE WHEN k.REFERENCED_TABLE_SCHEMA <> DATABASE() THEN k.REFERENCED_TABLE_SCHEMA END, \
-                k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.DELETE_RULE, r.UPDATE_RULE \
-            FROM information_schema.KEY_COLUMN_USAGE k \
-            JOIN information_schema.REFERENTIAL_CONSTRAINTS r \
-                ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA \
-                AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND r.TABLE_NAME = k.TABLE_NAME \
-            WHERE k.TABLE_SCHEMA = DATABASE() AND k.TABLE_NAME = {} \
-                AND k.REFERENCED_TABLE_NAME IS NOT NULL \
-            ORDER BY k.CONSTRAINT_NAME, k.ORDINAL_POSITION",
-            self.literal(&table.name)
+            "{};\n{};\n{}",
+            self.indexes_sql(table),
+            self.foreign_keys_sql(table),
+            self.column_details_sql(table)
         );
-        Ok(foreign_keys(&single(self.query(&sql).await?)))
+        super::table_keys(self.query(&sql).await?)
     }
 
     /// Also works for a view. Then it gives the `CREATE VIEW` statement.

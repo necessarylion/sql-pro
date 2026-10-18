@@ -36,7 +36,7 @@ use crate::constants::{
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, Driver,
-    ForeignKey, IndexInfo, Relation, ResultSet, Row, TableRef, UserList,
+    ForeignKey, IndexInfo, Relation, ResultSet, Row, TableKeys, TableRef, UserList,
 };
 
 /// Stops the console window that Windows opens for every tool a window app starts.
@@ -105,6 +105,16 @@ pub trait Repository: Send + Sync {
 
     /// The foreign keys of one table.
     async fn foreign_keys(&self, table: &TableRef) -> AppResult<Vec<ForeignKey>>;
+
+    /// The indexes, foreign keys and column details of one table, for the Structure view.
+    /// This default runs them one after the other. A server overrides it with one batch.
+    async fn table_keys(&self, table: &TableRef) -> AppResult<TableKeys> {
+        Ok(TableKeys {
+            indexes: self.indexes(table).await?,
+            foreign_keys: self.foreign_keys(table).await?,
+            columns: self.column_details(table).await?,
+        })
+    }
 
     /// Fails when this database cannot add or drop a foreign key of an existing table.
     fn check_foreign_key_change(&self) -> AppResult<()> {
@@ -616,6 +626,21 @@ fn first_column(set: &ResultSet) -> Vec<String> {
         values.push(cell(row, 0));
     }
     values
+}
+
+/// Splits the result sets of one `indexes; foreign keys; column details` batch.
+fn table_keys(sets: Vec<ResultSet>) -> AppResult<TableKeys> {
+    let [index_set, key_set, detail_set] = <[ResultSet; 3]>::try_from(sets).map_err(|sets| {
+        AppError::Message(format!(
+            "The table keys gave {} result sets instead of 3",
+            sets.len()
+        ))
+    })?;
+    Ok(TableKeys {
+        indexes: indexes(&index_set),
+        foreign_keys: foreign_keys(&key_set),
+        columns: details(&detail_set),
+    })
 }
 
 /// Builds column details from rows shaped as: name, charset, collation, comment.

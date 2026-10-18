@@ -799,12 +799,7 @@ impl ConnectionService {
 
     /// The indexes and foreign keys of a table.
     pub async fn table_keys(&self, id: &str, table: &TableRef) -> AppResult<TableKeys> {
-        let repository = self.repository(id)?;
-        Ok(TableKeys {
-            indexes: repository.indexes(table).await?,
-            foreign_keys: repository.foreign_keys(table).await?,
-            columns: repository.column_details(table).await?,
-        })
+        self.repository(id)?.table_keys(table).await
     }
 
     /// Creates an index on columns of the table. All three databases share this syntax.
