@@ -5,6 +5,7 @@ import type {
   Attachment,
   BrowseRequest,
   ClaudeReply,
+  Notes,
   ColumnInfo,
   ColumnSpec,
   ConnectionConfig,
@@ -102,6 +103,8 @@ export class DatabaseApi {
    * Sends a message to Claude about the database of connection `id`.
    * With no `sessionId`, a new conversation starts with the tables of the database.
    * The backend checks the provider, model and effort in `options` against fixed lists.
+   * The backend puts the notes of the database (`claude.md`) in front of a new conversation,
+   * and also when `includeNotes` is true (the user changed them during the chat).
    */
   askClaude(
     id: string,
@@ -109,8 +112,19 @@ export class DatabaseApi {
     sessionId: string | null,
     options: AiOptions,
     attachments: Attachment[] = [],
+    includeNotes = false,
   ): Promise<ClaudeReply> {
-    return invoke('ask_claude', { id, message, sessionId, options, attachments })
+    return invoke('ask_claude', { id, message, sessionId, options, attachments, includeNotes })
+  }
+
+  /** The notes for the AI about the current database of connection `id`. */
+  readNotes(id: string): Promise<Notes> {
+    return invoke('read_notes', { id })
+  }
+
+  /** Replaces the notes for the AI about the current database of connection `id`. */
+  writeNotes(id: string, text: string): Promise<void> {
+    return invoke('write_notes', { id, text })
   }
 
   /**

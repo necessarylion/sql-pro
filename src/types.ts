@@ -178,6 +178,19 @@ export interface ClaudeReply {
   sql: string | null
   /** True when `sql` surely only reads. Else the user must confirm it first. */
   isRead: boolean
+  /** One fact the AI wants to keep in the notes of the database. null for nothing. */
+  remember: string | null
+  /** Why `remember` was not saved to the notes, like "Notes are full.". null when it was. */
+  rememberError: string | null
+}
+
+/** The notes for the AI about one database: the file `claude.md` in its own folder. */
+export interface Notes {
+  /** The folder name of the database. */
+  database: string
+  /** The full path of the file. */
+  path: string
+  text: string
 }
 
 /** What Ask AI does with SQL that can change data: ask first, or never run it. */

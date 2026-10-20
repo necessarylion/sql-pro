@@ -67,6 +67,8 @@ pub fn run() {
             commands::attachment_from_base64,
             commands::parse_csv,
             commands::stop_claude,
+            commands::read_notes,
+            commands::write_notes,
             commands::update_row,
             commands::insert_row,
             commands::save_changes,

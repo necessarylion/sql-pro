@@ -92,6 +92,9 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
   - Backup and the Users view are not there for SQL Server yet. See `TODO.md`.
 - **Backups** (`dump.rs`) run `mysqldump` / `pg_dump` or copy the SQLite file. Passwords go through
   `MYSQL_PWD` / `PGPASSWORD`.
+- **AI notes** (`service/notes.rs`): each database has a `claude.md` file at `~/.sql-pro/<database>/claude.md`
+  (`~/.sql-pro-dev/` in a debug build). The user edits it in Ask AI. The AI adds facts to it (`remember`).
+  It goes in front of the first message of a chat, and again after the user saved it during a chat.
 - **Saved passwords** (`password.rs`) live in the OS keychain, all in one item (a JSON vault), so macOS asks
   for permission once.
 - **Closing the window hides it** (`lib.rs`). The app keeps running. macOS brings it back on Dock click;

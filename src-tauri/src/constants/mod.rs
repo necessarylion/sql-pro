@@ -298,19 +298,23 @@ pub const CLAUDE_STOPPED: &str = "Stopped";
 pub const CLAUDE_SCHEMA_MAX_CHARS: usize = 40_000;
 
 /// The shape every reply of Claude must have. The CLI checks it (`--json-schema`).
-pub const CLAUDE_REPLY_SCHEMA: &str = r#"{"type":"object","properties":{"sql":{"type":["string","null"]},"message":{"type":"string"}},"required":["sql","message"]}"#;
+pub const CLAUDE_REPLY_SCHEMA: &str = r#"{"type":"object","properties":{"sql":{"type":["string","null"]},"message":{"type":"string"},"remember":{"type":["string","null"]}},"required":["sql","message"]}"#;
 
 /// The rules for Claude. The database kind and tables come with the first question.
 pub const CLAUDE_SYSTEM_PROMPT: &str = "You help a user work with one SQL database inside a desktop SQL client. \
 You cannot run anything yourself. The app runs SQL for you.\n\
-Always reply with JSON only: {\"sql\": string or null, \"message\": string}.\n\
+Always reply with JSON only: {\"sql\": string or null, \"message\": string, \"remember\": string or null}.\n\
 - To look at or change data, put exactly ONE SQL statement in \"sql\". Use the exact SQL dialect of the database you are told. \
 The app runs it and sends you the result (or the error) in the next message. Then reply again.\n\
 - Look data up with SELECT before you change it. For example, find a user by email before you block that user.\n\
 - Change only what the user asked for. The user must confirm every change.\n\
 - When you have the answer, or nothing more needs to run, set \"sql\" to null and answer the user in \"message\".\n\
 - \"message\" is short, plain English for the user. Say what the SQL does when you send SQL.\n\
-- If a query was rejected by the user, do not try to run it again in another way. Ask what they want.";
+- If a query was rejected by the user, do not try to run it again in another way. Ask what they want.\n\
+- The app may send notes about this database (from the user, and facts you saved before). Follow them. They can say what a column or a code means.\n\
+- When the user tells you a lasting fact about the data (like what a status code means), or you learn one that will help later, \
+put ONE short fact in \"remember\", like \"orders.status: 3 = done\". The app adds it to the notes. Else set \"remember\" to null. \
+Do not repeat a fact that is in the notes already. Never put passwords, keys or personal data (names, emails, phone numbers) there.";
 
 /// The AI tools the app can run. Only Claude Code for now.
 pub const AI_PROVIDERS: [&str; 1] = ["claude"];
@@ -339,6 +343,29 @@ pub const CLAUDE_FOLDER: &str = if cfg!(debug_assertions) {
 } else {
     "claude"
 };
+
+/// The folder in the home folder that holds the notes of each database for the AI:
+/// `~/.sql-pro/<database>/claude.md`. A debug build has its own folder.
+pub const NOTES_FOLDER: &str = if cfg!(debug_assertions) {
+    ".sql-pro-dev"
+} else {
+    ".sql-pro"
+};
+
+/// The notes file in the folder of one database.
+pub const NOTES_FILE: &str = "claude.md";
+
+/// The notes of one database hold at most this many bytes.
+pub const NOTES_MAX_BYTES: usize = 20_000;
+
+/// The error when a fact of the AI does not fit in the notes any more.
+pub const NOTES_FULL: &str = "Notes are full.";
+
+/// The error when the tab has no database for the notes.
+pub const NO_DATABASE_FOR_NOTES: &str = "Select a database first.";
+
+/// The error when the home folder is not known, so the notes have no place.
+pub const NO_HOME_FOR_NOTES: &str = "Cannot find the home folder for the notes.";
 
 /// A statement that starts with one of these words can be a read.
 pub const READ_KEYWORDS: [&str; 6] = ["SELECT", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "WITH"];

@@ -101,10 +101,20 @@ pub(super) fn first_prompt(
     )
 }
 
-/// Reads Claude's reply text as `{"sql": ..., "message": ...}`.
+/// The user's notes about the database in front of `message`. Blank notes add nothing.
+pub(super) fn with_notes(notes: Option<&str>, message: &str) -> String {
+    match notes.map(str::trim) {
+        Some(notes) if !notes.is_empty() => {
+            format!("Notes about this database (follow them):\n{notes}\n\n{message}")
+        }
+        _ => message.to_owned(),
+    }
+}
+
+/// Reads Claude's reply text as `{"sql": ..., "message": ..., "remember": ...}`.
 /// The JSON may sit in a Markdown code block or between other text. When it is not JSON,
-/// the whole text is the message and there is no SQL.
-pub(super) fn parse_reply(text: &str) -> (Option<String>, String) {
+/// the whole text is the message and there is no SQL and nothing to remember.
+pub(super) fn parse_reply(text: &str) -> (Option<String>, String, Option<String>) {
     let start = text.find('{');
     let end = text.rfind('}');
     if let (Some(start), Some(end)) = (start, end)
@@ -112,9 +122,15 @@ pub(super) fn parse_reply(text: &str) -> (Option<String>, String) {
         && let Ok(value) = serde_json::from_str::<serde_json::Value>(&text[start..=end])
         && let Some(message) = value.get("message").and_then(serde_json::Value::as_str)
     {
-        return (sql_of(&value), message.to_owned());
+        return (sql_of(&value), message.to_owned(), remember_of(&value));
     }
-    (None, text.trim().to_owned())
+    (None, text.trim().to_owned(), None)
+}
+
+/// The `remember` field of a reply: one fact for the notes. Blank counts as none.
+pub(super) fn remember_of(value: &serde_json::Value) -> Option<String> {
+    let fact = value.get("remember")?.as_str()?.trim();
+    (!fact.is_empty()).then(|| fact.to_owned())
 }
 
 /// The `sql` field of a reply. Blank SQL counts as none.
@@ -287,6 +303,7 @@ fn close(chars: &[char], mut index: usize, quote: char) -> Option<usize> {
 mod tests {
     use super::{
         check_options, explainable, is_model_id, is_read_only, parse_reply, transaction_change,
+        with_notes,
     };
     use crate::model::AiOptions;
 
@@ -453,16 +470,40 @@ mod tests {
 
     #[test]
     fn parses_replies() {
-        let (sql, message) = parse_reply(r#"{"sql": "SELECT 1", "message": "Counting"}"#);
+        let (sql, message, remember) = parse_reply(r#"{"sql": "SELECT 1", "message": "Counting"}"#);
         assert_eq!(sql.as_deref(), Some("SELECT 1"));
         assert_eq!(message, "Counting");
+        assert_eq!(remember, None);
 
         let fenced = "Here:\n```json\n{\"sql\": null, \"message\": \"There are 3.\"}\n```";
-        assert_eq!(parse_reply(fenced), (None, "There are 3.".to_owned()));
+        assert_eq!(parse_reply(fenced), (None, "There are 3.".to_owned(), None));
 
-        let blank = r#"{"sql": "  ", "message": "Done"}"#;
-        assert_eq!(parse_reply(blank), (None, "Done".to_owned()));
+        let blank = r#"{"sql": "  ", "message": "Done", "remember": " "}"#;
+        assert_eq!(parse_reply(blank), (None, "Done".to_owned(), None));
 
-        assert_eq!(parse_reply(" just text "), (None, "just text".to_owned()));
+        let fact = r#"{"sql": null, "message": "Saved", "remember": " orders.status 3 = done "}"#;
+        assert_eq!(
+            parse_reply(fact),
+            (
+                None,
+                "Saved".to_owned(),
+                Some("orders.status 3 = done".to_owned())
+            )
+        );
+
+        assert_eq!(
+            parse_reply(" just text "),
+            (None, "just text".to_owned(), None)
+        );
+    }
+
+    #[test]
+    fn notes_go_in_front() {
+        assert_eq!(with_notes(None, "hi"), "hi");
+        assert_eq!(with_notes(Some("  \n "), "hi"), "hi");
+        assert_eq!(
+            with_notes(Some(" status 1 = pending\n"), "hi"),
+            "Notes about this database (follow them):\nstatus 1 = pending\n\nhi"
+        );
     }
 }

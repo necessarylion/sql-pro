@@ -11,8 +11,8 @@ use crate::error::AppResult;
 use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
     ConnectionConfig, CsvImport, CsvPreview, DbObject, DbProcess, Diagram, ExportRequest,
-    NewColumn, NewForeignKey, NewIndex, NewUser, QueryStat, ResultSet, RowUpdate, RowsExport,
-    RowsSql, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
+    NewColumn, NewForeignKey, NewIndex, NewUser, Notes, QueryStat, ResultSet, RowUpdate,
+    RowsExport, RowsSql, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::open_file::OpenedFiles;
 use crate::repository::PasswordRepository;
@@ -143,10 +143,30 @@ pub async fn ask_claude(
     session_id: Option<String>,
     options: AiOptions,
     attachments: Vec<Attachment>,
+    include_notes: bool,
 ) -> AppResult<ClaudeReply> {
     service
-        .ask_claude(&id, &message, session_id.as_deref(), &options, &attachments)
+        .ask_claude(
+            &id,
+            &message,
+            session_id.as_deref(),
+            &options,
+            &attachments,
+            include_notes,
+        )
         .await
+}
+
+/// The notes of the current database of tab `id`, for the AI.
+#[tauri::command]
+pub fn read_notes(service: Service<'_>, id: String) -> AppResult<Notes> {
+    service.read_notes(&id)
+}
+
+/// Replaces the notes of the current database of tab `id`.
+#[tauri::command]
+pub fn write_notes(service: Service<'_>, id: String, text: String) -> AppResult<()> {
+    service.write_notes(&id, &text)
 }
 
 #[tauri::command]

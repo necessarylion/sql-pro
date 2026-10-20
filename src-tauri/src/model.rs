@@ -343,6 +343,21 @@ pub struct ClaudeReply {
     pub sql: Option<String>,
     /// True when `sql` surely only reads. Else the user must confirm it first.
     pub is_read: bool,
+    /// One fact Claude wants to keep in the notes of the database. `None` for nothing.
+    pub remember: Option<String>,
+    /// Why `remember` was not saved to the notes, like "Notes are full.". `None` when it was.
+    pub remember_error: Option<String>,
+}
+
+/// The notes about the current database of a tab, for the AI.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Notes {
+    /// The safe folder name of the database. The notes window shows it as the title.
+    pub database: String,
+    /// The full path of the `claude.md` file.
+    pub path: String,
+    pub text: String,
 }
 
 /// One page of table data, with the table's columns.
