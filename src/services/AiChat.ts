@@ -17,6 +17,7 @@ import type {
   ChatEntry,
   ChatFile,
   ClaudeReply,
+  Notes,
   ResultSet,
   SavedChat,
 } from '../types'
@@ -48,6 +49,8 @@ export class AiChat {
   provider = AI_DEFAULT_PROVIDER
   private created = 0
   private sessionId: string | null = null
+  /** True when the user saved the notes during an open session. The next message sends them again. */
+  private notesChanged = false
   private options: AiOptions | null = null
   private stopped = false
   /** Ends the wait of the approval card: the final SQL, or null for Reject. */
@@ -165,6 +168,19 @@ export class AiChat {
     this.sessionId = saved.sessionId
   }
 
+  /** The notes for the AI about the current database of connection `id`. */
+  readNotes(id: string): Promise<Notes> {
+    return this.api.readNotes(id)
+  }
+
+  /** Saves the notes. An open session gets them again with the next message. */
+  async saveNotes(id: string, text: string): Promise<void> {
+    await this.api.writeNotes(id, text)
+    if (this.sessionId) {
+      this.notesChanged = true
+    }
+  }
+
   /** Reads a file for the next message. The backend checks it. Throws the reason when refused. */
   async attachFile(path: string): Promise<void> {
     this.attachments.add(await this.api.readAttachment(path))
@@ -276,7 +292,14 @@ export class AiChat {
     }
     let reply: ClaudeReply
     try {
-      reply = await this.api.askClaude(id, message, this.sessionId, options, files)
+      reply = await this.api.askClaude(
+        id,
+        message,
+        this.sessionId,
+        options,
+        files,
+        this.notesChanged,
+      )
     } catch (error) {
       if (!this.sessionId || !String(error).includes(AI_SESSION_GONE)) {
         throw error
@@ -289,8 +312,16 @@ export class AiChat {
       reply = await this.api.askClaude(id, text, null, options, files)
     }
     this.sessionId = reply.sessionId
+    this.notesChanged = false
     if (reply.message) {
       this.entries.push({ kind: 'ai', text: reply.message })
+    }
+    if (reply.remember) {
+      this.note(
+        reply.rememberError
+          ? `${reply.rememberError} Not saved: ${reply.remember}`
+          : `Saved to notes: ${reply.remember}`,
+      )
     }
     return reply
   }

@@ -17,7 +17,7 @@ import {
 import { AiAttachments } from '../src/services/AiAttachments'
 import { AiStore } from '../src/services/AiStore'
 import { ProfileStorage } from '../src/services/ProfileStorage'
-import type { AiOptions, Attachment, ClaudeReply, ResultSet, SavedChat } from '../src/types'
+import type { AiOptions, Attachment, ClaudeReply, Notes, ResultSet, SavedChat } from '../src/types'
 import { FakePrompt } from './FakePrompt'
 
 const ID = 'tab'
@@ -38,6 +38,9 @@ class FakeApi {
   options: AiOptions[] = []
   /** Session ids that the AI tool has deleted. */
   gone: string[] = []
+  /** The `includeNotes` flag of each message. */
+  includeNotes: boolean[] = []
+  notes = ''
 
   async askClaude(
     _id: string,
@@ -45,14 +48,24 @@ class FakeApi {
     sessionId: string | null,
     options: AiOptions,
     files: Attachment[] = [],
+    includeNotes = false,
   ): Promise<ClaudeReply> {
     if (sessionId && this.gone.includes(sessionId)) {
       throw `${AI_SESSION_GONE}`
     }
+    this.includeNotes.push(includeNotes)
     this.sent.push({ message, sessionId })
     this.files.push(files)
     this.options.push(options)
-    return this.replies.shift() ?? { sessionId: 's1', message: 'Done', sql: null, isRead: false }
+    return this.replies.shift() ?? reply(null, false, 'Done')
+  }
+
+  async readNotes(): Promise<Notes> {
+    return { database: 'shop', path: '/home/me/.sql-pro/shop/claude.md', text: this.notes }
+  }
+
+  async writeNotes(_id: string, text: string): Promise<void> {
+    this.notes = text
   }
 
   async runAiRead(id: string, sql: string): Promise<ResultSet[]> {
@@ -83,8 +96,8 @@ class FakeApi {
   }
 }
 
-function reply(sql: string | null, isRead: boolean): ClaudeReply {
-  return { sessionId: 's1', message: 'Working', sql, isRead }
+function reply(sql: string | null, isRead: boolean, message = 'Working'): ClaudeReply {
+  return { sessionId: 's1', message, sql, isRead, remember: null, rememberError: null }
 }
 
 /** Waits until the chat shows the approval card of a write. */
@@ -340,7 +353,7 @@ test('a lost session starts a new one with the old messages', async function () 
   const chat = chatWith(api, new FakePrompt())
   await chat.ask(ID, 'first question', ASK)
   api.gone = ['s1']
-  api.replies = [{ sessionId: 's2', message: 'Back', sql: null, isRead: false }]
+  api.replies = [{ ...reply(null, false, 'Back'), sessionId: 's2' }]
 
   await chat.ask(ID, 'second question', ASK)
 
@@ -521,4 +534,48 @@ test('CSV rows become a grid, with short and long rows', function () {
     ['b@x.com', 'Bob', 'extra'],
   ])
   expect(AiAttachments.csvTable([])).toEqual({ columns: [], rows: [] })
+})
+
+test('a fact of the AI shows as saved, or as not saved when the notes are full', async function () {
+  const api = new FakeApi()
+  api.replies = [
+    { ...reply(null, false, 'Noted'), remember: 'orders.status 3 = done' },
+    {
+      ...reply(null, false, 'Noted'),
+      remember: 'users.kind 2 = admin',
+      rememberError: 'Notes are full.',
+    },
+  ]
+  const chat = chatWith(api, new FakePrompt())
+
+  await chat.ask(ID, 'status 3 means done', ASK)
+  await chat.ask(ID, 'kind 2 means admin', ASK)
+
+  const notes = chat.entries.filter(function isNote(entry) {
+    return entry.kind === 'note'
+  })
+  expect(
+    notes.map(function text(entry) {
+      return entry.text
+    }),
+  ).toEqual([
+    'Saved to notes: orders.status 3 = done',
+    'Notes are full. Not saved: users.kind 2 = admin',
+  ])
+})
+
+test('the notes go again once after the user saved them during a chat', async function () {
+  const api = new FakeApi()
+  const chat = chatWith(api, new FakePrompt())
+
+  // No session yet: the backend sends the notes anyway. No flag needed.
+  await chat.saveNotes(ID, 'status 1 = pending')
+  expect(api.notes).toBe('status 1 = pending')
+  await chat.ask(ID, 'first', ASK)
+  await chat.saveNotes(ID, 'status 1 = new')
+  await chat.ask(ID, 'second', ASK)
+  await chat.ask(ID, 'third', ASK)
+
+  expect(api.includeNotes).toEqual([false, true, false])
+  expect((await chat.readNotes(ID)).text).toBe('status 1 = new')
 })

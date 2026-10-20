@@ -5,6 +5,7 @@ import {
   CheckIcon,
   FileTextIcon,
   LoaderCircleIcon,
+  NotebookPenIcon,
   PaperclipIcon,
   PlusIcon,
   SendIcon,
@@ -31,6 +32,7 @@ import type { ChatEntry, GridColumn, SavedChat } from '../types'
 import BottomBar from './BottomBar.vue'
 import DataGrid from './DataGrid.vue'
 import AttachmentPreview from './AttachmentPreview.vue'
+import NotesDialog from './NotesDialog.vue'
 import PaneResizer from './PaneResizer.vue'
 
 const props = defineProps<{ session: Session }>()
@@ -39,6 +41,7 @@ const formatter = injectRequired(CHAT_FORMATTER)
 const fileDrop = injectRequired(FILE_DROP)
 const root = useTemplateRef<HTMLDivElement>('root')
 const preview = useTemplateRef<InstanceType<typeof AttachmentPreview>>('preview')
+const notesDialog = useTemplateRef<InstanceType<typeof NotesDialog>>('notesDialog')
 /** True while files are dragged over this view. It shows the drop overlay. */
 const dropping = ref(false)
 
@@ -232,6 +235,13 @@ function approve(entry: ChatEntry): void {
   props.session.chat.decide(entry.text)
 }
 
+/** Opens the notes for the AI about the current database. */
+function openNotes(): void {
+  if (notesDialog.value) {
+    props.session.run(notesDialog.value.open())
+  }
+}
+
 function stop(): void {
   props.session.run(props.session.chat.stop(props.session.id))
 }
@@ -385,6 +395,14 @@ watch(readOnlyQuestion, sendReadOnly, { immediate: true })
         <Trash2Icon :size="12" />
       </button>
       <span class="spacer" />
+      <button
+        title="Notes for the AI about this database. The AI adds notes here too."
+        :disabled="!session.config?.database"
+        @click="openNotes"
+      >
+        <NotebookPenIcon :size="11" />
+        Notes
+      </button>
       <button
         title="Start a new chat. The AI forgets this one."
         :disabled="working || session.chat.entries.length === 0"
@@ -577,6 +595,7 @@ watch(readOnlyQuestion, sendReadOnly, { immediate: true })
       Drop images or CSV files to attach them
     </div>
     <AttachmentPreview ref="preview" />
+    <NotesDialog ref="notesDialog" :session="session" />
   </div>
 </template>
 
