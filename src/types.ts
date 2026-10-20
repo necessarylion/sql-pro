@@ -186,7 +186,7 @@ export interface ClaudeReply {
 
 /** The notes for the AI about one database: the file `claude.md` in its own folder. */
 export interface Notes {
-  /** The folder name of the database. */
+  /** The readable name of the database (the folder name without its hash). */
   database: string
   /** The full path of the file. */
   path: string

@@ -1,5 +1,6 @@
 //! The notes about one database for the AI: a `claude.md` file in its own folder,
-//! `<base>/<database>/claude.md`. The user edits it in the app. The AI adds facts to it.
+//! `<base>/<database>-<hash>/claude.md`. The hash keeps the databases of the same name on
+//! two servers apart. The user edits it in the app. The AI adds facts to it.
 
 use std::path::{Path, PathBuf};
 
@@ -7,10 +8,36 @@ use crate::constants::{NO_DATABASE_FOR_NOTES, NOTES_FILE, NOTES_FULL, NOTES_MAX_
 use crate::error::{AppError, AppResult};
 use crate::model::Driver;
 
-/// A safe folder name for the database. For `SQLite` the database is a file path,
+/// The folder name for the database: `<safe name>-<8 hex>`. The hex is a hash of the
+/// driver, server host, port and database, so the same database name on two servers gets
+/// two folders. The user is not in it, so two logins to one database share the notes.
+/// For `SQLite` the hash uses the full file path, and host and port are not used.
+pub(super) fn folder_name(
+    driver: Driver,
+    host: &str,
+    port: u16,
+    database: &str,
+) -> AppResult<String> {
+    let key = if driver == Driver::Sqlite {
+        format!("{driver:?}\n{database}")
+    } else {
+        format!("{driver:?}\n{host}\n{port}\n{database}")
+    };
+    let hash = fnv1a(key.as_bytes()) & 0xffff_ffff;
+    Ok(format!("{}-{hash:08x}", safe_name(driver, database)?))
+}
+
+/// FNV-1a, 64 bit. Unlike `DefaultHasher`, it gives the same value in every Rust version.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
+/// A safe, readable folder name for the database. For `SQLite` the database is a file path,
 /// so its file name without the extension is used. Characters that a path could use
 /// to leave the folder become `_`, and so does a `.` at the start.
-pub(super) fn folder_name(driver: Driver, database: &str) -> AppResult<String> {
+fn safe_name(driver: Driver, database: &str) -> AppResult<String> {
     let name = if driver == Driver::Sqlite {
         Path::new(database)
             .file_stem()
@@ -84,13 +111,36 @@ pub(super) fn append(base: &Path, folder: &str, fact: &str) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{append, folder_name, path, read, write};
+    use super::{append, folder_name, path, read, safe_name, write};
     use crate::constants::NOTES_MAX_BYTES;
     use crate::model::Driver;
 
     #[test]
+    fn folder_names_are_unique_per_server() {
+        let name = |host: &str, port: u16, database: &str| {
+            folder_name(Driver::Mysql, host, port, database).unwrap()
+        };
+        // A fixed input gives a fixed name. This catches a change of the hash by mistake.
+        assert_eq!(name("db.example.com", 3306, "app"), "app-88a8a717");
+        assert_ne!(
+            name("one.example.com", 3306, "app"),
+            name("two.example.com", 3306, "app")
+        );
+        assert_ne!(name("db", 3306, "app"), name("db", 3307, "app"));
+        assert_ne!(
+            name("db", 3306, "app"),
+            folder_name(Driver::Postgres, "db", 3306, "app").unwrap()
+        );
+        assert!(name("db", 3306, "../etc").starts_with("___etc-"));
+
+        let sqlite = |path: &str| folder_name(Driver::Sqlite, "", 0, path).unwrap();
+        assert!(sqlite("/a/shop.db").starts_with("shop-"));
+        assert_ne!(sqlite("/a/shop.db"), sqlite("/b/shop.db"));
+    }
+
+    #[test]
     fn folder_names_stay_inside() {
-        let name = |database: &str| folder_name(Driver::Mysql, database);
+        let name = |database: &str| safe_name(Driver::Mysql, database);
         assert_eq!(name("shop").unwrap(), "shop");
         assert_eq!(name("../etc").unwrap(), "___etc");
         assert_eq!(name("a/b").unwrap(), "a_b");
@@ -100,10 +150,10 @@ mod tests {
         assert!(name("").is_err());
         assert!(name("  ").is_err());
         assert_eq!(
-            folder_name(Driver::Sqlite, "/Users/me/data/shop.db").unwrap(),
+            safe_name(Driver::Sqlite, "/Users/me/data/shop.db").unwrap(),
             "shop"
         );
-        assert!(folder_name(Driver::Sqlite, "/").is_err());
+        assert!(safe_name(Driver::Sqlite, "/").is_err());
     }
 
     #[test]

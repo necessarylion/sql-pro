@@ -419,7 +419,10 @@ impl ConnectionService {
     fn notes_place(&self, id: &str) -> AppResult<(PathBuf, String)> {
         let base = self.notes_folder.clone().ok_or(NO_HOME_FOR_NOTES)?;
         let config = self.connection(id)?.config;
-        Ok((base, notes::folder_name(config.driver, &config.database)?))
+        // `config` holds the real server, not the local end of an SSH tunnel.
+        let folder =
+            notes::folder_name(config.driver, &config.host, config.port, &config.database)?;
+        Ok((base, folder))
     }
 
     /// The notes of the current database of tab `id`. The file is created when it is missing.
@@ -427,8 +430,10 @@ impl ConnectionService {
         let (base, folder) = self.notes_place(id)?;
         let text = notes::read(&base, &folder)?;
         let path = notes::path(&base, &folder).to_string_lossy().into_owned();
+        // The title shows the readable name, without the `-<hash>` part.
+        let database = folder.rsplit_once('-').map_or(&*folder, |(name, _)| name);
         Ok(Notes {
-            database: folder,
+            database: database.to_owned(),
             path,
             text,
         })
