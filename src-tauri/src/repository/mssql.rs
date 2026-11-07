@@ -24,7 +24,7 @@ use crate::constants::{MSSQL_NO_QUERY_STATS, QUERY_CANCELLED, QUERY_STATS_LIMIT}
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, ForeignKey, IndexInfo,
-    Relation, ResultSet, SslMode, TableKeys, TableRef,
+    PlanFormat, PlanSql, Relation, ResultSet, SslMode, TableKeys, TableRef,
 };
 
 /// The schema a name without a schema lands in.
@@ -501,6 +501,22 @@ impl Repository for MssqlRepository {
 
     fn open_transaction_sql(&self) -> Option<&'static str> {
         Some("SELECT @@TRANCOUNT")
+    }
+
+    /// `SET SHOWPLAN_XML` must be alone in its batch. Both settings stay on for the
+    /// connection, so `after` turns them off again, also when the statement failed.
+    async fn plan_sql(&self, statement: &str, analyze: bool) -> AppResult<Option<PlanSql>> {
+        let (before, after) = if analyze {
+            ("SET STATISTICS XML ON", "SET STATISTICS XML OFF")
+        } else {
+            ("SET SHOWPLAN_XML ON", "SET SHOWPLAN_XML OFF")
+        };
+        Ok(Some(PlanSql {
+            before: Some(before),
+            sql: statement.to_owned(),
+            after: Some(after),
+            format: PlanFormat::MssqlXml,
+        }))
     }
 
     fn current_database_sql(&self) -> Option<&'static str> {

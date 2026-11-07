@@ -1,0 +1,8 @@
+-> Sort: `sum(o.total)` DESC  (actual time=12..12 rows=20 loops=1)
+    -> Table scan on <temporary>  (actual time=12..12 rows=20 loops=1)
+        -> Aggregate using temporary table  (actual time=12..12 rows=20 loops=1)
+            -> Nested loop inner join  (cost=2657 rows=1950) (actual time=0.182..9.84 rows=6666 loops=1)
+                -> Filter: ((o.`status` = 'paid') and (o.customer_id is not null))  (cost=1974 rows=1950) (actual time=0.17..4.5 rows=6666 loops=1)
+                    -> Table scan on o  (cost=1974 rows=19500) (actual time=0.165..3.08 rows=20000 loops=1)
+                -> Single-row index lookup on c using PRIMARY (id=o.customer_id)  (cost=0.25 rows=1) (actual time=626e-6..652e-6 rows=1 loops=6666)
+

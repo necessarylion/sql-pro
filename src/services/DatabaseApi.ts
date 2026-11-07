@@ -14,6 +14,7 @@ import type {
   CsvPreview,
   DbObject,
   DbProcess,
+  QueryPlan,
   QueryStat,
   DbUser,
   Diagram,
@@ -110,9 +111,12 @@ export class DatabaseApi {
     return invoke('run_query', { id, sql })
   }
 
-  /** The query plan of one statement. The backend never runs the statement itself. */
-  explain(id: string, sql: string): Promise<ResultSet[]> {
-    return invoke('explain', { id, sql })
+  /**
+   * The query plan of one statement as a tree. Without `analyze` the backend never runs it.
+   * With `analyze` it runs once for real times, and only when it is a read.
+   */
+  queryPlan(id: string, sql: string, analyze: boolean): Promise<QueryPlan> {
+    return invoke('query_plan', { id, sql, analyze })
   }
 
   /**

@@ -568,3 +568,49 @@ export interface DataDiff {
   /** The database of the target tab at the compare. Null on SQLite. */
   database: string | null
 }
+
+/** A common problem of a query plan step. */
+export type PlanProblem = 'fullScan' | 'filesort' | 'tempTable' | 'rowEstimate'
+
+/** `slow`: the step takes 30% or more of the whole plan itself. `warm`: 10% or more. */
+export type PlanHeat = 'slow' | 'warm'
+
+/** One fact of a plan step, like the filter or the join condition. */
+export interface PlanDetail {
+  name: string
+  value: string
+}
+
+/** One step of a query plan, with the steps it reads from. All databases give this shape. */
+export interface PlanNode {
+  operation: string
+  /** The table or index it reads. */
+  object: string | null
+  details: PlanDetail[]
+  /** The rows the planner expects, for one loop. */
+  estimatedRows: number | null
+  /** The real rows, for one loop. Only after an analyze. */
+  actualRows: number | null
+  loops: number | null
+  /** The cost with the children. */
+  cost: number | null
+  /** The real time with the children, all loops, in ms. */
+  timeMs: number | null
+  /** The part of the whole plan this step takes itself, 0 to 1. */
+  share: number | null
+  heat: PlanHeat | null
+  problems: PlanProblem[]
+  children: PlanNode[]
+}
+
+/** The plan of one statement as a tree, and the plain EXPLAIN output for the Raw tab. */
+export interface QueryPlan {
+  nodes: PlanNode[]
+  /** True when the statement ran, so real times and rows are there. */
+  analyzed: boolean
+  /** What `share` is measured in. Null when the plan has no times and no costs. */
+  measure: 'time' | 'cost' | null
+  /** The time (ms) or cost of the whole plan. */
+  total: number | null
+  raw: ResultSet | null
+}

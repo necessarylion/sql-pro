@@ -37,7 +37,7 @@ use crate::constants::{
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, Driver,
-    ForeignKey, IndexInfo, Relation, ResultSet, Row, TableKeys, TableRef, UserList,
+    ForeignKey, IndexInfo, PlanSql, Relation, ResultSet, Row, TableKeys, TableRef, UserList,
 };
 
 /// Stops the console window that Windows opens for every tool a window app starts.
@@ -425,6 +425,14 @@ pub trait Repository: Send + Sync {
     /// `None` when this database has no such words in the app.
     fn explain_prefix(&self) -> Option<&'static str> {
         None
+    }
+
+    /// The SQL that gives the plan of `statement` in a form the service can read as a tree.
+    /// With `analyze` it runs the statement, so the plan has real times and rows. The
+    /// service asks for that only for a read, inside the read-only guard.
+    /// `None` when the app cannot read plans of this database.
+    async fn plan_sql(&self, _statement: &str, _analyze: bool) -> AppResult<Option<PlanSql>> {
+        Ok(None)
     }
 
     /// The words between the column list and `VALUES` of an `INSERT` that sets an

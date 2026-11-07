@@ -314,7 +314,7 @@ pub struct SaveResult {
 }
 
 /// The outcome of one SQL statement.
-#[derive(Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct ResultSet {
     pub columns: Vec<String>,
     pub rows: Vec<Row>,
@@ -609,6 +609,121 @@ pub struct QueryStat {
     pub max_ms: Option<f64>,
     /// All rows the runs gave back.
     pub rows: Option<i64>,
+}
+
+/// How the output of a plan statement is written, so the service knows how to read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanFormat {
+    /// `EXPLAIN (FORMAT JSON)`, with or without `ANALYZE`.
+    PostgresJson,
+    /// `EXPLAIN FORMAT=JSON` of `MySQL`, and `EXPLAIN` / `ANALYZE FORMAT=JSON` of `MariaDB`.
+    /// The two write other fields, but in the same shape.
+    MysqlJson,
+    /// The text tree of `MySQL` `EXPLAIN ANALYZE`. `MySQL` has no JSON form of it.
+    MysqlTree,
+    /// The rows of `EXPLAIN QUERY PLAN`: id, parent, unused, detail.
+    SqliteRows,
+    /// The showplan XML of SQL Server: `SHOWPLAN_XML` or `STATISTICS XML`.
+    MssqlXml,
+}
+
+/// The SQL that gives the plan of one statement, and how to read what it gives.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PlanSql {
+    /// Runs on its own first, like `SET SHOWPLAN_XML ON`.
+    pub before: Option<&'static str>,
+    pub sql: String,
+    /// Runs on its own at the end, also when `sql` failed.
+    pub after: Option<&'static str>,
+    pub format: PlanFormat,
+}
+
+/// A common problem of a plan step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanProblem {
+    /// Reads every row of a table.
+    FullScan,
+    /// Sorts the rows itself, because no index gives the order.
+    Filesort,
+    /// Writes rows to a temporary table or to disk.
+    TempTable,
+    /// The real row count is far from the estimate.
+    RowEstimate,
+}
+
+/// How much of the whole plan one step takes itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanHeat {
+    /// `PLAN_SLOW_SHARE` or more.
+    Slow,
+    /// `PLAN_WARM_SHARE` or more.
+    Warm,
+}
+
+/// What the shares of a plan are measured in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanMeasure {
+    /// Real time, from an analyze.
+    Time,
+    /// The cost the planner guessed.
+    Cost,
+}
+
+/// One fact of a plan step, like the filter or the join condition.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PlanDetail {
+    pub name: String,
+    pub value: String,
+}
+
+/// One step of a query plan, with the steps it reads from. All databases give this shape.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanNode {
+    /// What the step does, like `Seq Scan` or `Nested loop`.
+    pub operation: String,
+    /// The table or index it reads, when it reads one.
+    pub object: Option<String>,
+    pub details: Vec<PlanDetail>,
+    /// The rows the planner expects, for one loop.
+    pub estimated_rows: Option<f64>,
+    /// The real rows, for one loop. Only after an analyze.
+    pub actual_rows: Option<f64>,
+    /// How often the step ran. Only after an analyze.
+    pub loops: Option<f64>,
+    /// The cost of the step with its children.
+    pub cost: Option<f64>,
+    /// The real time of the step with its children, all loops, in milliseconds.
+    pub time_ms: Option<f64>,
+    /// The part of the whole plan this step takes itself, from 0 to 1.
+    pub share: Option<f64>,
+    pub heat: Option<PlanHeat>,
+    pub problems: Vec<PlanProblem>,
+    pub children: Vec<PlanNode>,
+    /// The cost of this step alone, when the database gives it. Else it is worked out.
+    #[serde(skip)]
+    pub own_cost: Option<f64>,
+    /// The time of this step alone, when the database gives it. Else it is worked out.
+    #[serde(skip)]
+    pub own_time: Option<f64>,
+}
+
+/// The plan of one statement as a tree, and the plain `EXPLAIN` output.
+#[derive(Debug, Serialize)]
+pub struct QueryPlan {
+    /// The top steps. Most plans have one.
+    pub nodes: Vec<PlanNode>,
+    /// True when the statement ran, so real times and rows are there.
+    pub analyzed: bool,
+    /// What `share` is measured in. `None` when the plan has no times and no costs.
+    pub measure: Option<PlanMeasure>,
+    /// The time (ms) or cost of the whole plan.
+    pub total: Option<f64>,
+    /// The output of the plain `EXPLAIN`, for the Raw tab.
+    pub raw: Option<ResultSet>,
 }
 
 #[cfg(test)]

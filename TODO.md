@@ -2,14 +2,25 @@
 
 Features that paid SQL clients have. Do them in this order. Remove an item when it is done.
 
-1. **Visual query plan.** Show EXPLAIN as a tree. Mark the slow steps.
-2. **Charts from a query result.** Show a result as a bar, line or pie chart.
-3. **JSON cell viewer.** Show a JSON value as a tree you can fold, and edit it there.
-4. **Test data generator.** Fill a table with fake rows (names, emails, dates). Respect the column types and foreign keys.
-5. **Scheduled backups.** Run a backup every day or week. Keep the last N files.
-6. **Excel import.** Import an `.xlsx` file into a table, like CSV import.
-7. **More databases.** Redis and MongoDB.
-8. **Sync saved connections** across machines. Passwords must stay in the OS keychain.
+1. **Charts from a query result.** Show a result as a bar, line or pie chart.
+2. **JSON cell viewer.** Show a JSON value as a tree you can fold, and edit it there.
+3. **Test data generator.** Fill a table with fake rows (names, emails, dates). Respect the column types and foreign keys.
+4. **Scheduled backups.** Run a backup every day or week. Keep the last N files.
+5. **Excel import.** Import an `.xlsx` file into a table, like CSV import.
+6. **More databases.** Redis and MongoDB.
+7. **Sync saved connections** across machines. Passwords must stay in the OS keychain.
+
+## Query plan: left out for now
+
+The Query view shows Explain and Analyze as a tree (`service/query_plan.rs`). These parts are not done yet:
+
+- SQLite has no Analyze. It gives no real times.
+- SQL Server Analyze fails when the result of the query has a type the driver cannot read (`text`,
+  `xml`, ...), like Run does. Cast those columns in the query.
+- MySQL with `explain_json_format_version = 2` writes another JSON form. Then only the Raw tab shows.
+- The share of a step is its own time or cost against the total. Loops, parallel workers and
+  subplans are counted a little differently by each database, so a share is a hint, not exact.
+- SQL Server times are in whole milliseconds, so fast steps show 0 ms.
 
 ## Schema compare: left out for now
 

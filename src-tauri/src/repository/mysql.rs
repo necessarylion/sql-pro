@@ -22,7 +22,8 @@ use crate::constants::{
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser,
-    ForeignKey, IndexInfo, Relation, ResultSet, SslConfig, SslMode, TableKeys, TableRef, UserList,
+    ForeignKey, IndexInfo, PlanFormat, PlanSql, Relation, ResultSet, SslConfig, SslMode, TableKeys,
+    TableRef, UserList,
 };
 
 /// The right that is no right. `MySQL` lists it for an account that has nothing.
@@ -489,6 +490,12 @@ impl MysqlRepository {
 
 /// The catalog SQL of the Structure view. `table_keys` sends all three in one round trip.
 impl MysqlRepository {
+    /// True when the server is `MariaDB`, not `MySQL`.
+    async fn mariadb(&self) -> AppResult<bool> {
+        let version = single(self.query("SELECT VERSION()").await?);
+        Ok(first_column(&version).concat().contains("MariaDB"))
+    }
+
     /// A part of an index on an expression has no column name. It shows as empty text.
     fn indexes_sql(&self, table: &TableRef) -> String {
         format!(
@@ -570,6 +577,33 @@ impl Repository for MysqlRepository {
 
     fn explain_prefix(&self) -> Option<&'static str> {
         Some("EXPLAIN")
+    }
+
+    /// `MySQL` has no JSON form of `EXPLAIN ANALYZE`, only a text tree.
+    /// `MariaDB` has no `EXPLAIN ANALYZE`; its `ANALYZE FORMAT=JSON` runs the statement.
+    async fn plan_sql(&self, statement: &str, analyze: bool) -> AppResult<Option<PlanSql>> {
+        let (sql, format) = if !analyze {
+            (
+                format!("EXPLAIN FORMAT=JSON {statement}"),
+                PlanFormat::MysqlJson,
+            )
+        } else if self.mariadb().await? {
+            (
+                format!("ANALYZE FORMAT=JSON {statement}"),
+                PlanFormat::MysqlJson,
+            )
+        } else {
+            (
+                format!("EXPLAIN ANALYZE {statement}"),
+                PlanFormat::MysqlTree,
+            )
+        };
+        Ok(Some(PlanSql {
+            before: None,
+            sql,
+            after: None,
+            format,
+        }))
     }
 
     fn rename_table_sql(&self, table: &TableRef, new_name: &str) -> String {
@@ -884,8 +918,7 @@ impl Repository for MysqlRepository {
         let secret = self.text(password).await?;
         let (my_name, my_host) = self.current_account().await?;
         let own = name == my_name && Self::host(host) == my_host;
-        let version = single(self.query("SELECT VERSION()").await?);
-        let sql = if own && first_column(&version).concat().contains("MariaDB") {
+        let sql = if own && self.mariadb().await? {
             // MariaDB wants the CREATE USER right for ALTER USER, even on your own account.
             // This form needs no right. MySQL 8 does not know it.
             format!("SET PASSWORD = PASSWORD({secret})")

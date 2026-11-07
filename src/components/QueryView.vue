@@ -5,6 +5,7 @@ import {
   CircleAlertIcon,
   CircleCheckIcon,
   DownloadIcon,
+  GaugeIcon,
   HistoryIcon,
   ListTreeIcon,
   PlayIcon,
@@ -12,15 +13,18 @@ import {
   WandSparklesIcon,
   XIcon,
 } from 'lucide-vue-next'
+import { NO_ANALYZE_DRIVERS } from '../constants/plan'
 import { QUERY_HISTORY, SAVED_QUERIES, SHORTCUTS, injectRequired } from '../services/keys'
+import { PlanTree } from '../services/PlanTree'
 import type { Session } from '../services/Session'
 import { SqlEditor } from '../services/SqlEditor'
 import { SqlFormat } from '../services/SqlFormat'
 import { SqlRisk } from '../services/SqlRisk'
-import type { ColumnInfo, GridColumn, ResultSet, Row, TableRef } from '../types'
+import type { ColumnInfo, GridColumn, QueryPlan, ResultSet, Row, TableRef } from '../types'
 import DataGrid from './DataGrid.vue'
 import ExportRowsMenu from './ExportRowsMenu.vue'
 import PaneResizer from './PaneResizer.vue'
+import PlanView from './PlanView.vue'
 import QueryHistoryList from './QueryHistoryList.vue'
 import SavedQueryDialog from './SavedQueryDialog.vue'
 import SavedQueryList from './SavedQueryList.vue'
@@ -42,6 +46,10 @@ const menu = ref<{ x: number; y: number } | null>(null)
 const exportRows = computed(rowsToExport)
 // True when the history panel is open on the right of the result, like the row detail panel.
 const showHistory = ref(false)
+// The tab of a query plan: the tree, or the plain EXPLAIN output in the grid.
+const planTab = ref<'tree' | 'raw'>('tree')
+const canAnalyze = computed(analyzable)
+const planSummary = computed(describePlan)
 // Not a ref: Vue must not wrap the CodeMirror objects.
 let editor: SqlEditor | null = null
 
@@ -59,6 +67,32 @@ function resultColumns(): GridColumn[] {
 
 function sessionResult(): ResultSet | null {
   return props.session.result
+}
+
+function sessionPlan(): QueryPlan | null {
+  return props.session.plan
+}
+
+/** A plan that cannot be read as a tree only has the Raw tab. */
+function showPlanTab(): void {
+  planTab.value = props.session.plan?.nodes.length ? 'tree' : 'raw'
+}
+
+function analyzable(): boolean {
+  const driver = props.session.config?.driver
+  return driver !== undefined && !NO_ANALYZE_DRIVERS.includes(driver)
+}
+
+/** Like "Total 3.47 ms" or "Total cost 502". */
+function describePlan(): string {
+  const plan = props.session.plan
+  if (!plan || plan.total === null) {
+    return ''
+  }
+  if (plan.measure === 'time') {
+    return `Total ${PlanTree.time(plan.total)}`
+  }
+  return `Total cost ${PlanTree.amount(plan.total)}`
 }
 
 function clearSelection(): void {
@@ -92,11 +126,14 @@ function run(): void {
   }
 }
 
-/** Shows the query plan of the selected text, or of everything. Nothing runs. */
-function explain(): void {
+/**
+ * Shows the query plan of the selected text, or of everything. Nothing runs.
+ * With `analyze` a read runs once for real times. The backend refuses anything else.
+ */
+function explain(analyze: boolean): void {
   const sql = pickedSql()
   if (sql.trim()) {
-    props.session.run(props.session.explain(sql))
+    props.session.run(props.session.explain(sql, analyze))
   }
 }
 
@@ -184,6 +221,7 @@ watch(currentSql, showSql)
 watch(schemaSource, updateSchema)
 // Row numbers mean other rows in a new result. Drop the selection.
 watch(sessionResult, clearSelection)
+watch(sessionPlan, showPlanTab)
 </script>
 
 <template>
@@ -220,15 +258,22 @@ watch(sessionResult, clearSelection)
       </button>
       <span class="spacer" />
       <span class="dim">Select text to run only that part.</span>
-      <!-- SQL Server: the driver cannot read a SHOWPLAN result for sure. -->
       <button
-        v-if="session.config?.driver !== 'mssql'"
         title="Show the query plan of one statement. It does not run."
         :disabled="session.busy"
-        @click="explain"
+        @click="explain(false)"
       >
         <ListTreeIcon :size="11" />
         Explain
+      </button>
+      <button
+        v-if="canAnalyze"
+        title="Run one read (SELECT) once and show its plan with real times. Its changes are rolled back."
+        :disabled="session.busy"
+        @click="explain(true)"
+      >
+        <GaugeIcon :size="11" />
+        Analyze
       </button>
       <button
         class="primary"
@@ -241,9 +286,36 @@ watch(sessionResult, clearSelection)
         <span class="hint">{{ shortcuts.hint('↵') }}</span>
       </button>
     </div>
+    <div v-if="session.plan" class="bar plan-bar" role="tablist">
+      <button
+        role="tab"
+        :class="{ active: planTab === 'tree' }"
+        :aria-selected="planTab === 'tree'"
+        :disabled="session.plan.nodes.length === 0"
+        title="The plan as a tree. Red steps take 30% or more of the total, amber ones 10% or more."
+        @click="planTab = 'tree'"
+      >
+        Tree
+      </button>
+      <button
+        role="tab"
+        :class="{ active: planTab === 'raw' }"
+        :aria-selected="planTab === 'raw'"
+        title="The plain EXPLAIN output"
+        @click="planTab = 'raw'"
+      >
+        Raw
+      </button>
+      <span v-if="session.plan.nodes.length === 0" class="dim">
+        This plan cannot be shown as a tree.
+      </span>
+      <span class="spacer" />
+      <span class="dim">{{ planSummary }}</span>
+    </div>
     <div class="body">
+      <PlanView v-if="session.plan && planTab === 'tree'" :plan="session.plan" />
       <DataGrid
-        v-if="session.result"
+        v-else-if="session.result"
         ref="grid"
         v-model:selected="selected"
         :columns="columns"
@@ -424,7 +496,17 @@ watch(sessionResult, clearSelection)
   height: 18px;
 }
 
-/* The History button while the list is open. */
+/* The tabs of a query plan. Lower than the tool bar above it. */
+.plan-bar {
+  height: 28px;
+}
+
+.plan-bar .spacer {
+  flex: 1;
+}
+
+/* The History button while the list is open, and the open plan tab. */
+.plan-bar button.active,
 .tools button.active {
   border-color: var(--accent);
   color: var(--accent-text);

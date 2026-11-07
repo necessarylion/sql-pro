@@ -51,6 +51,8 @@ tauri-plugin-updater = "2"
 fontdb = "0.24"
 # Writes the Excel (.xlsx) files of an export.
 rust_xlsxwriter = "0.102"
+# Reads the showplan XML of SQL Server for the query plan tree.
+roxmltree = "0.20"
 
 # Windows and Linux have no Dock. There the tray icon brings a hidden window back,
 # and a second start of the app shows the window of the first one.
