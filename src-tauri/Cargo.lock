@@ -4056,7 +4056,7 @@ name = "sql-pro"
 version = "0.9.1"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "fontdb",
  "futures-util",
