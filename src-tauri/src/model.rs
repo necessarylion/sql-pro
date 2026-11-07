@@ -672,3 +672,41 @@ pub struct SyncSql {
     /// The run sends it back, so SQL made for one database never runs on another.
     pub database: Option<String>,
 }
+
+/// The kinds of row changes that go into the data sync SQL.
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct DataKinds {
+    pub insert: bool,
+    pub update: bool,
+    pub delete: bool,
+}
+
+/// How the rows of one table differ between two databases, and the SQL that makes the
+/// target rows the same as the source rows.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataDiff {
+    /// The primary key columns. The rows are matched by them.
+    pub key: Vec<String>,
+    /// The columns both sides have. Only these are compared and written.
+    pub columns: Vec<String>,
+    pub source_only: Vec<String>,
+    pub target_only: Vec<String>,
+    /// Columns the database fills itself: generated, identity outside the key, and SQL
+    /// Server `rowversion`. A row write cannot set them, so they are left out.
+    pub generated: Vec<String>,
+    /// True when there are more than `MAX_DATA_DIFFS` differences. Then there is no SQL.
+    pub limited: bool,
+    /// With `limited`: too many rows waited for a match, but few are surely different.
+    /// The two databases likely sort the key in another order (another collation).
+    pub unsorted: bool,
+    /// The rows that change. `inserts` can also hold the statements around the inserts.
+    pub delete_rows: usize,
+    pub update_rows: usize,
+    pub insert_rows: usize,
+    pub deletes: Vec<String>,
+    pub updates: Vec<String>,
+    pub inserts: Vec<String>,
+    /// The database the target tab worked on at the compare. `None` on `SQLite`.
+    pub database: Option<String>,
+}

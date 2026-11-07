@@ -363,6 +363,45 @@ pub trait Repository: Send + Sync {
         self.quote(&column.name)
     }
 
+    /// How data compare reads `column`: the select expression, and true when the value it
+    /// gives is a SQL literal already, to write as it is. NULL stays NULL.
+    /// `cast` is the entry of `column_casts` for the column.
+    fn compare_column(&self, column: &ColumnInfo, _cast: Option<&ColumnCast>) -> (String, bool) {
+        (self.select_column(column), false)
+    }
+
+    /// Per column name of `table`, the system type and collation that `compare_column`,
+    /// `value_literal` and `key_literal` need. Empty when they need none.
+    async fn column_casts(&self, _table: &TableRef) -> AppResult<HashMap<String, ColumnCast>> {
+        Ok(HashMap::new())
+    }
+
+    /// A key value as SQL that compares the way its column sorts in `ORDER BY`.
+    /// `cast` is the entry of `column_casts` for the column.
+    fn key_literal(&self, _cast: Option<&ColumnCast>, value: &str) -> String {
+        self.literal(value)
+    }
+
+    /// Why data compare cannot match rows by this key column. `None` when it can.
+    fn key_problem(
+        &self,
+        _column: &ColumnInfo,
+        _cast: Option<&ColumnCast>,
+    ) -> Option<&'static str> {
+        None
+    }
+
+    /// A value as SQL for a column, in `INSERT` and `UPDATE`. `cast` is the entry of
+    /// `column_casts` for the column.
+    fn value_literal(&self, _cast: Option<&ColumnCast>, value: &str) -> String {
+        self.literal(value)
+    }
+
+    /// True for a column that only the database writes, so a row write cannot set it.
+    fn database_written(&self, _column: &ColumnInfo) -> bool {
+        false
+    }
+
     /// The end of a SELECT that reads one page of rows.
     /// `ordering` is empty or ` ORDER BY ...`.
     fn page_sql(&self, ordering: &str, limit: usize, offset: u64) -> String {
@@ -388,6 +427,18 @@ pub trait Repository: Send + Sync {
         None
     }
 
+    /// The words between the column list and `VALUES` of an `INSERT` that sets an
+    /// identity column by hand. Empty when the database needs none.
+    fn identity_override(&self) -> &'static str {
+        ""
+    }
+
+    /// The statement that lets `INSERT`s set the identity column of `table` by hand
+    /// (`on`), or stops that again. `None` when the database needs none.
+    fn identity_insert_sql(&self, _table: &TableRef, _on: bool) -> Option<String> {
+        None
+    }
+
     /// The words that make a primary key column number its rows itself.
     /// They go right after `PRIMARY KEY` in a `CREATE TABLE`.
     fn auto_increment(&self) -> &'static str;
@@ -399,6 +450,15 @@ pub trait Repository: Send + Sync {
             None => self.quote(&table.name),
         }
     }
+}
+
+/// The system type and the collation of a column, from `Repository::column_casts`.
+#[derive(Clone, Debug)]
+pub struct ColumnCast {
+    /// The system type with its length, like `varchar(10)`. An alias type gives its base.
+    pub data_type: String,
+    /// The collation of a text column.
+    pub collation: Option<String>,
 }
 
 /// One statement of a batch, with its bound values.

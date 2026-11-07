@@ -2,6 +2,7 @@
 
 mod attachment;
 mod claude;
+mod data_compare;
 mod export;
 mod import;
 mod notes;

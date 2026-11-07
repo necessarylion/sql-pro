@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::{
-    Repository, ServerId, Statement, bytes_to_text, cell, collect, default_sql, definition,
-    execute, execute_all, first_column, foreign_keys, indexes, keyword, kind, objects,
+    ColumnCast, Repository, ServerId, Statement, bytes_to_text, cell, collect, default_sql,
+    definition, execute, execute_all, first_column, foreign_keys, indexes, keyword, kind, objects,
     password_safe, pool_options, relations, run_on_new_connection, run_script, single, swap_create,
 };
 use crate::constants::{
@@ -550,6 +550,22 @@ impl Repository for MysqlRepository {
 
     fn default_values(&self) -> &'static str {
         "() VALUES ()"
+    }
+
+    /// A binary value is read as hex and written as `X'…'`. As text, bytes that are not
+    /// UTF-8 would come back as the text `0x…` and be written as those letters.
+    fn compare_column(&self, column: &ColumnInfo, _cast: Option<&ColumnCast>) -> (String, bool) {
+        let name = self.quote(&column.name);
+        let kind = column.data_type.to_ascii_lowercase();
+        if kind.starts_with("binary") || kind.starts_with("varbinary") || kind.ends_with("blob") {
+            // No `AS` name, so `ORDER BY` still sorts by the bytes, not the hex text.
+            (format!("CONCAT('X''', HEX({name}), '''')"), true)
+        } else if kind.starts_with("bit") {
+            // A `bit` value is bytes too. `+ 0` gives its number, which a `bit` takes back.
+            (format!("{name} + 0"), true)
+        } else {
+            (name, false)
+        }
     }
 
     fn explain_prefix(&self) -> Option<&'static str> {

@@ -9,8 +9,8 @@
 
 use sql_pro_lib::model::DbObject;
 use sql_pro_lib::model::{
-    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, CsvColumn, CsvImport, DbUser,
-    Diagram, Driver, ExportFormat, ExportRequest, FilterOperator, FilterRule, ForeignKey,
+    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, CsvColumn, CsvImport, DataKinds,
+    DbUser, Diagram, Driver, ExportFormat, ExportRequest, FilterOperator, FilterRule, ForeignKey,
     IndexInfo, NewColumn, NewForeignKey, NewIndex, NewUser, ReferentialAction, Relation, RowUpdate,
     RowsExport, RowsSql, SaveResult, SshConfig, TableRef, Values,
 };
@@ -2276,9 +2276,10 @@ async fn processes(service: &ConnectionService, config: &ConnectionConfig) {
         .kill_process(ID, other, false)
         .await
         .expect("kill the second tab");
-    // PostgreSQL ends the process a moment after the signal.
+    // PostgreSQL ends the process a moment after the signal. SQL Server can be slow
+    // while the other tests run.
     let mut ended = false;
-    for _ in 0..30 {
+    for _ in 0..100 {
         let listed = service.list_processes(ID).await.expect("list processes");
         if listed.iter().all(|process| process.id != other) {
             ended = true;
@@ -2863,20 +2864,23 @@ async fn sqlite_schema_sync() {
     }
 }
 
-/// Schema compare on a server: the source and the target are two new databases, so the
-/// other tests that run at the same time do not get in the way.
-async fn server_schema_sync(config: ConnectionConfig) {
-    const MAIN: &str = "sync-main";
-    const DATABASES: [&str; 2] = ["sqlpro_sync_source", "sqlpro_sync_target"];
+/// Opens tab `main` on the server and two tabs `ids` on two new databases, so the other
+/// tests that run at the same time do not get in the way.
+async fn server_pair(
+    config: &ConnectionConfig,
+    main: &str,
+    ids: [&str; 2],
+    databases: [&str; 2],
+) -> ConnectionService {
     let service = ConnectionService::new(RepositoryFactory);
     service
-        .connect(MAIN.to_owned(), config.clone())
+        .connect(main.to_owned(), config.clone())
         .await
         .expect("connect");
-    for (id, database) in [SYNC_SOURCE, SYNC_TARGET].iter().zip(DATABASES) {
+    for (id, database) in ids.iter().zip(databases) {
         // A leftover of an earlier failed run is removed first.
-        let _ = service.drop_database(MAIN, database).await;
-        let created = service.create_database(MAIN, database, "", "").await;
+        let _ = service.drop_database(main, database).await;
+        let created = service.create_database(main, database, "", "").await;
         created.expect("create database");
         let mut tab = config.clone();
         database.clone_into(&mut tab.database);
@@ -2885,6 +2889,28 @@ async fn server_schema_sync(config: ConnectionConfig) {
             .await
             .expect("connect");
     }
+    service
+}
+
+/// Closes the tabs of `server_pair` and drops its two databases.
+async fn drop_pair(service: &ConnectionService, main: &str, ids: [&str; 2], databases: [&str; 2]) {
+    for id in ids {
+        service.disconnect(id).await;
+    }
+    for database in databases {
+        service
+            .drop_database(main, database)
+            .await
+            .expect("drop database");
+    }
+    service.disconnect(main).await;
+}
+
+/// Schema compare on a server: the source and the target are two new databases.
+async fn server_schema_sync(config: ConnectionConfig) {
+    const MAIN: &str = "sync-main";
+    const DATABASES: [&str; 2] = ["sqlpro_sync_source", "sqlpro_sync_target"];
+    let service = server_pair(&config, MAIN, [SYNC_SOURCE, SYNC_TARGET], DATABASES).await;
 
     // Two kinds of database cannot be compared.
     let path = temp_path("sync-other", "sqlite");
@@ -2914,16 +2940,7 @@ async fn server_schema_sync(config: ConnectionConfig) {
     std::fs::remove_file(&path).ok();
 
     schema_sync(&service, config.driver).await;
-    for id in [SYNC_SOURCE, SYNC_TARGET] {
-        service.disconnect(id).await;
-    }
-    for database in DATABASES {
-        service
-            .drop_database(MAIN, database)
-            .await
-            .expect("drop database");
-    }
-    service.disconnect(MAIN).await;
+    drop_pair(&service, MAIN, [SYNC_SOURCE, SYNC_TARGET], DATABASES).await;
 }
 
 #[tokio::test]
@@ -2953,5 +2970,630 @@ async fn mssql_schema_sync() {
     if let Some(mut config) = config_from_env("SQLPRO_TEST_MSSQL", Driver::Mssql) {
         "master".clone_into(&mut config.database);
         server_schema_sync(config).await;
+    }
+}
+
+/// The two tabs of the data compare test.
+const DATA_SOURCE: &str = "data-source";
+const DATA_TARGET: &str = "data-target";
+
+/// The table `name` of tab `id`, with the schema the database gives it.
+async fn find_table(service: &ConnectionService, id: &str, name: &str) -> TableRef {
+    let tables = service.tables(id).await.expect("tables");
+    tables
+        .into_iter()
+        .find(|table| table.name == name)
+        .expect("table is there")
+}
+
+/// Rows `ids` of `table` as one `INSERT` each 500 rows. SQL Server takes at most 1000.
+fn bulk_rows(table: &str, ids: std::ops::Range<u32>, changed: u32) -> Vec<String> {
+    let mut statements = Vec::new();
+    let all: Vec<u32> = ids.collect();
+    for chunk in all.chunks(500) {
+        let mut rows = Vec::new();
+        for id in chunk {
+            let name = if *id == changed { "changed" } else { "same" };
+            rows.push(format!("({id}, '{name}', NULL)"));
+        }
+        statements.push(format!(
+            "INSERT INTO {table} (id, name, note) VALUES {}",
+            rows.join(", ")
+        ));
+    }
+    statements
+}
+
+/// Makes the target rows like the source rows with data compare. Then a compare finds
+/// no difference. The rows cross the page edge, a key has two columns, and an identity
+/// column gets the value of the source.
+#[allow(clippy::too_many_lines, reason = "one end-to-end flow")]
+async fn data_sync(service: &ConnectionService, driver: Driver) {
+    let sqlite = driver == Driver::Sqlite;
+    let identity = match driver {
+        Driver::Postgres => "INTEGER GENERATED ALWAYS AS IDENTITY",
+        Driver::Mssql => "INTEGER IDENTITY(1,1)",
+        Driver::Mysql => "INTEGER AUTO_INCREMENT",
+        Driver::Sqlite => "INTEGER",
+    };
+    let auto = format!("CREATE TABLE data_auto (id {identity} PRIMARY KEY, name VARCHAR(10))");
+    for (id, extra) in [(DATA_SOURCE, "only_source"), (DATA_TARGET, "only_target")] {
+        let item = format!(
+            "CREATE TABLE data_item (id INTEGER PRIMARY KEY, name VARCHAR(40), \
+                note VARCHAR(40), {extra} INTEGER)"
+        );
+        run_all(
+            service,
+            id,
+            &[
+                &item,
+                "CREATE TABLE data_pair (a INTEGER NOT NULL, b VARCHAR(10) NOT NULL, \
+                    v VARCHAR(10), PRIMARY KEY (a, b))",
+                "CREATE TABLE data_loose (x INTEGER)",
+                &auto,
+            ],
+        )
+        .await;
+    }
+    let mut source = vec![
+        "INSERT INTO data_item (id, name, note) VALUES (1, 'a', NULL), (2, 'b', ''), \
+            (3, 'it''s', 'x'), (4, 'new', NULL)"
+            .to_owned(),
+        "INSERT INTO data_pair (a, b, v) VALUES (1, 'x', 'one'), (1, 'y', 'two')".to_owned(),
+        "INSERT INTO data_auto (name) VALUES ('a')".to_owned(),
+        "INSERT INTO data_auto (name) VALUES ('b')".to_owned(),
+    ];
+    source.extend(bulk_rows("data_item", 1000..3100, 0));
+    let mut target = vec![
+        "INSERT INTO data_item (id, name, note) VALUES (1, 'a', NULL), (2, 'b', NULL), \
+            (3, 'old', 'x'), (5, 'gone', NULL)"
+            .to_owned(),
+        "INSERT INTO data_pair (a, b, v) VALUES (1, 'x', 'ONE'), (2, 'y', 'two')".to_owned(),
+        "INSERT INTO data_auto (name) VALUES ('a')".to_owned(),
+    ];
+    // One changed row on the second page.
+    target.extend(bulk_rows("data_item", 1000..3100, 2999));
+    let source: Vec<&str> = source.iter().map(String::as_str).collect();
+    let target: Vec<&str> = target.iter().map(String::as_str).collect();
+    run_all(service, DATA_SOURCE, &source).await;
+    run_all(service, DATA_TARGET, &target).await;
+
+    // A table without a primary key cannot be compared.
+    let loose = find_table(service, DATA_SOURCE, "data_loose").await;
+    let refused = service.compare_data(DATA_SOURCE, DATA_TARGET, &loose).await;
+    assert!(
+        refused
+            .expect_err("no key")
+            .to_string()
+            .contains("no primary key")
+    );
+
+    let all = DataKinds {
+        insert: true,
+        update: true,
+        delete: true,
+    };
+    let item = find_table(service, DATA_SOURCE, "data_item").await;
+    let diff = service
+        .compare_data(DATA_SOURCE, DATA_TARGET, &item)
+        .await
+        .expect("compare");
+    assert_eq!(diff.key, ["id"]);
+    assert_eq!(diff.columns, ["id", "name", "note"]);
+    assert_eq!(diff.source_only, ["only_source"]);
+    assert_eq!(diff.target_only, ["only_target"]);
+    assert!(!diff.limited);
+    assert_eq!(
+        (diff.delete_rows, diff.update_rows, diff.insert_rows),
+        (1, 3, 1)
+    );
+    if sqlite {
+        assert_eq!(diff.deletes, [r#"DELETE FROM "data_item" WHERE "id" = 5"#]);
+        assert_eq!(
+            diff.updates,
+            [
+                r#"UPDATE "data_item" SET "note" = '' WHERE "id" = 2"#,
+                r#"UPDATE "data_item" SET "name" = 'it''s' WHERE "id" = 3"#,
+                r#"UPDATE "data_item" SET "name" = 'same' WHERE "id" = 2999"#,
+            ]
+        );
+        assert_eq!(
+            diff.inserts,
+            [r#"INSERT INTO "data_item" ("id", "name", "note") VALUES (4, 'new', NULL)"#]
+        );
+    }
+
+    // SQL that is not what the backend builds now never runs.
+    let other = ["DELETE FROM data_item".to_owned()];
+    let refused = service
+        .run_data_sync(
+            DATA_SOURCE,
+            DATA_TARGET,
+            &item,
+            all,
+            &other,
+            diff.database.as_deref(),
+        )
+        .await;
+    assert_eq!(
+        refused.expect_err("other sql").to_string(),
+        sql_pro_lib::constants::SYNC_SQL_CHANGED
+    );
+
+    // Round one: only the updates.
+    let updates = DataKinds {
+        insert: false,
+        delete: false,
+        ..all
+    };
+    service
+        .run_data_sync(
+            DATA_SOURCE,
+            DATA_TARGET,
+            &item,
+            updates,
+            &diff.updates,
+            diff.database.as_deref(),
+        )
+        .await
+        .expect("run updates");
+    let diff = service
+        .compare_data(DATA_SOURCE, DATA_TARGET, &item)
+        .await
+        .expect("compare");
+    assert_eq!(
+        (diff.delete_rows, diff.update_rows, diff.insert_rows),
+        (1, 0, 1)
+    );
+
+    // Round two: the rest, for every table.
+    for name in ["data_item", "data_pair", "data_auto"] {
+        sync_table(service, name).await;
+    }
+    data_types(service, driver).await;
+}
+
+/// Compares table `name`, runs all of its SQL, and checks that a new compare finds
+/// nothing. Gives the first compare.
+async fn sync_table(service: &ConnectionService, name: &str) -> sql_pro_lib::model::DataDiff {
+    let all = DataKinds {
+        insert: true,
+        update: true,
+        delete: true,
+    };
+    let table = find_table(service, DATA_SOURCE, name).await;
+    let diff = service
+        .compare_data(DATA_SOURCE, DATA_TARGET, &table)
+        .await
+        .expect("compare");
+    let mut reviewed = diff.deletes.clone();
+    reviewed.extend(diff.updates.clone());
+    reviewed.extend(diff.inserts.clone());
+    assert_ne!(reviewed.len(), 0, "{name}");
+    service
+        .run_data_sync(
+            DATA_SOURCE,
+            DATA_TARGET,
+            &table,
+            all,
+            &reviewed,
+            diff.database.as_deref(),
+        )
+        .await
+        .expect(name);
+    let left = service
+        .compare_data(DATA_SOURCE, DATA_TARGET, &table)
+        .await
+        .expect("compare");
+    assert_eq!(
+        (left.delete_rows, left.update_rows, left.insert_rows),
+        (0, 0, 0),
+        "{name}"
+    );
+    diff
+}
+
+/// The first cell of the first row of `sql` on the target tab.
+async fn target_cell(service: &ConnectionService, sql: &str) -> Option<String> {
+    let sets = service.run_query(DATA_TARGET, sql).await.expect(sql);
+    sets.into_iter()
+        .next()?
+        .rows
+        .into_iter()
+        .next()?
+        .into_iter()
+        .next()?
+}
+
+/// Makes table `make` on both tabs and fills it with `source` and `target`.
+async fn data_table(service: &ConnectionService, make: &str, source: &str, target: &str) {
+    run_all(service, DATA_SOURCE, &[make, source]).await;
+    run_all(service, DATA_TARGET, &[make, target]).await;
+}
+
+/// A `varchar` key sorts with the SQL collation of the server. The page after a key must
+/// use the same order, or rows are skipped and look like rows to delete.
+async fn mssql_varchar_keys(service: &ConnectionService) {
+    let mut keys: Vec<String> = (1..2000).map(|id| format!("a{id:04}")).collect();
+    // The source has exactly one full page up to `b-z`. An `nvarchar` compare puts `b-z`
+    // after `ba` and `bb`, so a page after `b-z` would miss them.
+    for key in ["b-z", "ba", "bb"] {
+        keys.push(key.to_owned());
+    }
+    let make = "CREATE TABLE data_text (k VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS PRIMARY KEY, v INTEGER)";
+    for (id, extra) in [(DATA_SOURCE, ""), (DATA_TARGET, "a0000")] {
+        let mut all = keys.clone();
+        if !extra.is_empty() {
+            all.push(extra.to_owned());
+        }
+        let mut statements = vec![make.to_owned()];
+        for chunk in all.chunks(500) {
+            let rows: Vec<String> = chunk.iter().map(|key| format!("('{key}', 1)")).collect();
+            statements.push(format!("INSERT INTO data_text VALUES {}", rows.join(", ")));
+        }
+        let statements: Vec<&str> = statements.iter().map(String::as_str).collect();
+        run_all(service, id, &statements).await;
+    }
+    let diff = sync_table(service, "data_text").await;
+    assert_eq!(
+        diff.deletes,
+        ["DELETE FROM [dbo].[data_text] WHERE [k] = \
+            CAST(N'a0000' COLLATE SQL_Latin1_General_CP1_CI_AS AS varchar(10))"]
+    );
+    assert_eq!((diff.update_rows, diff.insert_rows), (0, 0));
+}
+
+/// SQL Server keys that a plain cast breaks: a `varchar` with another code page than
+/// the database, an alias type, and a `datetime` in a session with a day-month language.
+async fn mssql_key_types(service: &ConnectionService) {
+    data_table(
+        service,
+        "CREATE TABLE data_cn (k VARCHAR(10) COLLATE Chinese_PRC_CI_AS PRIMARY KEY, v INTEGER)",
+        "INSERT INTO data_cn VALUES (N'中文', 1), (N'乙', 2)",
+        "INSERT INTO data_cn VALUES (N'中文', 9), (N'甲', 1)",
+    )
+    .await;
+    let diff = sync_table(service, "data_cn").await;
+    assert_eq!(
+        (diff.delete_rows, diff.update_rows, diff.insert_rows),
+        (1, 1, 1)
+    );
+    let text = target_cell(
+        service,
+        "SELECT STRING_AGG(CONCAT(CAST(k AS NVARCHAR(10)), ':', v), ',') WITHIN GROUP (ORDER BY v) \
+            FROM data_cn",
+    )
+    .await;
+    assert_eq!(text.as_deref(), Some("中文:1,乙:2"));
+
+    for id in [DATA_SOURCE, DATA_TARGET] {
+        run_all(service, id, &["CREATE TYPE dbo.CodeT FROM VARCHAR(20)"]).await;
+    }
+    data_table(
+        service,
+        "CREATE TABLE data_alias (k dbo.CodeT PRIMARY KEY, v INTEGER)",
+        "INSERT INTO data_alias VALUES ('a', 1)",
+        "INSERT INTO data_alias VALUES ('a', 2), ('b', 1)",
+    )
+    .await;
+    // The alias type is cast to its base type. `CodeT` is no system type.
+    let diff = sync_table(service, "data_alias").await;
+    assert_eq!(diff.deletes.len(), 1);
+    assert!(
+        diff.deletes[0].ends_with(" AS varchar(20))"),
+        "{}",
+        diff.deletes[0]
+    );
+
+    data_table(
+        service,
+        "CREATE TABLE data_time (k DATETIME PRIMARY KEY, v INTEGER)",
+        "INSERT INTO data_time VALUES ('2024-01-13T10:00:00.007', 1)",
+        "INSERT INTO data_time VALUES ('2024-01-13T10:00:00.007', 2), ('2024-01-14T10:00:00', 1)",
+    )
+    .await;
+    // `British` reads `2024-01-13` as year, day, month: day 2024-01, month 13 fails.
+    run_all(service, DATA_TARGET, &["SET LANGUAGE British"]).await;
+    sync_table(service, "data_time").await;
+
+    // Values too: British reads `2024-01-05` as the 1st of May, with no error.
+    data_table(
+        service,
+        "CREATE TABLE data_when (id INTEGER PRIMARY KEY, at DATETIME, s SMALLDATETIME)",
+        "INSERT INTO data_when VALUES (1, '2024-01-05T10:00:00', '2024-02-03T08:00:00'), \
+            (2, '2024-03-04T00:00:00.007', NULL)",
+        "INSERT INTO data_when VALUES (1, '2024-12-31T00:00:00', NULL)",
+    )
+    .await;
+    sync_table(service, "data_when").await;
+    let stored = target_cell(
+        service,
+        "SELECT STRING_AGG(CONCAT(id, '|', CONVERT(VARCHAR(23), at, 121), '|', \
+            ISNULL(CONVERT(VARCHAR(16), s, 121), 'null')), ',') WITHIN GROUP (ORDER BY id) \
+            FROM data_when",
+    )
+    .await;
+    assert_eq!(
+        stored.as_deref(),
+        Some("1|2024-01-05 10:00:00.000|2024-02-03 08:00,2|2024-03-04 00:00:00.007|null")
+    );
+    run_all(service, DATA_TARGET, &["SET LANGUAGE us_english"]).await;
+
+    // An alias type over `varchar` is read as text of its code page: `€` and curly quotes.
+    for id in [DATA_SOURCE, DATA_TARGET] {
+        run_all(service, id, &["CREATE TYPE dbo.NameT FROM VARCHAR(20)"]).await;
+    }
+    data_table(
+        service,
+        "CREATE TABLE data_name (k dbo.NameT PRIMARY KEY, v dbo.NameT)",
+        "INSERT INTO data_name VALUES (N'€ key', N'price 5 €'), (N'“q”', N'‘x’')",
+        "INSERT INTO data_name VALUES (N'€ key', N'old'), (N'gone €', N'x')",
+    )
+    .await;
+    let diff = sync_table(service, "data_name").await;
+    assert_eq!(
+        (diff.delete_rows, diff.update_rows, diff.insert_rows),
+        (1, 1, 1)
+    );
+    let names = target_cell(
+        service,
+        "SELECT STRING_AGG(CONCAT(CAST(k AS NVARCHAR(20)), '=', CAST(v AS NVARCHAR(20))), ',') \
+            WITHIN GROUP (ORDER BY v) FROM data_name",
+    )
+    .await;
+    assert_eq!(names.as_deref(), Some("“q”=‘x’,€ key=price 5 €"));
+}
+
+/// A `hierarchyid` key over more than one page. Its text order (`/1/`, `/10/`, ...) is
+/// not its real order, so the read must sort by the column, not by the text.
+async fn mssql_tree_pages(service: &ConnectionService) {
+    let make = "CREATE TABLE data_pages (h HIERARCHYID PRIMARY KEY, v INT)";
+    for (id, changed) in [(DATA_SOURCE, 0), (DATA_TARGET, 2001)] {
+        let mut statements = vec![make.to_owned()];
+        let ids: Vec<u32> = (1..=2001).collect();
+        for chunk in ids.chunks(500) {
+            let rows: Vec<String> = chunk
+                .iter()
+                .map(|key| {
+                    format!(
+                        "('/{key}/', {})",
+                        u8::from(*key == changed || *key == 5 && changed > 0)
+                    )
+                })
+                .collect();
+            statements.push(format!("INSERT INTO data_pages VALUES {}", rows.join(", ")));
+        }
+        let statements: Vec<&str> = statements.iter().map(String::as_str).collect();
+        run_all(service, id, &statements).await;
+    }
+    let diff = sync_table(service, "data_pages").await;
+    assert_eq!(
+        (diff.delete_rows, diff.update_rows, diff.insert_rows),
+        (0, 2, 0)
+    );
+
+    // A sql_variant key cannot be matched.
+    data_table(
+        service,
+        "CREATE TABLE data_variant (s SQL_VARIANT PRIMARY KEY, v INT)",
+        "INSERT INTO data_variant VALUES (5, 1)",
+        "SELECT 1",
+    )
+    .await;
+    let table = find_table(service, DATA_SOURCE, "data_variant").await;
+    let refused = service.compare_data(DATA_SOURCE, DATA_TARGET, &table).await;
+    assert!(
+        refused
+            .expect_err("sql_variant key")
+            .to_string()
+            .contains("sql_variant")
+    );
+}
+
+/// CLR types, `xml` and `sql_variant` are read as text and written back as text.
+/// A `hierarchyid` key is cast to its own type.
+async fn mssql_clr_types(service: &ConnectionService) {
+    data_table(
+        service,
+        "CREATE TABLE data_clr (id INT PRIMARY KEY, g GEOGRAPHY, h HIERARCHYID, x XML, \
+            s SQL_VARIANT)",
+        "INSERT INTO data_clr VALUES (1, geography::Point(1, 2, 4326), '/1/', '<a>1</a>', 5)",
+        "INSERT INTO data_clr VALUES (1, geography::Point(3, 4, 4326), '/2/', '<a>2</a>', 5)",
+    )
+    .await;
+    let diff = sync_table(service, "data_clr").await;
+    assert_eq!(diff.updates.len(), 1);
+    for column in ["[g]", "[h]", "[x]"] {
+        assert!(diff.updates[0].contains(column), "{}", diff.updates[0]);
+    }
+    let values = target_cell(
+        service,
+        "SELECT CONCAT(g.ToString(), '|', h.ToString(), '|', CAST(x AS NVARCHAR(20))) FROM data_clr",
+    )
+    .await;
+    assert_eq!(values.as_deref(), Some("POINT (2 1)|/1/|<a>1</a>"));
+    data_table(
+        service,
+        "CREATE TABLE data_tree (h HIERARCHYID PRIMARY KEY, v INT)",
+        "INSERT INTO data_tree VALUES ('/1/', 1)",
+        "INSERT INTO data_tree VALUES ('/1/', 2), ('/2/', 1)",
+    )
+    .await;
+    let diff = sync_table(service, "data_tree").await;
+    assert_eq!(
+        diff.deletes,
+        ["DELETE FROM [dbo].[data_tree] WHERE [h] = CAST(N'/2/' AS hierarchyid)"]
+    );
+}
+
+/// Values that only some databases have trouble with: binary bytes that are not UTF-8,
+/// columns the database fills itself, columns with no type (`SQLite`), and NULL keys.
+async fn data_types(service: &ConnectionService, driver: Driver) {
+    let (bytes, wanted) = match driver {
+        Driver::Sqlite => {
+            // No declared type: a quoted '1' would never match the number 1.
+            data_table(
+                service,
+                "CREATE TABLE data_bin (id PRIMARY KEY, v)",
+                "INSERT INTO data_bin VALUES (1, 10), (2, 'two'), (3, X'FF00'), (5, NULL)",
+                "INSERT INTO data_bin VALUES (1, 11), (4, 5), (5, '')",
+            )
+            .await;
+            let diff = sync_table(service, "data_bin").await;
+            assert_eq!(
+                (diff.delete_rows, diff.update_rows, diff.insert_rows),
+                (1, 2, 2)
+            );
+            // A text key may be NULL in SQLite. Such a row cannot be matched.
+            data_table(
+                service,
+                "CREATE TABLE data_nk (id TEXT PRIMARY KEY, v INTEGER)",
+                "INSERT INTO data_nk VALUES (NULL, 1)",
+                "SELECT 1",
+            )
+            .await;
+            let table = find_table(service, DATA_SOURCE, "data_nk").await;
+            let refused = service.compare_data(DATA_SOURCE, DATA_TARGET, &table).await;
+            assert!(
+                refused
+                    .expect_err("null key")
+                    .to_string()
+                    .contains("NULL in its primary key")
+            );
+            (
+                "SELECT group_concat(id || ':' || typeof(id) || ':' || typeof(v) || ':' || \
+                    coalesce(hex(v), 'null'), ',') FROM (SELECT * FROM data_bin ORDER BY id)",
+                "1:integer:integer:3130,2:integer:text:74776F,3:integer:blob:FF00,\
+                    5:integer:null:",
+            )
+        }
+        Driver::Mysql => {
+            data_table(
+                service,
+                "CREATE TABLE data_bin (id INTEGER PRIMARY KEY, b VARBINARY(10), l BLOB, \
+                    bits BIT(8))",
+                "INSERT INTO data_bin VALUES (1, 0xFF00, 0x00FE, b'11001000'), \
+                    (2, X'', 'text', b'1'), (3, NULL, NULL, NULL)",
+                "INSERT INTO data_bin VALUES (1, 0xFF01, NULL, b'0')",
+            )
+            .await;
+            sync_table(service, "data_bin").await;
+            (
+                "SELECT GROUP_CONCAT(CONCAT(id, ':', IFNULL(HEX(b), 'null'), ':', \
+                    IFNULL(HEX(l), 'null'), ':', IFNULL(bits + 0, 'null')) ORDER BY id) \
+                    FROM data_bin",
+                "1:FF00:00FE:200,2::74657874:1,3:null:null:null",
+            )
+        }
+        Driver::Mssql => {
+            data_table(
+                service,
+                "CREATE TABLE data_bin (id INTEGER PRIMARY KEY, b VARBINARY(10), \
+                    rv ROWVERSION, n INTEGER IDENTITY(1,1), name VARCHAR(10))",
+                "INSERT INTO data_bin (id, b, name) VALUES (1, 0xFF00, 'a'), (2, 0x, 'b'), \
+                    (3, NULL, 'c')",
+                "INSERT INTO data_bin (id, b, name) VALUES (9, NULL, 'x'), (1, 0xFF01, 'z')",
+            )
+            .await;
+            let diff = sync_table(service, "data_bin").await;
+            assert_eq!(diff.generated, ["rv", "n"]);
+            mssql_varchar_keys(service).await;
+            mssql_key_types(service).await;
+            mssql_clr_types(service).await;
+            mssql_tree_pages(service).await;
+            (
+                "SELECT STRING_AGG(CONCAT(id, ':', ISNULL(CONVERT(VARCHAR(30), b, 1), 'null'), \
+                    ':', name), ',') WITHIN GROUP (ORDER BY id) FROM data_bin",
+                "1:0xFF00:a,2:0x:b,3:null:c",
+            )
+        }
+        Driver::Postgres => {
+            data_table(
+                service,
+                "CREATE TABLE data_bin (id INTEGER PRIMARY KEY, b BYTEA, \
+                    n INTEGER GENERATED ALWAYS AS IDENTITY, name VARCHAR(10))",
+                "INSERT INTO data_bin (id, b, name) VALUES (1, '\\xff00', 'a'), (2, NULL, 'b')",
+                "INSERT INTO data_bin (id, b, name) VALUES (9, NULL, 'x'), (1, '\\xff01', 'z')",
+            )
+            .await;
+            let diff = sync_table(service, "data_bin").await;
+            assert_eq!(diff.generated, ["n"]);
+            (
+                "SELECT string_agg(id || ':' || coalesce(encode(b, 'hex'), 'null') || ':' || \
+                    name, ',' ORDER BY id) FROM data_bin",
+                "1:ff00:a,2:null:b",
+            )
+        }
+    };
+    assert_eq!(target_cell(service, bytes).await.as_deref(), Some(wanted));
+}
+
+#[tokio::test]
+async fn sqlite_data_sync() {
+    let service = ConnectionService::new(RepositoryFactory);
+    let mut paths = Vec::new();
+    for id in [DATA_SOURCE, DATA_TARGET] {
+        let path = temp_path(id, "sqlite");
+        std::fs::File::create(&path).expect("temp file");
+        let config = ConnectionConfig {
+            driver: Driver::Sqlite,
+            host: String::new(),
+            port: 0,
+            user: String::new(),
+            password: String::new(),
+            database: path.to_string_lossy().into_owned(),
+            ssh: None,
+            ssl: sql_pro_lib::model::SslConfig::default(),
+        };
+        service
+            .connect(id.to_owned(), config)
+            .await
+            .expect("connect");
+        paths.push(path);
+    }
+    data_sync(&service, Driver::Sqlite).await;
+    for (id, path) in [DATA_SOURCE, DATA_TARGET].iter().zip(&paths) {
+        service.disconnect(id).await;
+        std::fs::remove_file(path).expect("remove temp file");
+    }
+}
+
+/// Data compare on a server, on two new databases.
+async fn server_data_sync(config: ConnectionConfig) {
+    const MAIN: &str = "data-main";
+    const DATABASES: [&str; 2] = ["sqlpro_data_source", "sqlpro_data_target"];
+    let ids = [DATA_SOURCE, DATA_TARGET];
+    let service = server_pair(&config, MAIN, ids, DATABASES).await;
+    data_sync(&service, config.driver).await;
+    drop_pair(&service, MAIN, ids, DATABASES).await;
+}
+
+#[tokio::test]
+async fn mysql_data_sync() {
+    if let Some(config) = config_from_env("SQLPRO_TEST_MYSQL", Driver::Mysql) {
+        server_data_sync(config).await;
+    }
+}
+
+#[tokio::test]
+async fn mariadb_data_sync() {
+    if let Some(config) = config_from_env("SQLPRO_TEST_MARIADB", Driver::Mysql) {
+        server_data_sync(config).await;
+    }
+}
+
+#[tokio::test]
+async fn postgres_data_sync() {
+    if let Some(config) = config_from_env("SQLPRO_TEST_POSTGRES", Driver::Postgres) {
+        server_data_sync(config).await;
+    }
+}
+
+#[tokio::test]
+async fn mssql_data_sync() {
+    // The test database may not be there yet. `master` always is.
+    if let Some(mut config) = config_from_env("SQLPRO_TEST_MSSQL", Driver::Mssql) {
+        "master".clone_into(&mut config.database);
+        server_data_sync(config).await;
     }
 }

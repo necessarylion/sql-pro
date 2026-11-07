@@ -1,5 +1,6 @@
 //! Microsoft SQL Server access, through our fork of the `sqlx-sqlserver` driver.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,9 +16,9 @@ use sqlx_sqlserver::{
 };
 
 use super::{
-    Repository, ServerId, Statement, cell, collect, definition, execute, execute_all, first_column,
-    foreign_keys, hex, indexes, kind, objects, pool_options, relations, run_on_new_connection,
-    run_script, single, standard_columns, swap_create,
+    ColumnCast, Repository, ServerId, Statement, cell, collect, definition, execute, execute_all,
+    first_column, foreign_keys, hex, indexes, kind, objects, pool_options, relations,
+    run_on_new_connection, run_script, single, standard_columns, swap_create,
 };
 use crate::constants::{MSSQL_NO_QUERY_STATS, QUERY_CANCELLED, QUERY_STATS_LIMIT};
 use crate::error::{AppError, AppResult};
@@ -391,6 +392,14 @@ impl MssqlRepository {
         Ok(text)
     }
 
+    /// True for the types that read a text by the language of the session.
+    fn is_datetime(data_type: &str) -> bool {
+        matches!(
+            Self::base_type(data_type).as_str(),
+            "datetime" | "smalldatetime"
+        )
+    }
+
     /// The type name without its size, in lower case: `nvarchar(50)` gives `nvarchar`.
     fn base_type(data_type: &str) -> String {
         let end = data_type.find('(').unwrap_or(data_type.len());
@@ -502,6 +511,14 @@ impl Repository for MssqlRepository {
         "IDENTITY(1,1)"
     }
 
+    fn identity_insert_sql(&self, table: &TableRef, on: bool) -> Option<String> {
+        let state = if on { "ON" } else { "OFF" };
+        Some(format!(
+            "SET IDENTITY_INSERT {} {state}",
+            self.table_name(table)
+        ))
+    }
+
     fn drop_index_sql(&self, table: &TableRef, name: &str) -> String {
         format!(
             "DROP INDEX {} ON {}",
@@ -555,6 +572,119 @@ impl Repository for MssqlRepository {
             _ if CLR_TYPES.contains(&base.as_str()) => format!("{name}.ToString() AS {name}"),
             _ => name,
         }
+    }
+
+    /// A binary value comes as `0x…` text, which is a SQL literal as it is.
+    /// A `varchar` is read as `nvarchar`, so letters of any code page come out right
+    /// (`single_byte_text` reads one byte as Latin-1). No `AS` name, so `ORDER BY`
+    /// still sorts by the column.
+    /// It decides on the base type, so an alias type over `varchar` is read right too.
+    fn compare_column(&self, column: &ColumnInfo, cast: Option<&ColumnCast>) -> (String, bool) {
+        let mut column = column.clone();
+        if let Some(cast) = cast.filter(|cast| !cast.data_type.is_empty()) {
+            cast.data_type.clone_into(&mut column.data_type);
+        }
+        let base = Self::base_type(&column.data_type);
+        if base == "varchar" || base == "char" {
+            let name = self.quote(&column.name);
+            return (format!("CAST({name} AS NVARCHAR(MAX))"), false);
+        }
+        let binary = BINARY_TYPES.contains(&base.as_str());
+        // `select_column` names a cast `AS [name]`. Then `ORDER BY [name]` would sort by
+        // the text, not by the column, and the next page would skip rows.
+        let select = self.select_column(&column);
+        let alias = format!(" AS {}", self.quote(&column.name));
+        let read = select.strip_suffix(&alias).unwrap_or(&select).to_owned();
+        (read, binary)
+    }
+
+    /// A `sql_variant` key holds values of many types. A text value never matches an
+    /// `int` one, so `WHERE` would find no row.
+    fn key_problem(&self, column: &ColumnInfo, cast: Option<&ColumnCast>) -> Option<&'static str> {
+        let kind = cast.map_or(column.data_type.as_str(), |cast| cast.data_type.as_str());
+        (Self::base_type(kind) == "sql_variant")
+            .then_some("Its primary key is a sql_variant, which cannot be matched in SQL.")
+    }
+
+    /// `datetime` reads a text by the language of the session (British reads
+    /// `2024-01-05` as the 1st of May). Style 121 always reads it as year, month, day.
+    fn value_literal(&self, cast: Option<&ColumnCast>, value: &str) -> String {
+        let text = self.literal(value);
+        match cast {
+            Some(cast) if Self::is_datetime(&cast.data_type) => {
+                format!("CONVERT({}, {text}, 121)", cast.data_type)
+            }
+            _ => text,
+        }
+    }
+
+    /// An `N'…'` text would make a `varchar` key compare as `nvarchar`, which sorts
+    /// another way. So the value takes the type of the column. That also lets an index work.
+    /// The text also takes the collation of the column. Without it, a `varchar` with
+    /// another code page than the database turns the letters into `?`.
+    /// `datetime` reads the text by the language of the session, so style 121 fixes it.
+    fn key_literal(&self, cast: Option<&ColumnCast>, value: &str) -> String {
+        let text = self.literal(value);
+        let Some(cast) = cast.filter(|cast| !cast.data_type.is_empty()) else {
+            return text;
+        };
+        let kind = &cast.data_type;
+        match &cast.collation {
+            _ if Self::is_datetime(kind) => self.value_literal(Some(cast), value),
+            Some(collation) => format!("CAST({text} COLLATE {collation} AS {kind})"),
+            None => format!("CAST({text} AS {kind})"),
+        }
+    }
+
+    /// The base system type (an alias type gives the type it is made from) and the
+    /// collation of each column.
+    async fn column_casts(&self, table: &TableRef) -> AppResult<HashMap<String, ColumnCast>> {
+        let sql = format!(
+            "SELECT c.name, COALESCE(TYPE_NAME(c.system_type_id), TYPE_NAME(c.user_type_id)), \
+                c.max_length, c.precision, c.scale, \
+                c.collation_name \
+            FROM sys.columns c \
+            WHERE c.object_id = {}",
+            self.object_id(table)
+        );
+        let mut casts = HashMap::new();
+        for row in single(self.query(&sql).await?).rows {
+            let base = cell(&row, 1);
+            let number = |index: usize| cell(&row, index).parse::<i64>().unwrap_or(0);
+            let length = number(2);
+            let size = |chars: i64| {
+                if length == -1 {
+                    "max".to_owned()
+                } else {
+                    chars.to_string()
+                }
+            };
+            let data_type = match base.as_str() {
+                "varchar" | "char" | "varbinary" | "binary" => format!("{base}({})", size(length)),
+                "nvarchar" | "nchar" => format!("{base}({})", size(length / 2)),
+                "decimal" | "numeric" => format!("{base}({},{})", number(3), number(4)),
+                "datetime2" | "time" | "datetimeoffset" => format!("{base}({})", number(4)),
+                _ => base.clone(),
+            };
+            // A collation name is letters, digits and `_`. Anything else is not used.
+            let collation = row.get(5).cloned().flatten().filter(|name| {
+                name.chars()
+                    .all(|letter| letter.is_ascii_alphanumeric() || letter == '_')
+            });
+            casts.insert(
+                cell(&row, 0),
+                ColumnCast {
+                    data_type,
+                    collation,
+                },
+            );
+        }
+        Ok(casts)
+    }
+
+    /// A `rowversion` (`timestamp`) changes on every write. No `INSERT` or `UPDATE` can set it.
+    fn database_written(&self, column: &ColumnInfo) -> bool {
+        Self::base_type(&column.data_type) == "timestamp"
     }
 
     /// SQL Server pages with `OFFSET … FETCH`, and that needs an ORDER BY.

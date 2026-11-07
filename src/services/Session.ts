@@ -67,6 +67,7 @@ import type { DiscardPrompt } from './DiscardPrompt'
 import { Environment } from './Environment'
 import { QueryStatList } from './QueryStatList'
 import { RowCopy } from './RowCopy'
+import { DataSync } from './DataSync'
 import { SchemaSync } from './SchemaSync'
 import { TableDraft } from './TableDraft'
 import { TableSelection } from './TableSelection'
@@ -160,6 +161,10 @@ export class Session {
   chat: AiChat
   /** The Compare view of this tab: two tabs, their differences and the sync SQL. */
   schemaSync: SchemaSync
+  /** The Data mode of the Compare view: the rows of one table in two tabs. */
+  dataSync: DataSync
+  /** What the Compare view compares now. */
+  compareMode: 'schema' | 'data' = 'schema'
   /** A question that waits for the Ask AI view. The view sends it once, in read-only mode. */
   readOnlyQuestion: string | null = null
   /** The timer that removes the "Diagram saved" status. */
@@ -173,6 +178,7 @@ export class Session {
     this.prompt = prompt
     this.chat = new AiChat(api, prompt)
     this.schemaSync = new SchemaSync(api, prompt)
+    this.dataSync = new DataSync(api, prompt)
   }
 
   /** The shown view. A new view clears the error of the old one. */
@@ -464,6 +470,7 @@ export class Session {
       this.queryStatsAccount = ''
       this.snippetOutputs = {}
       this.schemaSync.clear()
+      this.dataSync.clear()
       this.clearTable()
       this.setUsers([], false)
     }
@@ -485,6 +492,7 @@ export class Session {
     this.diagram = null
     this.chat.clear()
     this.schemaSync.clear()
+    this.dataSync.clear()
     if (this.view === 'diagram') {
       await this.loadDiagram()
     }

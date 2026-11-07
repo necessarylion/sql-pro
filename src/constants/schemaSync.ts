@@ -26,3 +26,5 @@ export const ONLY_IN_TARGET = 'Only in target'
 export const CHANGED_TABLES = 'Changed tables'
 
 export const SYNC_RUN_TITLE = 'Run on target'
+
+export const DATA_RUN_TITLE = 'Run on target'

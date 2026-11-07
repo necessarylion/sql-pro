@@ -685,7 +685,7 @@ impl ConnectionService {
     }
 
     /// The database the connection works on now. `None` when that cannot change (`SQLite`).
-    async fn current_database(repository: &dyn Repository) -> AppResult<Option<String>> {
+    pub(super) async fn current_database(repository: &dyn Repository) -> AppResult<Option<String>> {
         let Some(sql) = repository.current_database_sql() else {
             return Ok(None);
         };
@@ -698,11 +698,8 @@ impl ConnectionService {
             .flatten())
     }
 
-    /// The differences of the two tabs, and the kind of database they both use.
-    async fn schema_changes(&self, source: &str, target: &str) -> AppResult<(Vec<Change>, Driver)> {
-        let from = self.connection(source)?;
-        let to = self.connection(target)?;
-        let (driver, other) = (from.config.driver, to.config.driver);
+    /// Fails when the two tabs use different kinds of database. Gives the kind.
+    pub(super) fn same_kind(driver: Driver, other: Driver) -> AppResult<Driver> {
         if driver != other {
             return Err(AppError::Message(format!(
                 "Both tabs must use the same kind of database. \
@@ -711,6 +708,14 @@ impl ConnectionService {
                 dialect(other)
             )));
         }
+        Ok(driver)
+    }
+
+    /// The differences of the two tabs, and the kind of database they both use.
+    async fn schema_changes(&self, source: &str, target: &str) -> AppResult<(Vec<Change>, Driver)> {
+        let from = self.connection(source)?;
+        let to = self.connection(target)?;
+        let driver = Self::same_kind(from.config.driver, to.config.driver)?;
         let (wanted, found) = tokio::try_join!(
             Self::snapshot(from.repository.as_ref()),
             Self::snapshot(to.repository.as_ref())
