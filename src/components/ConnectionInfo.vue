@@ -116,7 +116,7 @@ function buildRows(): InfoRow[] {
 h1 {
   margin: 0 0 6px;
   overflow: hidden;
-  font-size: 17px;
+  font-size: calc(17px * var(--font-scale));
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -167,7 +167,7 @@ dd {
 
 dd.mono {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 dd.muted {

@@ -150,6 +150,7 @@ onBeforeUnmount(stopListening)
       <div v-else-if="session.opening" class="empty">
         <LoaderCircleIcon :size="13" class="spin" />
         Connecting…
+        <button class="cancel" @click="manager.close(session)">Cancel</button>
       </div>
       <ConnectionForm v-else :session="session" />
     </div>
@@ -159,6 +160,12 @@ onBeforeUnmount(stopListening)
 </template>
 
 <style scoped>
+.empty .cancel {
+  height: 20px;
+  margin-left: 6px;
+  padding: 0 8px;
+}
+
 .app {
   display: flex;
   flex-direction: column;

@@ -636,7 +636,7 @@ async function dropSelected(): Promise<void> {
 }
 
 .name {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 600;
 }
 
@@ -693,7 +693,7 @@ async function dropSelected(): Promise<void> {
 table {
   min-width: 100%;
   border-spacing: 0;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 th,
@@ -778,7 +778,7 @@ td button.icon {
   height: 22px;
   padding: 0 4px;
   border-radius: 5px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .key-name {

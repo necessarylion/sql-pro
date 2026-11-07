@@ -219,6 +219,9 @@ pub const UPDATE_ERROR_TITLE: &str = "Update failed";
 /// The error of a query that the user cancelled.
 pub const QUERY_CANCELLED: &str = "Query cancelled";
 
+/// The error of a connect that the user cancelled. The frontend does not show it.
+pub const CONNECT_CANCELLED: &str = "Connection cancelled";
+
 /// The error when the cancel cannot reach the server in time.
 pub const CANCEL_NOT_REACHED: &str = "Could not reach the server to cancel the query";
 

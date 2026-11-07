@@ -406,7 +406,7 @@ watch(sessionResult, clearSelection)
   padding: 0 4px 0 10px;
   background: var(--detail-header);
   border-bottom: 1px solid var(--border);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   white-space: nowrap;
 }
 

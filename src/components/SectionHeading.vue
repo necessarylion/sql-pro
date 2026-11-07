@@ -44,7 +44,7 @@ function toggle(): void {
   border-radius: 0;
   background: var(--bg);
   color: var(--text-3);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   text-align: left;
   cursor: pointer;
 }
@@ -63,7 +63,7 @@ function toggle(): void {
   border-radius: 999px;
   background: var(--header);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   line-height: 16px;
 }
 </style>

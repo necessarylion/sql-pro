@@ -201,7 +201,7 @@ defineExpose({ openFile })
 h2 {
   margin: 0;
   overflow: hidden;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -217,7 +217,7 @@ h2 {
   display: flex;
   gap: 6px;
   align-items: center;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 
 .check input {
@@ -247,13 +247,13 @@ h2 {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   align-items: center;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 
 .map select {
   min-width: 0;
   height: 20px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 
 .name {
@@ -273,7 +273,7 @@ h2 {
 .preview table {
   border-collapse: collapse;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .preview th,
@@ -295,7 +295,7 @@ h2 {
 .note {
   margin: 0;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .file {

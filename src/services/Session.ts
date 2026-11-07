@@ -87,6 +87,8 @@ export class Session {
   private running = 0
   /** True while a new tab copies the connection of another tab. It shows a loading state. */
   opening = false
+  /** True when the user cancelled the connect that runs now. */
+  private connectCancelled = false
   /** True while a query or a page load runs that the user may cancel. */
   cancellable = false
   /** True after the user asked to cancel. The run then ends with a short status, not an error. */
@@ -350,9 +352,23 @@ export class Session {
   }
 
   async connect(config: ConnectionConfig, title: string, environment = ''): Promise<void> {
-    await this.api.connect(this.id, config)
+    this.connectCancelled = false
     try {
-      await this.setUp(config, title, environment)
+      await this.api.connect(this.id, config)
+    } catch (error) {
+      if (this.connectCancelled) {
+        return
+      }
+      throw error
+    }
+    try {
+      // The cancel can come after the backend connected. Then close it again.
+      if (!this.connectCancelled) {
+        await this.setUp(config, title, environment)
+      }
+      if (this.connectCancelled) {
+        await this.disconnect()
+      }
     } catch (error) {
       // Do not leave a connection open that no tab shows.
       // The load error is the one to show, so a failed disconnect is ignored.
@@ -366,6 +382,15 @@ export class Session {
   }
 
   /**
+   * Stops the connect that runs now. The form goes back to how it was before.
+   * The running `connect` or `cloneFrom` then ends without an error.
+   */
+  async cancelConnect(): Promise<void> {
+    this.connectCancelled = true
+    await this.api.cancelConnect(this.id)
+  }
+
+  /**
    * Connects this new tab as a copy of the connection of `source`.
    * The backend copies the password. The frontend does not have it.
    * The lists are copied from `source` too. Loading them again is slow on a far away database.
@@ -374,7 +399,15 @@ export class Session {
     if (!source.config) {
       return
     }
-    await this.api.cloneConnection(source.id, this.id)
+    this.connectCancelled = false
+    try {
+      await this.api.cloneConnection(source.id, this.id)
+    } catch (error) {
+      if (this.connectCancelled) {
+        return
+      }
+      throw error
+    }
     this.databases = [...source.databases]
     this.tables = [...source.tables]
     this.objects = [...source.objects]

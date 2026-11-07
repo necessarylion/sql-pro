@@ -62,7 +62,7 @@ function remove(index: number): void {
   background: var(--seg-active);
   border: 1px solid var(--border);
   border-radius: 4px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .chip button.icon {
@@ -75,6 +75,6 @@ select {
   height: 22px;
   padding: 0 4px;
   border-radius: 5px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 </style>

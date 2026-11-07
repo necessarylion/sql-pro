@@ -45,6 +45,11 @@ export class DatabaseApi {
     return invoke('connect', { id, config })
   }
 
+  /** Stops the `connect` that still runs for `id`. That connect then rejects. */
+  cancelConnect(id: string): Promise<void> {
+    return invoke('cancel_connect', { id })
+  }
+
   /** Opens a connection with `config`, checks it and closes it again. Nothing is kept. */
   testConnection(config: ConnectionConfig): Promise<void> {
     return invoke('test_connection', { config })
@@ -53,6 +58,11 @@ export class DatabaseApi {
   /** Opens a new connection `newId` with the same settings as connection `id` uses now. */
   cloneConnection(id: string, newId: string): Promise<void> {
     return invoke('clone_connection', { id, newId })
+  }
+
+  /** The font families installed on the machine, sorted. */
+  listFonts(): Promise<string[]> {
+    return invoke('list_fonts')
   }
 
   disconnect(id: string): Promise<void> {

@@ -2408,3 +2408,35 @@ async fn ai_read_guard(config: ConnectionConfig) {
     }
     service.disconnect(id).await;
 }
+
+/// A cancel stops a connect that hangs. Then no connection is kept for the tab.
+#[tokio::test]
+async fn cancel_connect_keeps_nothing() {
+    // This "server" takes the TCP connection but never answers, so the connect hangs.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let config = ConnectionConfig {
+        driver: Driver::Mysql,
+        host: "127.0.0.1".to_owned(),
+        port: listener.local_addr().expect("address").port(),
+        user: "root".to_owned(),
+        password: String::new(),
+        database: String::new(),
+        ssh: None,
+        ssl: sql_pro_lib::model::SslConfig::default(),
+    };
+    let service = ConnectionService::new(RepositoryFactory);
+    let started = Instant::now();
+    let (result, ()) = tokio::join!(service.connect(ID.to_owned(), config), async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        service.cancel_connect(ID);
+    });
+    let error = result.expect_err("the connect was cancelled");
+    assert_eq!(error.to_string(), sql_pro_lib::constants::CONNECT_CANCELLED);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(
+        service.databases(ID).await.is_err(),
+        "no connection is kept"
+    );
+    // A cancel when no connect runs does nothing.
+    service.cancel_connect(ID);
+}

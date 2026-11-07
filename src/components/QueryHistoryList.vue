@@ -52,7 +52,7 @@ function ranAt(entry: QueryHistoryEntry): string {
 .clear {
   height: 20px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   text-transform: none;
 }
 
@@ -63,7 +63,7 @@ function ranAt(entry: QueryHistoryEntry): string {
 
 .list li {
   gap: 10px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   cursor: pointer;
 }
 

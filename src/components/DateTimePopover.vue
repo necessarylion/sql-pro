@@ -107,7 +107,7 @@ function close(): void {
   border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: var(--popover-shadow);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .inputs,
@@ -120,7 +120,7 @@ function close(): void {
 input {
   height: 22px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .spacer {
@@ -132,6 +132,6 @@ button {
   height: 22px;
   padding: 0 8px;
   border-radius: 5px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 </style>

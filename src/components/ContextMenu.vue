@@ -78,7 +78,7 @@ function close(): void {
   border-radius: 4px;
   background: none;
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 400;
   text-align: left;
   text-overflow: ellipsis;

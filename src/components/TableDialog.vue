@@ -181,7 +181,7 @@ defineExpose({ open })
 h2 {
   margin: 0;
   overflow: hidden;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -227,7 +227,7 @@ h2 {
   display: inline-flex;
   gap: 4px;
   align-items: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .check input {
@@ -242,7 +242,7 @@ h2 {
   align-self: flex-start;
   height: 22px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .error {

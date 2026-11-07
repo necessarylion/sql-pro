@@ -1016,7 +1016,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
   border-radius: 5px;
   background: none;
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 500;
   text-overflow: ellipsis;
   appearance: none;
@@ -1158,7 +1158,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
   border-radius: 4px;
   background: none;
   color: var(--text);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 400;
 }
 

@@ -224,7 +224,7 @@ function format(field: Field): void {
   min-height: 0;
   background: var(--bg);
   border-left: 1px solid var(--border);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .head {
@@ -286,7 +286,7 @@ function format(field: Field): void {
   overflow: hidden;
   color: var(--syntax-type);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   text-overflow: ellipsis;
 }
 
@@ -300,7 +300,7 @@ button.small {
   padding: 0 5px;
   border-radius: 3px;
   color: var(--text-2);
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
 }
 
 input,
@@ -308,7 +308,7 @@ textarea {
   display: block;
   width: 100%;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 input {

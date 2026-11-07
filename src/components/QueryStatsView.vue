@@ -273,27 +273,27 @@ function openRow(event: MouseEvent): void {
 }
 
 .name {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 600;
 }
 
 .filter {
   width: 180px;
   height: 20px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 label {
   display: flex;
   gap: 4px;
   align-items: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .days {
   width: 56px;
   height: 20px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 /* margin: auto on the panel centers it both ways. A tall panel still scrolls from its top. */
 .setup {
@@ -307,7 +307,7 @@ label {
   width: 100%;
   max-width: 620px;
   margin: auto;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   /* The body turns selection off. The steps, snippets and server text can be selected. */
   -webkit-user-select: text;
   user-select: text;
@@ -341,7 +341,7 @@ li {
   border-left: 2px solid var(--border);
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .output .failed {
@@ -392,7 +392,7 @@ pre {
   overflow-x: auto;
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   line-height: 1.4;
   white-space: pre-wrap;
 }
@@ -407,6 +407,6 @@ pre {
 .setup-detail {
   margin: 12px 0 0;
   color: var(--text-3);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 </style>

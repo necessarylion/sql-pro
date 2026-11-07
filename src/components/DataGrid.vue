@@ -55,6 +55,8 @@ const emit = defineEmits<{
   menu: [event: MouseEvent, rowIndex: number]
   /** A click on the arrow of a `link` column. */
   link: [rowIndex: number, columnIndex: number]
+  /** Delete or Backspace with no modifier while the grid has the focus and rows are selected. */
+  delete: []
 }>()
 
 const selected = defineModel<number[]>('selected')
@@ -554,6 +556,20 @@ function moveSelection(event: KeyboardEvent): void {
     copyRows()
     return
   }
+  // Mac keyboards have no Delete key, so Backspace counts too. The check above keeps
+  // the cell editor out: its key presses have the textarea as target.
+  if (
+    (event.key === 'Delete' || event.key === 'Backspace') &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !event.shiftKey &&
+    selected.value?.length
+  ) {
+    event.preventDefault()
+    emit('delete')
+    return
+  }
   let step = 0
   if (event.key === 'ArrowDown') {
     step = 1
@@ -888,7 +904,7 @@ function onEnter(event: KeyboardEvent): void {
   min-height: 0;
   overflow: auto;
   background: var(--bg);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 /* The grid takes the focus for the arrow keys. The selected row already shows where it is. */
@@ -1155,7 +1171,7 @@ textarea {
   border: 0;
   outline: none;
   color: var(--text);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   text-align: left;
   resize: none;
   field-sizing: content;
@@ -1226,6 +1242,6 @@ textarea {
   border-radius: 3px;
   color: var(--text-2);
   font-family: var(--font-ui);
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
 }
 </style>
