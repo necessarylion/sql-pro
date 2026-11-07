@@ -372,6 +372,7 @@ impl ConnectionService {
                 label: format!("Statement {}", index + 1),
                 sql,
                 params: Vec::new(),
+                data: None,
             });
         }
         self.repository(target)?.run_script(script).await

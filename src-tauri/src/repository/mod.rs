@@ -512,6 +512,9 @@ pub struct Statement {
     pub label: String,
     pub sql: String,
     pub params: Vec<Option<String>>,
+    /// The rows of a `COPY … FROM stdin` statement of a `PostgreSQL` dump, as `pg_dump` writes
+    /// them: one row per line. Only `PostgresRepository::run_script` can send them.
+    pub data: Option<String>,
 }
 
 /// The error for a change of a batch that failed.
@@ -706,13 +709,19 @@ where
     let mut connection = live(pool).await?;
     let mut transaction = connection.begin().await?;
     for statement in statements {
-        let run = sqlx::raw_sql(AssertSqlSafe(statement.sql))
-            .execute(&mut *transaction)
-            .await;
+        let run = if statement.data.is_some() {
+            Err(AppError::Message(
+                "COPY … FROM stdin data can only be imported into PostgreSQL".to_owned(),
+            ))
+        } else {
+            sqlx::raw_sql(AssertSqlSafe(statement.sql))
+                .execute(&mut *transaction)
+                .await
+                .map_err(AppError::from)
+        };
         if let Err(error) = run {
             // A failed rollback closes the connection, and that rolls back too.
             let _ = transaction.rollback().await;
-            let error = AppError::from(error);
             return Err(AppError::Message(format!("{}: {error}", statement.label)));
         }
     }
