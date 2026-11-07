@@ -54,6 +54,10 @@ bun run format     # Prettier
 bun test           # Session logic with a fake backend
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the checks and the test policy.
+
 ## Layout
 
 ```

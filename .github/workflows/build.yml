@@ -138,6 +138,18 @@ jobs:
           bash .github/scripts/latest-json.sh "$TAG" > latest.json
           gh release upload "$TAG" latest.json --repo "$GITHUB_REPOSITORY" --clobber
 
+      - name: Fill the release notes
+        # Only when the release body is empty. Notes written by hand are kept.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          body=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
+          if [ -z "$body" ]; then
+            notes=$(gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$TAG" --jq .body)
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "$notes"
+          fi
+
       - name: Publish the draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
