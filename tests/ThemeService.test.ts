@@ -25,7 +25,8 @@ class FakeWindow {
   }
 }
 
-const root = { dataset: {} as Record<string, string> }
+// It has a style too: other test files load CodeMirror, which reads it.
+const root = { dataset: {} as Record<string, string>, style: {} }
 globalThis.document = { documentElement: root } as unknown as Document
 
 function build(storage: FakeStorage, window = new FakeWindow()): ThemeService {
