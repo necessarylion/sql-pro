@@ -8,6 +8,7 @@ pub mod model;
 mod open_file;
 pub mod repository;
 pub mod service;
+mod settings_window;
 mod updater;
 
 use std::sync::Arc;
@@ -37,7 +38,7 @@ pub fn run() {
         open_file::receive(app, files);
     }));
     #[cfg(target_os = "macos")]
-    let builder = builder.menu(app_menu);
+    let builder = builder.menu(app_menu).on_menu_event(on_app_menu);
     let app = builder
         .setup(setup)
         .on_window_event(hide_instead_of_close)
@@ -115,6 +116,8 @@ pub fn run() {
             commands::load_password,
             commands::delete_password,
             commands::take_opened_files,
+            commands::open_settings_window,
+            commands::fit_settings_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while running SQL Pro");
@@ -299,17 +302,28 @@ fn run_under_dev_name() {
     }
 }
 
-/// The default menu, with the app name fixed.
+/// The default menu, with the app name fixed and a "Settings…" item.
 ///
 /// macOS names "About", "Hide" and "Quit" after the program file. Without an app
 /// bundle (`tauri dev`) that is the Cargo package name, with a dash.
 #[cfg(target_os = "macos")]
 fn app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{Menu, MenuItemKind};
+    use constants::{SETTINGS_MENU_ACCELERATOR, SETTINGS_MENU_ID, SETTINGS_MENU_TEXT};
+    use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 
     let menu = Menu::default(handle)?;
     let name = &handle.package_info().name;
     if let Some(MenuItemKind::Submenu(app_items)) = menu.items()?.first() {
+        // The usual macOS place: About, a line, Settings…, a line, then Services.
+        let settings = MenuItem::with_id(
+            handle,
+            SETTINGS_MENU_ID,
+            SETTINGS_MENU_TEXT,
+            true,
+            Some(SETTINGS_MENU_ACCELERATOR),
+        )?;
+        app_items.insert(&settings, 2)?;
+        app_items.insert(&PredefinedMenuItem::separator(handle)?, 3)?;
         for item in app_items.items()? {
             if let MenuItemKind::Predefined(item) = item {
                 let text = item.text()?;
@@ -320,4 +334,13 @@ fn app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri:
         }
     }
     Ok(menu)
+}
+
+/// "Settings…" in the app menu opens the Settings window.
+#[cfg(target_os = "macos")]
+#[allow(clippy::needless_pass_by_value)] // Tauri hands the event over by value.
+fn on_app_menu(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
+    if event.id.as_ref() == constants::SETTINGS_MENU_ID {
+        settings_window::open(app);
+    }
 }

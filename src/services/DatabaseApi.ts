@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { emit, listen, type Event, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import type {
   AiOptions,
   Attachment,
@@ -34,6 +35,7 @@ import type {
   Values,
 } from '../types'
 import { OPEN_FILES_EVENT } from '../constants/files'
+import { SETTINGS_CHANGED_EVENT, type SettingsSnapshot } from '../constants/settings'
 
 /**
  * Thin wrappers around the Tauri backend commands.
@@ -371,5 +373,35 @@ export class DatabaseApi {
   /** Calls `handler` when the OS gives the app more files to open. Call the result to stop. */
   onOpenedFiles(handler: () => void): Promise<UnlistenFn> {
     return listen(OPEN_FILES_EVENT, handler)
+  }
+
+  /** Opens the Settings window, or brings it to the front when it is open. */
+  openSettingsWindow(): Promise<void> {
+    return invoke('open_settings_window')
+  }
+
+  /** Sends the settings to every window. */
+  emitSettings(settings: SettingsSnapshot): Promise<void> {
+    return emit(SETTINGS_CHANGED_EVENT, settings)
+  }
+
+  /** Calls `handler` with the settings each time the Settings window changes them. Call the result to stop. */
+  onSettingsChanged(handler: (settings: SettingsSnapshot) => void): Promise<UnlistenFn> {
+    return listen(SETTINGS_CHANGED_EVENT, function pass(event: Event<SettingsSnapshot>): void {
+      handler(event.payload)
+    })
+  }
+
+  /**
+   * Gives the Settings window the height of its content and shows it. Rust keeps it on the screen.
+   * `viewportHeight` is the height the page sees now. Rust uses it to find the title bar.
+   */
+  fitSettingsWindow(contentHeight: number, viewportHeight: number): Promise<void> {
+    return invoke('fit_settings_window', { contentHeight, viewportHeight })
+  }
+
+  /** Closes the window of this page. */
+  closeWindow(): Promise<void> {
+    return getCurrentWindow().close()
   }
 }

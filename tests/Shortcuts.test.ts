@@ -10,6 +10,7 @@ test('macOS uses Cmd and ignores Ctrl', function () {
   expect(shortcuts.action({ ...NONE, key: 'R', metaKey: true })).toBe('refresh')
   expect(shortcuts.action({ ...NONE, key: 'i', metaKey: true })).toBe('detail')
   expect(shortcuts.action({ ...NONE, key: 'd', metaKey: true })).toBe('duplicate')
+  expect(shortcuts.action({ ...NONE, key: ',', metaKey: true })).toBe('settings')
   expect(shortcuts.action({ ...NONE, key: 'r', ctrlKey: true })).toBeNull()
   expect(shortcuts.action({ ...NONE, key: 's', metaKey: true, shiftKey: true })).toBeNull()
   expect(shortcuts.action({ ...NONE, key: 'x', metaKey: true })).toBeNull()

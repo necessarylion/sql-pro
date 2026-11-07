@@ -34,6 +34,12 @@
   --picked: #2c3d63;
   --syntax-type: #4fd1c5;
   --on-accent: #ffffff;
+  /* The open table and the selected grid rows. Most themes use the full accent colour. */
+  --selected: var(--accent);
+  --on-selected: var(--on-accent);
+  /* The tab bar at the top and an inactive tab under the mouse. */
+  --tab-bar: var(--chrome);
+  --tab-hover: color-mix(in srgb, var(--text) 8%, transparent);
   /* The tile colour behind each database logo (the brand colour). The logo on it is white. */
   --mysql: #00758f;
   --postgres: #336791;
@@ -159,6 +165,54 @@
   --folder-orange: #b95c00;
   --folder-green: #1f9d55;
   --folder-blue: #2563eb;
+  --folder-purple: #7c3aed;
+}
+
+/*
+  The pink look. Set data-theme="pink" on <html> to use it.
+  Neutral light surfaces with one rose accent. Selected rows get a light rose tint.
+  Every text colour has a contrast of at least 4.5:1 on every background here.
+*/
+:root[data-theme='pink'] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --chrome: #efeded;
+  /* Only the tab bar is pink. The other surfaces stay neutral. */
+  --tab-bar: #f7dbe6;
+  --tab-hover: #f2d0dd;
+  --toolbar: #fafafa;
+  --sidebar: #f7f6f6;
+  --border: #e6e3e4;
+  --border-soft: #efeded;
+  --header: #f5f4f4;
+  --detail-header: #efeded;
+  --row-alt: #fafafa;
+  --text: #1f1d1e;
+  --text-2: #57524f;
+  --text-3: #625c5e;
+  --accent: #c9376e;
+  --accent-text: #b42d5f;
+  --seg-active: #ffffff;
+  --selected: #fce7ef;
+  --on-selected: var(--text);
+  --modified: #fff3c4;
+  --added: #e3f4e6;
+  --deleted: #fde4e4;
+  --danger: #b93226;
+  --panel-shadow: -6px 0 14px -6px rgba(0, 0, 0, 0.12);
+  --popover-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+  --success: #2b7445;
+  --success-text: #22663b;
+  --warn: #8f5409;
+  --stmt-highlight: #fbf6f8;
+  --picked: #f2eff0;
+  --syntax-type: #2f5e98;
+  --sqlite: #003b57;
+  --folder-grey: #7a7476;
+  --folder-red: #b93226;
+  --folder-orange: #b45309;
+  --folder-green: #2b7445;
+  --folder-blue: #2f5e98;
   --folder-purple: #7c3aed;
 }
 
@@ -481,8 +535,8 @@ button.danger {
 }
 
 .list li.selected {
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--selected);
+  color: var(--on-selected);
   font-weight: 600;
 }
 

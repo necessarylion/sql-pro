@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, useTemplateRef } from 'vue'
+import { onBeforeUnmount, onMounted } from 'vue'
 import { LoaderCircleIcon, PlugIcon, PlusIcon, SettingsIcon, XIcon } from 'lucide-vue-next'
 import ConnectionForm from './components/ConnectionForm.vue'
 import DbBadge from './components/DbBadge.vue'
 import EnvBadge from './components/EnvBadge.vue'
-import SettingsDialog from './components/SettingsDialog.vue'
 import Workspace from './components/Workspace.vue'
 import {
   LAYOUT_SERVICE,
   SESSION_MANAGER,
+  SETTINGS_WINDOW,
   SHORTCUTS,
   ZOOM_SERVICE,
   injectRequired,
@@ -19,7 +19,7 @@ const manager = injectRequired(SESSION_MANAGER)
 const shortcuts = injectRequired(SHORTCUTS)
 const zoomService = injectRequired(ZOOM_SERVICE)
 const layout = injectRequired(LAYOUT_SERVICE)
-const settings = useTemplateRef<InstanceType<typeof SettingsDialog>>('settings')
+const settingsWindow = injectRequired(SETTINGS_WINDOW)
 
 /** The dim text of a tab: the open table. Without one, the database. */
 function detail(session: Session): string {
@@ -56,6 +56,10 @@ function onKey(event: KeyboardEvent): void {
     return
   }
   event.preventDefault()
+  if (action === 'settings') {
+    openSettings()
+    return
+  }
   const session = manager.active
   // The row detail panel can open and close also while a query runs.
   if (action === 'detail') {
@@ -93,6 +97,11 @@ function listenForKeys(): void {
 
 function stopListening(): void {
   window.removeEventListener('keydown', onKey)
+}
+
+/** Settings is a window of its own. The macOS app menu opens it from Rust. */
+function openSettings(): void {
+  settingsWindow.open().catch(console.error)
 }
 
 onMounted(listenForKeys)
@@ -134,7 +143,7 @@ onBeforeUnmount(stopListening)
         <PlusIcon :size="13" />
       </button>
       <div class="filler" data-tauri-drag-region />
-      <button class="icon gear" title="Settings" @click="settings?.open()">
+      <button class="icon gear" title="Settings" @click="openSettings">
         <SettingsIcon :size="14" />
       </button>
     </div>
@@ -154,8 +163,6 @@ onBeforeUnmount(stopListening)
       </div>
       <ConnectionForm v-else :session="session" />
     </div>
-
-    <SettingsDialog ref="settings" />
   </div>
 </template>
 
@@ -183,7 +190,7 @@ onBeforeUnmount(stopListening)
   align-items: flex-end;
   height: 36px;
   padding: 0 8px 0 calc(var(--sidebar-fit) - 8px);
-  background: var(--chrome);
+  background: var(--tab-bar);
 }
 
 /*
@@ -256,7 +263,7 @@ onBeforeUnmount(stopListening)
 }
 
 .tab:not(.active):hover {
-  background: color-mix(in srgb, var(--text) 8%, transparent);
+  background: var(--tab-hover);
 }
 
 /* A thin line between two inactive tabs. */

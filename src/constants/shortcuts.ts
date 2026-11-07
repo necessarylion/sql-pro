@@ -1,4 +1,4 @@
-export type ShortcutAction = 'save' | 'refresh' | 'export' | 'detail' | 'duplicate'
+export type ShortcutAction = 'save' | 'refresh' | 'export' | 'detail' | 'duplicate' | 'settings'
 
 /** The key that goes with Cmd (macOS) or Ctrl (Windows, Linux) for each action. */
 export const SHORTCUT_KEYS: Record<string, ShortcutAction> = {
@@ -8,6 +8,8 @@ export const SHORTCUT_KEYS: Record<string, ShortcutAction> = {
   i: 'detail',
   // Duplicates the selected rows of the Content view as new rows.
   d: 'duplicate',
+  // Opens the Settings window. On macOS the app menu has the same key.
+  ',': 'settings',
 }
 
 /** The key that goes with Shift and Cmd (macOS) or Shift and Ctrl (Windows, Linux). */

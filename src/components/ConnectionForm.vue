@@ -1313,12 +1313,12 @@ async function browseKey(): Promise<void> {
 }
 
 .list li.selected {
-  --line: var(--on-accent);
+  --line: var(--on-selected);
 }
 
-/* A thin white ring, drawn with a shadow so the badge keeps its size. */
+/* A thin ring in the text colour of the row, drawn with a shadow so the badge keeps its size. */
 .list li.selected :deep(.badge) {
-  box-shadow: 0 0 0 0.5px var(--on-accent);
+  box-shadow: 0 0 0 0.5px var(--on-selected);
 }
 
 /* The place a dragged connection would go to. */

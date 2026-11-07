@@ -195,6 +195,31 @@ pub const MAIN_WINDOW: &str = "main";
 /// The frontend then takes them with the `take_opened_files` command.
 pub const OPEN_FILES_EVENT: &str = "open-files";
 
+/// The label of the Settings window. Its capability in `capabilities/settings.json` uses it too.
+pub const SETTINGS_WINDOW: &str = "settings";
+
+/// The page of the Settings window. Vite builds it as a second entry (`settings.html`).
+pub const SETTINGS_WINDOW_URL: &str = "settings.html";
+
+pub const SETTINGS_WINDOW_TITLE: &str = "Settings";
+
+/// The size of the Settings window, in logical pixels. The page sets the real height
+/// to fit its content before it shows the window. The height here is only the start,
+/// and it is tall enough for the default font size in case that fails.
+pub const SETTINGS_WINDOW_WIDTH: f64 = 460.0;
+pub const SETTINGS_WINDOW_HEIGHT: f64 = 320.0;
+
+/// The Settings window is never lower than this, in logical pixels.
+pub const SETTINGS_WINDOW_MIN_HEIGHT: f64 = 120.0;
+
+/// The Settings window is at most this part of the screen height. Above it the page scrolls.
+pub const SETTINGS_WINDOW_MAX_SCREEN_SHARE: f64 = 0.85;
+
+/// The "Settings…" item of the app menu. macOS only.
+pub const SETTINGS_MENU_ID: &str = "settings";
+pub const SETTINGS_MENU_TEXT: &str = "Settings…";
+pub const SETTINGS_MENU_ACCELERATOR: &str = "CmdOrCtrl+,";
+
 /// The id of the tray icon. Windows and Linux only: macOS has the Dock.
 pub const TRAY_ID: &str = "main";
 

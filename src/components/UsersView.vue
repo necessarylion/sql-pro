@@ -497,7 +497,7 @@ button.danger:disabled {
   margin: 0;
 }
 
-/* The same look as the settings dialog. */
+/* A compact panel, the same size as the old settings dialog. */
 .password {
   width: 340px;
   padding: 0;
