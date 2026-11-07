@@ -53,6 +53,8 @@ test('the export file name is the table, or the database for many tables', funct
   const session = new Session(new FakeApi() as unknown as DatabaseApi, new FakePrompt())
   expect(session.exportName([USERS], 'csv')).toBe('users.csv')
   expect(session.exportName([USERS, ORDERS], 'sql')).toBe('export.sql')
+  expect(session.exportName([USERS], 'json')).toBe('users.json')
+  expect(session.exportName([USERS], 'xlsx')).toBe('users.xlsx')
 
   session.config = {
     driver: 'mysql',
@@ -79,6 +81,7 @@ test('row export names the table, or uses the file name for a query result', asy
   const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
   expect(session.rowsName(USERS, 'csv')).toBe('users.csv')
   expect(session.rowsName(null, 'sql')).toBe('query_result.sql')
+  expect(session.rowsName(USERS, 'xlsx')).toBe('users.xlsx')
 
   await session.exportRows('sql', USERS, ['id'], [['1']], '/tmp/x.sql')
   expect(api.rowExports[0]).toEqual({

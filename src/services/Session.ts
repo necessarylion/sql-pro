@@ -1330,7 +1330,7 @@ export class Session {
     return `${name}.${format}`
   }
 
-  /** Writes tables to a SQL or CSV file, then says where they went. */
+  /** Writes tables to a SQL, CSV, JSON or Excel file, then says where they went. */
   async exportTables(request: ExportRequest): Promise<void> {
     await this.api.exportTables(this.id, request)
     const what =

@@ -473,6 +473,20 @@ pub struct NewUser {
 pub enum ExportFormat {
     Sql,
     Csv,
+    Json,
+    Xlsx,
+}
+
+impl ExportFormat {
+    /// The file extension, without the dot.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Sql => "sql",
+            Self::Csv => "csv",
+            Self::Json => "json",
+            Self::Xlsx => "xlsx",
+        }
+    }
 }
 
 /// What to export, and where to write it.
@@ -483,12 +497,13 @@ pub struct ExportRequest {
     pub format: ExportFormat,
     /// SQL only: write the `CREATE` statement of each table.
     pub structure: bool,
-    /// SQL only: write the rows as `INSERT` statements. A CSV file always has the rows.
+    /// SQL only: write the rows as `INSERT` statements. The other formats always have the rows.
     pub data: bool,
     /// The columns to export, in this order. Empty means all. Only for one table.
     #[serde(default)]
     pub columns: Vec<String>,
-    /// The file to write. For CSV it may be a folder: then each table goes to `<table>.csv` in it.
+    /// The file to write. For CSV, JSON and Excel it may be a folder: then each table goes
+    /// to its own file in it, like `<table>.csv`. JSON and Excel need a folder for many tables.
     pub path: PathBuf,
 }
 
@@ -501,7 +516,7 @@ pub struct RowsSql {
     pub rows: Vec<Vec<Option<String>>>,
 }
 
-/// Rows the app already shows, to write to a SQL or CSV file.
+/// Rows the app already shows, to write to a SQL, CSV, JSON or Excel file.
 #[derive(Debug, Deserialize)]
 pub struct RowsExport {
     pub format: ExportFormat,

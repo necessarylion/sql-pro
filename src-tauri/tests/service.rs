@@ -956,6 +956,32 @@ async fn export(service: &ConnectionService, table: &TableRef) {
     let csv = std::fs::read_to_string(out.join(format!("{TABLE}.csv"))).expect("table csv");
     assert!(csv.starts_with("id,name,born,note\r\n1,O'Brien,2020-01-31,\r\n"));
 
+    // JSON and Excel into a folder: one file per table, too.
+    for format in [ExportFormat::Json, ExportFormat::Xlsx] {
+        request.format = format;
+        service
+            .export_tables(ID, &request)
+            .await
+            .expect("export folder");
+    }
+    let json = std::fs::read_to_string(out.join(format!("{TABLE}.json"))).expect("table json");
+    assert!(
+        json.starts_with("[\n  {\n    \"id\": \"1\",\n    \"name\": \"O'Brien\""),
+        "{json}"
+    );
+    assert!(json.contains("\"note\": null"));
+    assert!(json.contains("\"line 1\\nline 2\""));
+    let xlsx = std::fs::read(out.join(format!("{TABLE}.xlsx"))).expect("table xlsx");
+    // An xlsx file is a zip file.
+    assert!(xlsx.starts_with(b"PK"));
+
+    // Many tables as JSON or Excel need a folder.
+    request.path = path.clone();
+    request.tables = vec![table.clone(), table.clone()];
+    assert!(service.export_tables(ID, &request).await.is_err());
+    request.tables = vec![table.clone()];
+    request.format = ExportFormat::Csv;
+
     // An unknown column fails and leaves no file behind.
     std::fs::remove_file(&path).expect("remove export");
     request.path = path.clone();
@@ -963,8 +989,11 @@ async fn export(service: &ConnectionService, table: &TableRef) {
     assert!(service.export_tables(ID, &request).await.is_err());
     assert!(!path.exists());
     std::fs::remove_dir_all(&out).expect("remove export folder");
+    export_rows(service, &path);
+}
 
-    // Rows the app already has: written as they are, without reading the table.
+/// Rows the app already has: written as they are, in each format, without reading the table.
+fn export_rows(service: &ConnectionService, path: &std::path::Path) {
     let mut rows = RowsExport {
         format: ExportFormat::Sql,
         table: TableRef {
@@ -977,10 +1006,10 @@ async fn export(service: &ConnectionService, table: &TableRef) {
             vec![Some("1".to_owned()), Some("O'Brien".to_owned())],
             vec![Some("2".to_owned()), None],
         ],
-        path: path.clone(),
+        path: path.to_path_buf(),
     };
     service.export_rows(ID, &rows).expect("export rows sql");
-    let sql = std::fs::read_to_string(&path).expect("rows sql");
+    let sql = std::fs::read_to_string(path).expect("rows sql");
     assert_eq!(sql.matches("INSERT INTO").count(), 2);
     assert!(
         sql.contains("'O''Brien'"),
@@ -989,9 +1018,19 @@ async fn export(service: &ConnectionService, table: &TableRef) {
     assert!(sql.contains("NULL);"));
     rows.format = ExportFormat::Csv;
     service.export_rows(ID, &rows).expect("export rows csv");
-    let csv = std::fs::read_to_string(&path).expect("rows csv");
+    let csv = std::fs::read_to_string(path).expect("rows csv");
     assert_eq!(csv, "id,name\r\n1,O'Brien\r\n2,\r\n");
-    std::fs::remove_file(&path).expect("remove rows export");
+    rows.format = ExportFormat::Json;
+    service.export_rows(ID, &rows).expect("export rows json");
+    let json = std::fs::read_to_string(path).expect("rows json");
+    assert_eq!(
+        json,
+        "[\n  {\n    \"id\": \"1\",\n    \"name\": \"O'Brien\"\n  },\n  {\n    \"id\": \"2\",\n    \"name\": null\n  }\n]\n"
+    );
+    rows.format = ExportFormat::Xlsx;
+    service.export_rows(ID, &rows).expect("export rows xlsx");
+    assert!(std::fs::read(path).expect("rows xlsx").starts_with(b"PK"));
+    std::fs::remove_file(path).expect("remove rows export");
 }
 
 /// "Copy Rows As > INSERT Statement": names and values quoted the way each database wants.
