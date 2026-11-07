@@ -82,6 +82,9 @@ pub const PARTIAL_DUMP_SUFFIX: &str = ".part";
 /// The error of a backup that the user cancelled.
 pub const BACKUP_CANCELLED: &str = "Backup cancelled";
 
+/// The error when the user starts a second backup in a tab whose first one still runs.
+pub const BACKUP_RUNS: &str = "A backup already runs in this tab";
+
 /// How often a running backup tells the frontend how far it is.
 pub const DUMP_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 

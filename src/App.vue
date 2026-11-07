@@ -46,7 +46,7 @@ function onKey(event: KeyboardEvent): void {
     return
   }
   // Escape or Cmd+. stops a running query. Otherwise Escape keeps its normal job.
-  if (shortcuts.cancels(event) && manager.active?.cancellable) {
+  if (shortcuts.cancels(event) && manager.active?.canCancel) {
     event.preventDefault()
     void manager.active.cancel()
     return

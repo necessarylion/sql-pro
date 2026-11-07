@@ -365,7 +365,19 @@ mod tests {
         let folder = std::env::temp_dir();
         let id = std::process::id();
         let database = folder.join(format!("sqlpro-cancel-{id}.sqlite"));
-        std::fs::File::create(&database).expect("database");
+        let _ = std::fs::remove_file(&database);
+        // Enough rows that the dump still runs when the cancel comes.
+        let filled = std::process::Command::new("sqlite3")
+            .arg(&database)
+            .arg(
+                "CREATE TABLE t(x TEXT); WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL \
+                 SELECT n + 1 FROM c WHERE n < 300000) INSERT INTO t SELECT hex(randomblob(64)) FROM c;",
+            )
+            .status();
+        if !filled.is_ok_and(|status| status.success()) {
+            println!("NOTE: the cancel check is skipped: sqlite3 was not found");
+            return;
+        }
         let path = folder.join(format!("sqlpro-cancel-{id}.sql"));
         std::fs::write(&path, "old").expect("old backup");
         let config = ConnectionConfig {
@@ -379,17 +391,22 @@ mod tests {
             ssl: SslConfig::default(),
         };
         let (handle, registration) = AbortHandle::new_pair();
-        handle.abort();
-        let result = DumpRepository::dump(&config, &path, drop, registration).await;
+        let mut steps = 0;
+        // The first progress comes right after the tool started. Cancel there.
+        let cancel = |_| {
+            steps += 1;
+            handle.abort();
+        };
+        let result = DumpRepository::dump(&config, &path, cancel, registration).await;
         let old = std::fs::read_to_string(&path);
         let partial = folder.join(format!("sqlpro-cancel-{id}.sql.part")).exists();
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&database);
-        match result {
-            Err(error) if error.to_string().contains("was not found") => return,
-            Err(error) => assert_eq!(error.to_string(), BACKUP_CANCELLED),
-            Ok(()) => panic!("the dump was not cancelled"),
-        }
+        assert_eq!(
+            result.expect_err("the dump was not cancelled").to_string(),
+            BACKUP_CANCELLED
+        );
+        assert_eq!(steps, 1);
         assert_eq!(old.expect("old backup"), "old");
         assert!(!partial, "the side file is still there");
     }

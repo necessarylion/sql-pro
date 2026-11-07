@@ -35,7 +35,6 @@ export interface SshConfig {
   keyPath: string
 }
 
-/** `schema` is set only for postgres and mssql. */
 /** How far a running backup is. The backend sends it about once per second. */
 export interface DumpProgress {
   /** The size of the dump file so far. */
@@ -48,6 +47,7 @@ export interface DumpProgress {
   tables: number
 }
 
+/** `schema` is set only for postgres and mssql. */
 export interface TableRef {
   schema: string | null
   name: string

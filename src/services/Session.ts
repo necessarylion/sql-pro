@@ -99,8 +99,10 @@ export class Session {
   cancellable = false
   /** True after the user asked to cancel. The run then ends with a short status, not an error. */
   cancelling = false
-  /** The status after a cancel. It depends on what was cancelled. */
-  private cancelledStatus = QUERY_CANCELLED_STATUS
+  /** True while a backup runs. It has its own flag, so a page load during it does not touch it. */
+  dumping = false
+  /** True after the user asked to cancel the backup. */
+  dumpCancelling = false
   /** How far the running backup is, like `Backing up… 48 MB, 0:32`. '' = no backup runs. */
   backupProgress = ''
   error = ''
@@ -354,21 +356,52 @@ export class Session {
     }
   }
 
+  /** True when a Cancel button should show: a query, a page load or a backup runs. */
+  get canCancel(): boolean {
+    return this.cancellable || this.dumping
+  }
+
+  /** True while the cancel of the work that Cancel stops is on its way. */
+  get cancelPending(): boolean {
+    return this.cancellable ? this.cancelling : this.dumpCancelling
+  }
+
+  /** The tooltip of the Cancel button. */
+  get cancelTitle(): string {
+    return this.cancellable ? 'Stop the running query (Esc)' : 'Stop the backup (Esc)'
+  }
+
   /**
    * Stops the running query or page load. The backend stops it on the server.
-   * Does nothing when nothing that can be cancelled runs.
+   * When none runs, it stops the backup. Does nothing when nothing that can be cancelled runs.
    */
   async cancel(): Promise<void> {
-    if (!this.busy || !this.cancellable || this.cancelling) {
+    if (!this.cancellable) {
+      await this.cancelBackup()
+      return
+    }
+    if (!this.busy || this.cancelling) {
       return
     }
     this.cancelling = true
-    const backup = this.backupProgress !== ''
-    this.cancelledStatus = backup ? BACKUP_CANCELLED_STATUS : QUERY_CANCELLED_STATUS
     try {
-      await (backup ? this.api.cancelDump(this.id) : this.api.cancelQuery(this.id))
+      await this.api.cancelQuery(this.id)
     } catch (error) {
       this.cancelling = false
+      this.error = String(error)
+    }
+  }
+
+  /** Stops the running backup. `backup` then ends with "Backup cancelled", not an error. */
+  private async cancelBackup(): Promise<void> {
+    if (!this.dumping || this.dumpCancelling) {
+      return
+    }
+    this.dumpCancelling = true
+    try {
+      await this.api.cancelDump(this.id)
+    } catch (error) {
+      this.dumpCancelling = false
       this.error = String(error)
     }
   }
@@ -379,7 +412,7 @@ export class Session {
    */
   private endCancelled(): boolean {
     if (this.cancelling) {
-      this.status = this.cancelledStatus
+      this.status = QUERY_CANCELLED_STATUS
     }
     return this.cancelling
   }
@@ -1426,16 +1459,26 @@ export class Session {
 
   /** Writes a SQL dump of the current database to the file at `path`. */
   async backup(path: string): Promise<void> {
+    if (this.dumping) {
+      throw 'A backup already runs in this tab'
+    }
+    this.dumping = true
+    this.dumpCancelling = false
     this.backupProgress = 'Backing up…'
-    this.cancellable = true
     try {
       await this.api.dumpDatabase(this.id, path, this.showBackupProgress.bind(this))
+    } catch (error) {
+      if (!this.dumpCancelling) {
+        throw error
+      }
+      this.status = BACKUP_CANCELLED_STATUS
+      return
     } finally {
+      this.dumping = false
+      this.dumpCancelling = false
       this.backupProgress = ''
-      this.cancellable = false
     }
     // A cancel that came after the end did nothing. The file is saved.
-    this.cancelling = false
     this.status = `Backup saved to ${path}`
   }
 

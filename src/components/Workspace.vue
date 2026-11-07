@@ -122,6 +122,7 @@ const pinKey = computed(readPinKey)
 const connection = computed(describeConnection)
 const summary = computed(describeTables)
 const backupBlocked = computed(hasNoDatabase)
+const backupTitle = computed(backupButtonTitle)
 const exportAsked = computed(readExportAsked)
 const database = computed(readDatabase)
 const triggers = computed(matchingTriggers)
@@ -579,6 +580,16 @@ function hasNoDatabase(): boolean {
   return props.session.config?.driver === 'mysql' && props.session.config.database === ''
 }
 
+/** Says why Back up is off, or what it does. */
+function backupButtonTitle(): string {
+  if (backupBlocked.value) {
+    return 'Choose a database first'
+  }
+  return props.session.dumping
+    ? 'A backup already runs in this tab'
+    : 'Back up this database to a SQL file'
+}
+
 /** The database name. SQLite has none, so it is the file name. */
 function databaseLabel(): string {
   const config = props.session.config
@@ -683,8 +694,8 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
       <button
         v-if="session.config?.driver !== 'mssql'"
         class="icon"
-        :title="backupBlocked ? 'Choose a database first' : 'Back up this database to a SQL file'"
-        :disabled="backupBlocked"
+        :title="backupTitle"
+        :disabled="backupBlocked || session.dumping"
         @click="backup"
       >
         <DownloadIcon :size="13" />
@@ -819,14 +830,12 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
               <LoaderCircleIcon :size="13" class="spin" />
               {{ session.backupProgress || 'Loading…' }}
               <button
-                v-if="session.cancellable"
-                :title="
-                  session.backupProgress ? 'Stop the backup (Esc)' : 'Stop the running query (Esc)'
-                "
-                :disabled="session.cancelling"
+                v-if="session.canCancel"
+                :title="session.cancelTitle"
+                :disabled="session.cancelPending"
                 @click="session.cancel()"
               >
-                {{ session.cancelling ? 'Cancelling…' : 'Cancel' }}
+                {{ session.cancelPending ? 'Cancelling…' : 'Cancel' }}
               </button>
             </template>
             <template v-else-if="session.status">{{ session.status }}</template>

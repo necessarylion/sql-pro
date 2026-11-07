@@ -47,8 +47,10 @@ class FakeApi {
     this.end('Backup cancelled')
   }
 
-  async cancelQuery(): Promise<void> {
-    throw 'not a query'
+  queryCancels: string[] = []
+
+  async cancelQuery(id: string): Promise<void> {
+    this.queryCancels.push(id)
   }
 }
 
@@ -94,7 +96,8 @@ test('a running backup shows its size, time and table, and can be cancelled', as
 
   const running = session.run(session.backup('/tmp/slow.sql'))
   expect(session.busyText).toBe('Backing up…')
-  expect(session.cancellable).toBe(true)
+  expect(session.dumping).toBe(true)
+  expect(session.canCancel).toBe(true)
 
   api.onProgress?.({ bytes: 48 * 1024 * 1024, seconds: 32, table: null, tables: 0 })
   expect(session.busyText).toBe('Backing up… 48 MB, 0:32')
@@ -105,13 +108,43 @@ test('a running backup shows its size, time and table, and can be cancelled', as
   expect(session.busyText).toBe('Backing up… 3.0 GB, 0:05 · Dumping table public.x (3)')
 
   await session.cancel()
-  expect(await running).toBe(false)
+  expect(await running).toBe(true)
   expect(api.cancels).toEqual([session.id])
   // A cancel is not an error.
   expect(session.error).toBe('')
   expect(session.status).toBe('Backup cancelled')
   expect(session.busy).toBe(false)
   expect(session.busyText).toBe('Working…')
+  expect(session.canCancel).toBe(false)
+})
+
+test('a page load during a backup is cancelled first, and keeps the backup cancellable', async function () {
+  const api = new FakeApi()
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
+  const running = session.run(session.backup('/tmp/slow.sql'))
+
+  // A page load starts and ends. It must not take the Cancel of the backup away.
+  session.cancellable = true
+  expect(session.cancelTitle).toBe('Stop the running query (Esc)')
+  await session.cancel()
+  expect(api.queryCancels).toEqual([session.id])
+  expect(api.cancels).toEqual([])
+  session.cancellable = false
+  session.cancelling = false
+  expect(session.canCancel).toBe(true)
+  expect(session.cancelTitle).toBe('Stop the backup (Esc)')
+
+  // A second backup in the same tab is refused. The first one goes on.
+  expect(await session.run(session.backup('/tmp/other.sql'))).toBe(false)
+  expect(session.error).toBe('A backup already runs in this tab')
+  expect(session.dumping).toBe(true)
+  expect(session.backupProgress).toBe('Backing up…')
+
+  await session.cancel()
+  expect(api.cancels).toEqual([session.id])
+  expect(await running).toBe(true)
+  expect(session.status).toBe('Backup cancelled')
+  expect(session.dumping).toBe(false)
 })
 
 test('a backup that fails while it runs shows the error of the tool', async function () {
@@ -121,5 +154,5 @@ test('a backup that fails while it runs shows the error of the tool', async func
   api.end('mysqldump: Got error: 1045')
   expect(await running).toBe(false)
   expect(session.error).toBe('mysqldump: Got error: 1045')
-  expect(session.cancellable).toBe(false)
+  expect(session.dumping).toBe(false)
 })

@@ -21,11 +21,11 @@ use futures_util::future::{AbortHandle, Abortable};
 use parking_lot::Mutex;
 
 use crate::constants::{
-    AI_IMAGE_MAX_BYTES, ANY_HOST, CANNOT_MANAGE_USERS, CHARSET_ONLY_MYSQL, CLAUDE_READ_ONLY_NOTE,
-    CONNECT_CANCELLED, DROP_CURRENT_DATABASE, EXPLAIN_ONE_STATEMENT, LIKE_ESCAPE, LOCALHOST,
-    MAX_QUERY_ROWS, MSSQL_NO_USER_ACCOUNTS, NO_EXPLAIN, NO_HOME_FOR_NOTES, NO_USER_ACCOUNTS,
-    NOT_A_READ, NOTES_FOLDER, OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, QUERY_STATS_FIXED,
-    SQLITE_NO_DATABASES, VIEW,
+    AI_IMAGE_MAX_BYTES, ANY_HOST, BACKUP_RUNS, CANNOT_MANAGE_USERS, CHARSET_ONLY_MYSQL,
+    CLAUDE_READ_ONLY_NOTE, CONNECT_CANCELLED, DROP_CURRENT_DATABASE, EXPLAIN_ONE_STATEMENT,
+    LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS, MSSQL_NO_USER_ACCOUNTS, NO_EXPLAIN, NO_HOME_FOR_NOTES,
+    NO_USER_ACCOUNTS, NOT_A_READ, NOTES_FOLDER, OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED,
+    QUERY_STATS_FIXED, SQLITE_NO_DATABASES, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -583,7 +583,14 @@ impl ConnectionService {
             config.port = tunnel.local_port();
         }
         let (handle, registration) = AbortHandle::new_pair();
-        self.dumping.lock().insert(id.to_owned(), handle);
+        {
+            let mut dumping = self.dumping.lock();
+            // Two backups of one tab would write the same side file.
+            if dumping.contains_key(id) {
+                return Err(BACKUP_RUNS.into());
+            }
+            dumping.insert(id.to_owned(), handle);
+        }
         let result = DumpRepository::dump(&config, path, progress, registration).await;
         self.dumping.lock().remove(id);
         result
