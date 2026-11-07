@@ -573,8 +573,12 @@ fn close(open: &mut Vec<(usize, PlanNode)>, roots: &mut Vec<PlanNode>) {
 fn mysql_tree_node(step: &str) -> PlanNode {
     let mut node = PlanNode::default();
     let mut rest = step.trim_end();
-    // The numbers are in groups at the end: `(cost=…)`, `(actual time=…)`, `(never executed)`.
-    while let Some(start) = rest.rfind(" (") {
+    // The numbers are in at most two groups at the end: `(cost=…)`, then `(actual time=…)`
+    // or `(never executed)`. A group further in is part of the step text, like a filter.
+    for _ in 0..2 {
+        let Some(start) = rest.rfind(" (") else {
+            break;
+        };
         let group = &rest[start + 2..];
         let Some(inner) = group.strip_suffix(')') else {
             break;
@@ -1411,6 +1415,17 @@ mod tests {
             .map(|node| node.operation.as_str())
             .collect();
         assert_eq!(operations, ["Index range scan", "Query block #2"]);
+    }
+
+    #[test]
+    fn mysql_tree_reads_only_the_last_two_groups() {
+        let text = "-> Filter: (t.name = 'a (cost=1)')  (cost=2.5 rows=4) (actual time=0.01..0.02 rows=3 loops=1)";
+        let plan = read(PlanFormat::MysqlTree, text, true);
+        let filter = &plan.nodes[0];
+        assert_eq!(filter.cost, Some(2.5));
+        assert_eq!(filter.estimated_rows, Some(4.0));
+        assert_eq!(filter.actual_rows, Some(3.0));
+        assert_eq!(filter.details[0].value, "(t.name = 'a (cost=1)')");
     }
 
     #[test]

@@ -501,9 +501,11 @@ impl Repository for MssqlRepository {
     }
 
     /// SQL Server has no read-only transaction. The transaction is always rolled back,
-    /// so a write inside it does not stay.
+    /// so a write inside it does not stay. A compile error stops the whole batch before
+    /// `BEGIN TRAN` runs. The `IF` lets the end run again after that without an error,
+    /// so a healthy connection is kept (see `query_steps`).
     fn read_only_guard(&self) -> (&'static str, &'static str) {
-        ("BEGIN TRAN", "ROLLBACK")
+        ("BEGIN TRAN", "IF @@TRANCOUNT > 0 ROLLBACK")
     }
 
     fn open_transaction_sql(&self) -> Option<&'static str> {

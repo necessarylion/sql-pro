@@ -2612,6 +2612,9 @@ async fn ai_read_guard(config: ConnectionConfig) {
         .await
         .expect("read after a failed read");
     assert_eq!(sets[0].rows, vec![vec![Some("1".to_owned())]]);
+    if driver == Driver::Mssql {
+        compile_error_keeps_the_session(&service, id).await;
+    }
 
     if driver == Driver::Mysql {
         service
@@ -2662,6 +2665,28 @@ async fn ai_read_guard(config: ConnectionConfig) {
             .expect("drop");
     }
     service.disconnect(id).await;
+}
+
+/// On SQL Server a compile error stops the whole guarded batch before `BEGIN TRAN` runs.
+/// The tab keeps its connection then, so a `#temp` table made before is still there.
+async fn compile_error_keeps_the_session(service: &ConnectionService, id: &str) {
+    service
+        .run_query(id, "CREATE TABLE #sqlpro_kept (a int)")
+        .await
+        .expect("temp table");
+    assert!(service.run_ai_read(id, "SELECT (1").await.is_err());
+    // A table that is there: a missing table is found only at run time.
+    let missing_column = "SELECT sqlpro_missing FROM sys.objects";
+    assert!(service.run_ai_read(id, missing_column).await.is_err());
+    assert!(service.query_plan(id, missing_column, true).await.is_err());
+    service
+        .run_query(id, "SELECT COUNT(*) FROM #sqlpro_kept")
+        .await
+        .expect("the temp table is still there");
+    service
+        .run_query(id, "DROP TABLE #sqlpro_kept")
+        .await
+        .expect("drop temp table");
 }
 
 /// A cancel stops a connect that hangs. Then no connection is kept for the tab.
