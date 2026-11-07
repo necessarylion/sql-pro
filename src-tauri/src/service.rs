@@ -599,7 +599,8 @@ impl ConnectionService {
     /// Stops the backup that runs now for `id`. It then fails with `BACKUP_CANCELLED`.
     /// Does nothing when no backup runs.
     pub fn cancel_dump(&self, id: &str) {
-        if let Some(handle) = self.dumping.lock().remove(id) {
+        // Only `dump_database` removes the entry, when its backup ends.
+        if let Some(handle) = self.dumping.lock().get(id) {
             handle.abort();
         }
     }

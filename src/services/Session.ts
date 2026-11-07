@@ -99,6 +99,8 @@ export class Session {
   cancellable = false
   /** True after the user asked to cancel. The run then ends with a short status, not an error. */
   cancelling = false
+  /** True when the query or page load that just ended was cancelled. `run` reads it once. */
+  private queryCancelled = false
   /** True while a backup runs. It has its own flag, so a page load during it does not touch it. */
   dumping = false
   /** True after the user asked to cancel the backup. */
@@ -407,14 +409,33 @@ export class Session {
   }
 
   /**
+   * Waits for a query or page load that the user may cancel.
+   * The flags go back when it ends, also on an error. Other work, like a backup, may still run.
+   */
+  private async cancellableCall<T>(call: Promise<T>): Promise<T> {
+    this.cancellable = true
+    try {
+      return await call
+    } finally {
+      this.cancellable = false
+      if (this.cancelling) {
+        this.cancelling = false
+        this.queryCancelled = true
+      }
+    }
+  }
+
+  /**
    * True when the user cancelled the work that just ended. Then it shows the short status.
    * A cancelled query may still end without an error: MySQL ends a cancelled SLEEP like that.
    */
   private endCancelled(): boolean {
-    if (this.cancelling) {
+    const cancelled = this.queryCancelled
+    if (cancelled) {
       this.status = QUERY_CANCELLED_STATUS
     }
-    return this.cancelling
+    this.queryCancelled = false
+    return cancelled
   }
 
   /** Checks that `config` can connect. It does not touch this tab. */
@@ -781,18 +802,18 @@ export class Session {
     if (!table) {
       return
     }
-    this.cancellable = true
-    const page = await this.api.browse(this.id, {
-      table,
-      filter: this.filter,
-      filters: this.filters,
-      orderBy: this.orderBy,
-      descending: this.descending,
-      limit: PAGE_SIZE,
-      offset: this.offset,
-      total,
-    })
-    this.cancellable = false
+    const page = await this.cancellableCall(
+      this.api.browse(this.id, {
+        table,
+        filter: this.filter,
+        filters: this.filters,
+        orderBy: this.orderBy,
+        descending: this.descending,
+        limit: PAGE_SIZE,
+        offset: this.offset,
+        total,
+      }),
+    )
     // The user may have picked another table while this one was loading.
     if (this.table === table) {
       // markRaw: Vue does not wrap the rows. A page is only replaced, never changed in place.
@@ -1650,9 +1671,7 @@ export class Session {
   /** Shows the last result that has columns. Adds up the affected rows of the rest. */
   async runQuery(sql: string): Promise<void> {
     const started = performance.now()
-    this.cancellable = true
-    const sets = await this.api.runQuery(this.id, sql)
-    this.cancellable = false
+    const sets = await this.cancellableCall(this.api.runQuery(this.id, sql))
     const seconds = ((performance.now() - started) / 1000).toFixed(2)
 
     let result: ResultSet | null = null

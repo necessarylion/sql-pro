@@ -48,9 +48,22 @@ class FakeApi {
   }
 
   queryCancels: string[] = []
+  /** The page load that runs now. It waits until it is cancelled or ended by the test. */
+  private page: PromiseWithResolvers<never> | null = null
 
   async cancelQuery(id: string): Promise<void> {
     this.queryCancels.push(id)
+    this.page?.reject('Query cancelled')
+  }
+
+  browse(): Promise<never> {
+    this.page = Promise.withResolvers<never>()
+    return this.page.promise
+  }
+
+  /** Ends the running page load with a normal error. */
+  failPage(error: string): void {
+    this.page?.reject(error)
   }
 }
 
@@ -118,20 +131,26 @@ test('a running backup shows its size, time and table, and can be cancelled', as
   expect(session.canCancel).toBe(false)
 })
 
-test('a page load during a backup is cancelled first, and keeps the backup cancellable', async function () {
+test('a cancelled page load during a backup keeps the backup cancellable', async function () {
   const api = new FakeApi()
   const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
   const running = session.run(session.backup('/tmp/slow.sql'))
 
-  // A page load starts and ends. It must not take the Cancel of the backup away.
-  session.cancellable = true
+  // The user opens a table. Esc stops that page load, not the backup.
+  const load = session.run(session.selectTable(table('orders')))
+  // selectTable asks about unsaved changes first. Let it reach the page load.
+  await Bun.sleep(0)
   expect(session.cancelTitle).toBe('Stop the running query (Esc)')
   await session.cancel()
+  expect(await load).toBe(false)
   expect(api.queryCancels).toEqual([session.id])
   expect(api.cancels).toEqual([])
-  session.cancellable = false
-  session.cancelling = false
+  expect(session.status).toBe('Query cancelled')
+  expect(session.error).toBe('')
+
+  // The backup still runs and can still be cancelled.
   expect(session.canCancel).toBe(true)
+  expect(session.cancelPending).toBe(false)
   expect(session.cancelTitle).toBe('Stop the backup (Esc)')
 
   // A second backup in the same tab is refused. The first one goes on.
@@ -140,7 +159,30 @@ test('a page load during a backup is cancelled first, and keeps the backup cance
   expect(session.dumping).toBe(true)
   expect(session.backupProgress).toBe('Backing up…')
 
+  // The cancel of the page load does not make the backup look cancelled.
+  api.end()
+  expect(await running).toBe(true)
+  expect(session.status).toBe('Backup saved to /tmp/slow.sql')
+  expect(session.busy).toBe(false)
+})
+
+test('a page load that fails during a backup leaves Cancel to the backup', async function () {
+  const api = new FakeApi()
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
+  const running = session.run(session.backup('/tmp/slow.sql'))
+
+  const load = session.run(session.selectTable(table('orders')))
+  // selectTable asks about unsaved changes first. Let it reach the page load.
+  await Bun.sleep(0)
+  api.failPage('no such table: orders')
+  expect(await load).toBe(false)
+  expect(session.error).toBe('no such table: orders')
+  expect(session.cancellable).toBe(false)
+
+  // Cancel now stops the backup.
+  expect(session.cancelTitle).toBe('Stop the backup (Esc)')
   await session.cancel()
+  expect(api.queryCancels).toEqual([])
   expect(api.cancels).toEqual([session.id])
   expect(await running).toBe(true)
   expect(session.status).toBe('Backup cancelled')
