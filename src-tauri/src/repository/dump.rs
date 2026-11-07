@@ -2,20 +2,26 @@
 //!
 //! The tools know every detail of their own database, so the dump can be loaded again.
 
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
+use futures_util::future::{AbortRegistration, Abortable};
+use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::Command;
 
+use crate::constants::{
+    BACKUP_CANCELLED, DUMP_PROGRESS_EVERY, MSSQL_NO_BACKUP, MYSQL_PASSWORD_ENV,
+    PARTIAL_DUMP_SUFFIX, POSTGRES_PASSWORD_ENV,
+};
 #[cfg(unix)]
 use crate::constants::{HOMEBREW_OPT_DIR, TOOL_DIRS};
-use crate::constants::{
-    MSSQL_NO_BACKUP, MYSQL_PASSWORD_ENV, PARTIAL_DUMP_SUFFIX, POSTGRES_PASSWORD_ENV,
-};
 use crate::error::{AppError, AppResult};
-use crate::model::{ConnectionConfig, Driver};
+use crate::model::{ConnectionConfig, Driver, DumpProgress};
 
 /// Writes SQL dumps with the dump tools that are installed on this computer.
 pub struct DumpRepository;
@@ -25,17 +31,23 @@ impl DumpRepository {
     ///
     /// `config` must hold the host and port we really connect to. With an SSH
     /// tunnel that is the local end of the tunnel.
-    pub async fn dump(config: &ConnectionConfig, path: &Path) -> AppResult<()> {
+    ///
+    /// `progress` gets how far it is, about once per second. An abort of `cancel` kills
+    /// the tool. The dump then fails with `BACKUP_CANCELLED` and leaves no file.
+    pub async fn dump(
+        config: &ConnectionConfig,
+        path: &Path,
+        progress: impl FnMut(DumpProgress),
+        cancel: AbortRegistration,
+    ) -> AppResult<()> {
         if config.driver == Driver::Mssql {
             return Err(MSSQL_NO_BACKUP.into());
         }
         // The tool writes to a side file first. So a dump that fails leaves no
         // half file, and does not harm an older backup that is already at `path`.
-        let mut partial = OsString::from(path);
-        partial.push(PARTIAL_DUMP_SUFFIX);
-        let partial = PathBuf::from(partial);
+        let partial = Self::partial_path(path);
 
-        let mut result = Self::run(config, &partial).await;
+        let mut result = Self::run(config, &partial, progress, cancel).await;
         if result.is_ok() {
             result = std::fs::rename(&partial, path).map_err(AppError::from);
         }
@@ -46,8 +58,26 @@ impl DumpRepository {
         result
     }
 
+    /// The side file of a dump to `path`, like `shop.sql.4242-7.part`. The name is new for
+    /// each dump. So two tabs that back up to the same file never write into one side file.
+    fn partial_path(path: &Path) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let mut partial = OsString::from(path);
+        partial.push(format!(
+            ".{}-{}{PARTIAL_DUMP_SUFFIX}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        PathBuf::from(partial)
+    }
+
     /// Runs the dump tool and waits for it. Its error text becomes our error.
-    async fn run(config: &ConnectionConfig, output: &Path) -> AppResult<()> {
+    async fn run(
+        config: &ConnectionConfig,
+        output: &Path,
+        mut progress: impl FnMut(DumpProgress),
+        cancel: AbortRegistration,
+    ) -> AppResult<()> {
         let mut command = match config.driver {
             Driver::Mysql => Self::mysql(config, output).await?,
             Driver::Postgres => Self::postgres(config, output)?,
@@ -59,19 +89,50 @@ impl DumpRepository {
             .stdin(Stdio::null())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let finished = command.spawn()?.wait_with_output().await?;
-        if finished.status.success() {
+        let mut child = command.spawn()?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or("The dump tool has no error output")?;
+        // Not `lines()`: a line that is not UTF-8 would end the read with an error.
+        let mut lines = BufReader::new(stderr).split(b'\n');
+        let mut log = DumpLog::default();
+        let started = Instant::now();
+        let mut tick = tokio::time::interval(DUMP_PROGRESS_EVERY);
+        let mut cancelled = Abortable::new(std::future::pending::<()>(), cancel);
+        // The tool closes its error output when it ends.
+        loop {
+            tokio::select! {
+                // A cancel wins over everything else.
+                biased;
+                _ = &mut cancelled => {
+                    // Wait until it is gone, so the file is closed before it is deleted.
+                    // It may have ended by itself just now. That is fine.
+                    let _ = child.kill().await;
+                    return Err(BACKUP_CANCELLED.into());
+                }
+                line = lines.next_segment() => match line? {
+                    Some(line) => {
+                        if log.read(&String::from_utf8_lossy(&line)) {
+                            progress(log.progress(output, started));
+                        }
+                    }
+                    None => break,
+                },
+                _ = tick.tick() => progress(log.progress(output, started)),
+            }
+        }
+        let status = child.wait().await?;
+        if status.success() {
             return Ok(());
         }
-        let reason = String::from_utf8_lossy(&finished.stderr);
-        let reason = reason.trim();
+        let reason = log.reason();
         if reason.is_empty() {
             return Err(AppError::Message(format!(
-                "The dump tool failed ({})",
-                finished.status
+                "The dump tool failed ({status})"
             )));
         }
-        Err(AppError::Message(reason.to_owned()))
+        Err(AppError::Message(reason))
     }
 
     async fn mysql(config: &ConnectionConfig, output: &Path) -> AppResult<Command> {
@@ -92,6 +153,8 @@ impl DumpRepository {
             .arg("--triggers")
             // Tablespaces need the PROCESS right, which most users do not have.
             .arg("--no-tablespaces")
+            // Names each table on stderr. That is how we show the progress.
+            .arg("--verbose")
             .arg(Self::option("--result-file=", output))
             .stdout(Stdio::null());
         if !config.user.is_empty() {
@@ -122,6 +185,7 @@ impl DumpRepository {
             .arg(format!("--port={}", config.port))
             // Never wait for a typed password. Nobody can type it.
             .arg("--no-password")
+            .arg("--verbose")
             .arg(Self::option("--file=", output))
             .stdout(Stdio::null());
         if !config.user.is_empty() {
@@ -213,5 +277,209 @@ impl DumpRepository {
             }
         }
         folders
+    }
+}
+
+/// The error output of a dump tool. With `--verbose` it names each table it starts.
+/// It also keeps the lines we show when the tool fails.
+#[derive(Default)]
+struct DumpLog {
+    /// The lines that are not progress chatter. Mostly the real errors.
+    errors: Vec<String>,
+    /// The last lines of all. We show them when no line looks like an error.
+    tail: VecDeque<String>,
+    table: Option<String>,
+    tables: usize,
+}
+
+impl DumpLog {
+    /// ponytail: a broken server can print many error lines. The first ones tell the cause.
+    const MAX_ERRORS: usize = 20;
+    const MAX_TAIL: usize = 5;
+
+    /// Reads one line. Returns true when it names a new table.
+    fn read(&mut self, line: &str) -> bool {
+        let line = line.trim_end();
+        if line.is_empty() {
+            return false;
+        }
+        if self.tail.len() == Self::MAX_TAIL {
+            self.tail.pop_front();
+        }
+        self.tail.push_back(line.to_owned());
+        if let Some(table) = Self::table_of(line) {
+            self.table = Some(table);
+            self.tables += 1;
+            return true;
+        }
+        if !Self::is_chatter(line) && self.errors.len() < Self::MAX_ERRORS {
+            self.errors.push(line.to_owned());
+        }
+        false
+    }
+
+    /// The error text when the tool failed.
+    fn reason(&self) -> String {
+        if self.errors.is_empty() {
+            Vec::from(self.tail.clone()).join("\n")
+        } else {
+            self.errors.join("\n")
+        }
+    }
+
+    fn progress(&self, output: &Path, started: Instant) -> DumpProgress {
+        DumpProgress {
+            // The file is not there before the tool opens it.
+            bytes: std::fs::metadata(output).map_or(0, |file| file.len()),
+            seconds: started.elapsed().as_secs(),
+            table: self.table.clone(),
+            tables: self.tables,
+        }
+    }
+
+    /// The table a line names, like `-- Retrieving table structure for table orders...`
+    /// (mysqldump) or `pg_dump: dumping contents of table "public.orders"`.
+    fn table_of(line: &str) -> Option<String> {
+        let name = if let Some(rest) = line.strip_prefix("-- Retrieving table structure for table ")
+        {
+            rest.trim_end_matches("...").trim_matches('`')
+        } else {
+            line.strip_prefix("pg_dump: ")?
+                .strip_prefix("dumping contents of table ")?
+                .trim_matches('"')
+        };
+        (!name.is_empty()).then(|| name.to_owned())
+    }
+
+    /// True for a `--verbose` line that only tells what the tool does now.
+    fn is_chatter(line: &str) -> bool {
+        if line.starts_with("-- ") {
+            return true;
+        }
+        line.strip_prefix("pg_dump: ").is_some_and(|rest| {
+            !["error:", "detail:", "hint:", "warning:"]
+                .iter()
+                .any(|kind| rest.starts_with(kind))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    use futures_util::future::AbortHandle;
+
+    use super::{DumpLog, DumpRepository};
+    use crate::constants::BACKUP_CANCELLED;
+    use crate::model::{ConnectionConfig, Driver, SslConfig};
+
+    #[tokio::test]
+    async fn a_cancel_leaves_the_older_backup_alone() {
+        let folder = std::env::temp_dir();
+        let id = std::process::id();
+        let database = folder.join(format!("sqlpro-cancel-{id}.sqlite"));
+        let _ = std::fs::remove_file(&database);
+        // Enough rows that the dump still runs when the cancel comes.
+        let filled = std::process::Command::new("sqlite3")
+            .arg(&database)
+            .arg(
+                "CREATE TABLE t(x TEXT); WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL \
+                 SELECT n + 1 FROM c WHERE n < 300000) INSERT INTO t SELECT hex(randomblob(64)) FROM c;",
+            )
+            .status();
+        if !filled.is_ok_and(|status| status.success()) {
+            println!("NOTE: the cancel check is skipped: sqlite3 was not found");
+            return;
+        }
+        let path = folder.join(format!("sqlpro-cancel-{id}.sql"));
+        std::fs::write(&path, "old").expect("old backup");
+        let config = ConnectionConfig {
+            driver: Driver::Sqlite,
+            host: String::new(),
+            port: 0,
+            user: String::new(),
+            password: String::new(),
+            database: database.to_string_lossy().into_owned(),
+            ssh: None,
+            ssl: SslConfig::default(),
+        };
+        let (handle, registration) = AbortHandle::new_pair();
+        let mut steps = 0;
+        // The first progress comes right after the tool started. Cancel there.
+        let cancel = |_| {
+            steps += 1;
+            handle.abort();
+        };
+        let result = DumpRepository::dump(&config, &path, cancel, registration).await;
+        let old = std::fs::read_to_string(&path);
+        let partial = std::fs::read_dir(&folder)
+            .expect("temp folder")
+            .flatten()
+            .any(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with(&format!("sqlpro-cancel-{id}.sql.")) && name.ends_with(".part")
+            });
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&database);
+        assert_eq!(
+            result.expect_err("the dump was not cancelled").to_string(),
+            BACKUP_CANCELLED
+        );
+        assert_eq!(steps, 1);
+        assert_eq!(old.expect("old backup"), "old");
+        assert!(!partial, "the side file is still there");
+    }
+
+    #[test]
+    fn each_dump_has_its_own_side_file() {
+        let path = Path::new("/backups/shop.sql");
+        let first = DumpRepository::partial_path(path);
+        let second = DumpRepository::partial_path(path);
+        assert_ne!(first, second);
+        for partial in [first, second] {
+            assert_eq!(partial.extension(), Some(OsStr::new("part")));
+            let name = partial.to_string_lossy().into_owned();
+            assert!(name.starts_with("/backups/shop.sql."), "{name}");
+        }
+    }
+
+    #[test]
+    fn finds_the_table_of_mysqldump_and_pg_dump() {
+        let mut log = DumpLog::default();
+        assert!(!log.read("-- Connecting to 127.0.0.1..."));
+        assert!(log.read("-- Retrieving table structure for table orders..."));
+        assert_eq!(log.table.as_deref(), Some("orders"));
+        assert!(!log.read("-- Sending SELECT query..."));
+        assert!(log.read("-- Retrieving table structure for table `order items`...\n"));
+        assert_eq!(log.table.as_deref(), Some("order items"));
+        assert!(!log.read("pg_dump: reading schemas"));
+        assert!(log.read(r#"pg_dump: dumping contents of table "public.users""#));
+        assert_eq!(log.table.as_deref(), Some("public.users"));
+        assert_eq!(log.tables, 3);
+        // Chatter only: the error falls back to the last lines.
+        assert!(
+            log.reason()
+                .ends_with("pg_dump: dumping contents of table \"public.users\"")
+        );
+    }
+
+    #[test]
+    fn keeps_only_the_real_errors() {
+        let mut log = DumpLog::default();
+        log.read("pg_dump: last built-in OID is 16383");
+        log.read("pg_dump: reading extensions");
+        log.read("pg_dump: error: query failed: ERROR:  permission denied for table secret");
+        log.read("pg_dump: detail: Query was: LOCK TABLE public.secret IN ACCESS SHARE MODE");
+        log.read("-- Retrieving rows...");
+        log.read("mysqldump: Got error: 1045: Access denied for user 'me'");
+        assert_eq!(
+            log.reason(),
+            "pg_dump: error: query failed: ERROR:  permission denied for table secret\n\
+             pg_dump: detail: Query was: LOCK TABLE public.secret IN ACCESS SHARE MODE\n\
+             mysqldump: Got error: 1045: Access denied for user 'me'"
+        );
     }
 }

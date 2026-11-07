@@ -990,14 +990,18 @@ async fn dump(service: &ConnectionService, driver: Driver, database: &str) {
     let path = temp_path("dump", "sql");
     if driver == Driver::Mssql {
         let error = service
-            .dump_database(ID, &path)
+            .dump_database(ID, &path, drop)
             .await
             .expect_err("no backup");
         assert!(error.to_string().contains("not supported"), "{error}");
         assert!(!path.exists());
         return;
     }
-    match service.dump_database(ID, &path).await {
+    let mut steps = Vec::new();
+    match service
+        .dump_database(ID, &path, |step| steps.push(step))
+        .await
+    {
         Err(error) if error.to_string().contains("was not found") => {
             println!("NOTE: the dump check for {driver:?} is skipped: {error}");
             return;
@@ -1016,12 +1020,27 @@ async fn dump(service: &ConnectionService, driver: Driver, database: &str) {
         "no CREATE TABLE in the dump"
     );
     assert!(sql.contains("Brien") && sql.contains("2020-01-31"));
+    // The progress came at least once: the first tick is at the start.
+    assert_ne!(steps.len(), 0);
     // The side file of the dump is gone.
-    assert!(!folder.join(format!("{}.part", path.display())).exists());
+    let name = path
+        .file_name()
+        .expect("name")
+        .to_string_lossy()
+        .into_owned();
+    let left = std::fs::read_dir(&folder)
+        .expect("temp folder")
+        .flatten()
+        .any(|entry| {
+            let other = entry.file_name();
+            let other = other.to_string_lossy();
+            other.starts_with(&format!("{name}.")) && other.ends_with(".part")
+        });
+    assert!(!left, "the side file of the dump is still there");
 
     // A folder that does not exist: an error, and no file.
     let missing = folder.join("sqlpro-no-such-folder").join("dump.sql");
-    assert!(service.dump_database(ID, &missing).await.is_err());
+    assert!(service.dump_database(ID, &missing, drop).await.is_err());
     assert!(!missing.exists());
     assert!(!folder.join("sqlpro-no-such-folder").exists());
 }

@@ -22,15 +22,16 @@ use futures_util::future::{AbortHandle, Abortable};
 use parking_lot::Mutex;
 
 use crate::constants::{
-    AI_IMAGE_MAX_BYTES, ANY_HOST, CANNOT_MANAGE_USERS, CHARSET_ONLY_MYSQL, CLAUDE_READ_ONLY_NOTE,
-    CONNECT_CANCELLED, DROP_CURRENT_DATABASE, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS,
-    MSSQL_NO_USER_ACCOUNTS, NO_HOME_FOR_NOTES, NO_USER_ACCOUNTS, NOT_A_READ, NOTES_FOLDER,
-    OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, QUERY_STATS_FIXED, SQLITE_NO_DATABASES, VIEW,
+    AI_IMAGE_MAX_BYTES, ANY_HOST, BACKUP_RUNS, CANNOT_MANAGE_USERS, CHARSET_ONLY_MYSQL,
+    CLAUDE_READ_ONLY_NOTE, CONNECT_CANCELLED, DROP_CURRENT_DATABASE, LIKE_ESCAPE, LOCALHOST,
+    MAX_QUERY_ROWS, MSSQL_NO_USER_ACCOUNTS, NO_HOME_FOR_NOTES, NO_USER_ACCOUNTS, NOT_A_READ,
+    NOTES_FOLDER, OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, QUERY_STATS_FIXED,
+    SQLITE_NO_DATABASES, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
-    ConnectionConfig, DbObject, DbUser, Diagram, DiagramTable, Driver, ExportRequest,
+    ConnectionConfig, DbObject, DbUser, Diagram, DiagramTable, Driver, DumpProgress, ExportRequest,
     FilterOperator, FilterRule, ForeignKey, IndexInfo, NewColumn, NewForeignKey, NewIndex, NewUser,
     Notes, ResultSet, RowUpdate, RowsExport, RowsSql, SaveResult, TableKeys, TablePage, TableRef,
     UserList, Values,
@@ -64,6 +65,8 @@ pub struct ConnectionService {
     connections: Mutex<HashMap<String, Connection>>,
     /// The connects that still run, by tab id. `cancel_connect` stops one.
     connecting: Mutex<HashMap<String, Arc<AbortHandle>>>,
+    /// The backups that still run, by tab id. `cancel_dump` stops one.
+    dumping: Mutex<HashMap<String, AbortHandle>>,
     claude: ClaudeCli,
     /// Holds the notes of each database for the AI. See `NOTES_FOLDER`.
     notes_folder: Option<PathBuf>,
@@ -75,6 +78,7 @@ impl ConnectionService {
             factory,
             connections: Mutex::new(HashMap::new()),
             connecting: Mutex::new(HashMap::new()),
+            dumping: Mutex::new(HashMap::new()),
             claude: ClaudeCli::default(),
             notes_folder: std::env::home_dir().map(|home| home.join(NOTES_FOLDER)),
         }
@@ -566,8 +570,13 @@ impl ConnectionService {
     /// Writes a full SQL dump of the current database to the file at `path`.
     ///
     /// The dump tool is its own process with its own login. So the tab can be
-    /// used while it runs, and no lock is held.
-    pub async fn dump_database(&self, id: &str, path: &Path) -> AppResult<()> {
+    /// used while it runs, and no lock is held. `progress` gets how far it is.
+    pub async fn dump_database(
+        &self,
+        id: &str,
+        path: &Path,
+        progress: impl FnMut(DumpProgress),
+    ) -> AppResult<()> {
         // This copy also keeps the tunnel open until the dump is done.
         let connection = self.connection(id)?;
         let mut config = connection.config;
@@ -576,7 +585,27 @@ impl ConnectionService {
             LOCALHOST.clone_into(&mut config.host);
             config.port = tunnel.local_port();
         }
-        DumpRepository::dump(&config, path).await
+        let (handle, registration) = AbortHandle::new_pair();
+        {
+            let mut dumping = self.dumping.lock();
+            // Two backups of one tab would write the same side file.
+            if dumping.contains_key(id) {
+                return Err(BACKUP_RUNS.into());
+            }
+            dumping.insert(id.to_owned(), handle);
+        }
+        let result = DumpRepository::dump(&config, path, progress, registration).await;
+        self.dumping.lock().remove(id);
+        result
+    }
+
+    /// Stops the backup that runs now for `id`. It then fails with `BACKUP_CANCELLED`.
+    /// Does nothing when no backup runs.
+    pub fn cancel_dump(&self, id: &str) {
+        // Only `dump_database` removes the entry, when its backup ends.
+        if let Some(handle) = self.dumping.lock().get(id) {
+            handle.abort();
+        }
     }
 
     /// Writes tables to a SQL or CSV file. See `ExportRequest`.

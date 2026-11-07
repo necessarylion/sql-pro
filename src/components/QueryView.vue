@@ -165,7 +165,11 @@ function useHistory(sql: string): void {
   showHistory.value = false
 }
 
-function closeHistory(): void {
+function closeHistory(event: Event): void {
+  if (showHistory.value) {
+    // This Escape had a job. It does not also stop a backup.
+    shortcuts.claim(event)
+  }
   showHistory.value = false
 }
 
@@ -361,14 +365,14 @@ watch(sessionPlan, showPlanTab)
         <span class="message error" :title="session.error">{{ session.error }}</span>
       </template>
       <template v-else-if="session.busy">
-        <span class="dim">Working…</span>
+        <span class="dim">{{ session.busyText }}</span>
         <button
-          v-if="session.cancellable"
-          title="Stop the running query (Esc)"
-          :disabled="session.cancelling"
+          v-if="session.canCancel"
+          :title="session.cancelTitle"
+          :disabled="session.cancelPending"
           @click="session.cancel()"
         >
-          {{ session.cancelling ? 'Cancelling…' : 'Cancel' }}
+          {{ session.cancelPending ? 'Cancelling…' : 'Cancel' }}
         </button>
       </template>
       <template v-else-if="session.status">

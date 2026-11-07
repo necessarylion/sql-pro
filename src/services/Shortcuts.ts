@@ -3,6 +3,7 @@ import {
   CANCEL_SHORTCUT_KEY,
   COPY_KEY,
   MAC_PLATFORM_PATTERN,
+  OWN_ESCAPE_SELECTOR,
   SELECT_ALL_KEY,
   SHIFT_SHORTCUT_KEYS,
   SHORTCUT_KEYS,
@@ -18,9 +19,19 @@ export interface ModifierKeys {
   altKey?: boolean
 }
 
+/** The parts of a key press that tell if Escape already had a job. */
+export interface KeyTarget {
+  key: string
+  defaultPrevented: boolean
+  /** The DOM element. Only `closest` is used, so a test can pass a fake. */
+  target: EventTarget | { closest?(selector: string): unknown } | null
+}
+
 /** Knows the main modifier key of the platform: Cmd on macOS, Ctrl on Windows and Linux. */
 export class Shortcuts {
   mac: boolean
+  /** Key presses that a part of the page already used, like Escape that cleared the selection. */
+  private claimed = new WeakSet<object>()
 
   /** `platform` is `navigator.platform`. */
   constructor(platform: string) {
@@ -75,6 +86,32 @@ export class Shortcuts {
     return (
       event.key === CANCEL_SHORTCUT_KEY && this.hasModifier({ metaKey, ctrlKey, shiftKey, altKey })
     )
+  }
+
+  /**
+   * Marks a key press that already did its job. It then does not also stop a backup.
+   * Not `preventDefault`: that would also keep a native dialog from closing.
+   */
+  claim(event: object): void {
+    this.claimed.add(event)
+  }
+
+  /**
+   * True when a cancel key may stop a running backup. A backup runs long, so Escape that has
+   * another job here is left alone. Cmd+. / Ctrl+. has no other job, so it always counts.
+   */
+  cancelsBackup(event: ModifierKeys & KeyTarget): boolean {
+    if (!this.cancels(event)) {
+      return false
+    }
+    if (event.key !== CANCEL_KEY) {
+      return true
+    }
+    if (event.defaultPrevented || this.claimed.has(event)) {
+      return false
+    }
+    const target = event.target as { closest?(selector: string): unknown } | null
+    return !target?.closest?.(OWN_ESCAPE_SELECTOR)
   }
 
   /**

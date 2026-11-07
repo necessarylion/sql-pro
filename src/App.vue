@@ -34,6 +34,17 @@ function detail(session: Session): string {
  * The one place for the save, refresh, export, detail panel, duplicate and zoom keys. Only the active tab saves, refreshes or exports.
  * The default is always stopped. It would save or reload the whole page of the app.
  */
+/**
+ * True when the key stops work of the tab. A query or page load always stops.
+ * A backup stops only when Escape has no other job, like closing a dialog.
+ */
+function cancelsWork(event: KeyboardEvent, session: Session | undefined): boolean {
+  if (!session || !shortcuts.cancels(event)) {
+    return false
+  }
+  return session.cancellable || (session.dumping && shortcuts.cancelsBackup(event))
+}
+
 function onKey(event: KeyboardEvent): void {
   // The zoom is for the whole app, also with no open connection.
   const zoom = shortcuts.zoom(event)
@@ -46,9 +57,9 @@ function onKey(event: KeyboardEvent): void {
     return
   }
   // Escape or Cmd+. stops a running query. Otherwise Escape keeps its normal job.
-  if (shortcuts.cancels(event) && manager.active?.cancellable) {
+  if (cancelsWork(event, manager.active)) {
     event.preventDefault()
-    void manager.active.cancel()
+    void manager.active?.cancel()
     return
   }
   const action = shortcuts.action(event)

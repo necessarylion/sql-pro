@@ -35,6 +35,18 @@ export interface SshConfig {
   keyPath: string
 }
 
+/** How far a running backup is. The backend sends it about once per second. */
+export interface DumpProgress {
+  /** The size of the dump file so far. */
+  bytes: number
+  /** The time since the backup started. */
+  seconds: number
+  /** The table the dump tool works on now. null before the first one, and for SQLite. */
+  table: string | null
+  /** How many tables the dump tool has started, this one included. */
+  tables: number
+}
+
 /** `schema` is set only for postgres and mssql. */
 export interface TableRef {
   schema: string | null

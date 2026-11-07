@@ -22,6 +22,9 @@ export const PAGE_SIZE = 300
 /** The status of a tab after the user cancelled its query. */
 export const QUERY_CANCELLED_STATUS = 'Query cancelled'
 
+/** The status of a tab after the user cancelled its backup. */
+export const BACKUP_CANCELLED_STATUS = 'Backup cancelled'
+
 /** The note in the connection form after the user cancelled a connect. */
 export const CONNECT_CANCELLED_NOTE = 'Connection cancelled.'
 

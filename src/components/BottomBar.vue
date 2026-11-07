@@ -13,15 +13,15 @@ defineProps<{ session: Session }>()
       {{ session.error }}
     </span>
     <span v-else class="status dim" :title="session.status">
-      {{ session.busy ? 'Working…' : session.status }}
+      {{ session.busy ? session.busyText : session.status }}
     </span>
     <button
-      v-if="session.busy && session.cancellable"
-      title="Stop the running query (Esc)"
-      :disabled="session.cancelling"
+      v-if="session.busy && session.canCancel"
+      :title="session.cancelTitle"
+      :disabled="session.cancelPending"
       @click="session.cancel()"
     >
-      {{ session.cancelling ? 'Cancelling…' : 'Cancel' }}
+      {{ session.cancelPending ? 'Cancelling…' : 'Cancel' }}
     </button>
     <slot name="end" />
   </div>

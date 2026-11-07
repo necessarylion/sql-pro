@@ -86,3 +86,34 @@ test('Cmd+C on macOS and Ctrl+C elsewhere copy rows', function () {
   expect(windows.copies({ ...NONE, key: 'c', ctrlKey: true })).toBe(true)
   expect(windows.copies({ ...NONE, key: 'c', metaKey: true })).toBe(false)
 })
+
+/** A fake DOM element. `inside` is true when it sits in a place where Escape has its own job. */
+class FakeTarget {
+  constructor(private inside: boolean) {}
+
+  closest(selector: string): object | null {
+    return this.inside && selector.includes('dialog[open]') ? {} : null
+  }
+}
+
+test('Escape stops a backup only when it has no other job', function () {
+  const shortcuts = new Shortcuts('MacIntel')
+  const free = { ...NONE, key: 'Escape', defaultPrevented: false, target: new FakeTarget(false) }
+  expect(shortcuts.cancelsBackup(free)).toBe(true)
+
+  // In a dialog, a field, the editor or a menu, Escape does its own job.
+  expect(shortcuts.cancelsBackup({ ...free, target: new FakeTarget(true) })).toBe(false)
+  expect(shortcuts.cancelsBackup({ ...free, defaultPrevented: true })).toBe(false)
+  // The target can be the window itself, which has no `closest`.
+  expect(shortcuts.cancelsBackup({ ...free, target: {} })).toBe(true)
+
+  // Escape that cleared the selection.
+  const claimed = { ...free }
+  shortcuts.claim(claimed)
+  expect(shortcuts.cancelsBackup(claimed)).toBe(false)
+
+  // Cmd+. has no other job. Other keys never cancel.
+  const dot = { ...free, key: '.', metaKey: true, target: new FakeTarget(true) }
+  expect(shortcuts.cancelsBackup(dot)).toBe(true)
+  expect(shortcuts.cancelsBackup({ ...free, key: 'a' })).toBe(false)
+})

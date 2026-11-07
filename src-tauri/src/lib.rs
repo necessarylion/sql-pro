@@ -24,6 +24,8 @@ use tauri::Manager as _;
 ///
 /// Panics when the window cannot be created.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+// Most of its lines are the list of commands.
+#[allow(clippy::too_many_lines)]
 pub fn run() {
     #[cfg(all(debug_assertions, target_os = "macos"))]
     run_under_dev_name();
@@ -93,6 +95,7 @@ pub fn run() {
             commands::save_object,
             commands::drop_object,
             commands::dump_database,
+            commands::cancel_dump,
             commands::export_tables,
             commands::export_rows,
             commands::rows_insert_sql,

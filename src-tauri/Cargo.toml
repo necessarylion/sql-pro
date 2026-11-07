@@ -47,7 +47,7 @@ parking_lot = "0.13"
 # Version 4 finds the same items as version 3, so saved passwords stay.
 keyring = "4"
 # Runs the system ssh program for tunnels.
-tokio = { version = "1", features = ["process", "net", "time", "io-util"] }
+tokio = { version = "1", features = ["process", "net", "time", "io-util", "macros"] }
 tauri-plugin-updater = "2"
 # Lists the fonts installed on the machine, for the font settings. WKWebView cannot do it.
 fontdb = "0.24"

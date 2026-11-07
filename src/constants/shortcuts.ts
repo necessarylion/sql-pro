@@ -20,6 +20,13 @@ export const SHIFT_SHORTCUT_KEYS: Record<string, ShortcutAction> = {
 /** The key that cancels a running query on its own, with no modifier. */
 export const CANCEL_KEY = 'Escape'
 
+/**
+ * Places where Escape has its own job: an open dialog, a field, the SQL editor, a menu.
+ * Escape there never stops a backup.
+ */
+export const OWN_ESCAPE_SELECTOR =
+  'dialog[open], input, textarea, select, [contenteditable], .cm-editor, .menu-backdrop'
+
 /** The key that cancels a running query together with Cmd (macOS) or Ctrl (Windows, Linux). */
 export const CANCEL_SHORTCUT_KEY = '.'
 

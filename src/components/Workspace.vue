@@ -122,6 +122,7 @@ const pinKey = computed(readPinKey)
 const connection = computed(describeConnection)
 const summary = computed(describeTables)
 const backupBlocked = computed(hasNoDatabase)
+const backupTitle = computed(backupButtonTitle)
 const exportAsked = computed(readExportAsked)
 const database = computed(readDatabase)
 const triggers = computed(matchingTriggers)
@@ -418,6 +419,10 @@ function stopEscape(): void {
 /** Escape clears the selection, but not while the table menu is open. */
 function escapeSelection(event: KeyboardEvent): void {
   if (event.key === 'Escape' && !menu.value && !event.defaultPrevented) {
+    if (selection.names.length > 0) {
+      // This Escape had a job. It does not also stop a backup.
+      shortcuts.claim(event)
+    }
     selection.clear()
   }
 }
@@ -579,6 +584,16 @@ function hasNoDatabase(): boolean {
   return props.session.config?.driver === 'mysql' && props.session.config.database === ''
 }
 
+/** Says why Back up is off, or what it does. */
+function backupButtonTitle(): string {
+  if (backupBlocked.value) {
+    return 'Choose a database first'
+  }
+  return props.session.dumping
+    ? 'A backup already runs in this tab'
+    : 'Back up this database to a SQL file'
+}
+
 /** The database name. SQLite has none, so it is the file name. */
 function databaseLabel(): string {
   const config = props.session.config
@@ -683,8 +698,8 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
       <button
         v-if="session.config?.driver !== 'mssql'"
         class="icon"
-        :title="backupBlocked ? 'Choose a database first' : 'Back up this database to a SQL file'"
-        :disabled="backupBlocked"
+        :title="backupTitle"
+        :disabled="backupBlocked || session.dumping"
         @click="backup"
       >
         <DownloadIcon :size="13" />
@@ -817,7 +832,15 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
             <span v-if="session.error" class="error failure">{{ session.error }}</span>
             <template v-else-if="session.busy">
               <LoaderCircleIcon :size="13" class="spin" />
-              Loading…
+              {{ session.backupProgress || 'Loading…' }}
+              <button
+                v-if="session.canCancel"
+                :title="session.cancelTitle"
+                :disabled="session.cancelPending"
+                @click="session.cancel()"
+              >
+                {{ session.cancelPending ? 'Cancelling…' : 'Cancel' }}
+              </button>
             </template>
             <template v-else-if="session.status">{{ session.status }}</template>
             <template v-else-if="!session.table">Select a table</template>

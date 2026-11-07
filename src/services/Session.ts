@@ -1,5 +1,6 @@
 import { markRaw } from 'vue'
 import {
+  BACKUP_CANCELLED_STATUS,
   DELETE_ROWS_TITLE,
   OBJECT_KIND_LABELS,
   PAGE_SIZE,
@@ -41,6 +42,7 @@ import type {
   QueryStat,
   DbUser,
   Diagram,
+  DumpProgress,
   CopyFormat,
   ExportFormat,
   ExportRequest,
@@ -99,6 +101,14 @@ export class Session {
   cancellable = false
   /** True after the user asked to cancel. The run then ends with a short status, not an error. */
   cancelling = false
+  /** True when the query or page load that just ended was cancelled. `run` reads it once. */
+  private queryCancelled = false
+  /** True while a backup runs. It has its own flag, so a page load during it does not touch it. */
+  dumping = false
+  /** True after the user asked to cancel the backup. */
+  dumpCancelling = false
+  /** How far the running backup is, like `Backing up… 48 MB, 0:32`. '' = no backup runs. */
+  backupProgress = ''
   error = ''
   databases: string[] = []
   tables: TableRef[] = []
@@ -352,12 +362,31 @@ export class Session {
     }
   }
 
+  /** True when a Cancel button should show: a query, a page load or a backup runs. */
+  get canCancel(): boolean {
+    return this.cancellable || this.dumping
+  }
+
+  /** True while the cancel of the work that Cancel stops is on its way. */
+  get cancelPending(): boolean {
+    return this.cancellable ? this.cancelling : this.dumpCancelling
+  }
+
+  /** The tooltip of the Cancel button. */
+  get cancelTitle(): string {
+    return this.cancellable ? 'Stop the running query (Esc)' : 'Stop the backup (Esc)'
+  }
+
   /**
    * Stops the running query or page load. The backend stops it on the server.
-   * Does nothing when nothing that can be cancelled runs.
+   * When none runs, it stops the backup. Does nothing when nothing that can be cancelled runs.
    */
   async cancel(): Promise<void> {
-    if (!this.busy || !this.cancellable || this.cancelling) {
+    if (!this.cancellable) {
+      await this.cancelBackup()
+      return
+    }
+    if (!this.busy || this.cancelling) {
       return
     }
     this.cancelling = true
@@ -369,15 +398,48 @@ export class Session {
     }
   }
 
+  /** Stops the running backup. `backup` then ends with "Backup cancelled", not an error. */
+  private async cancelBackup(): Promise<void> {
+    if (!this.dumping || this.dumpCancelling) {
+      return
+    }
+    this.dumpCancelling = true
+    try {
+      await this.api.cancelDump(this.id)
+    } catch (error) {
+      this.dumpCancelling = false
+      this.error = String(error)
+    }
+  }
+
+  /**
+   * Waits for a query or page load that the user may cancel.
+   * The flags go back when it ends, also on an error. Other work, like a backup, may still run.
+   */
+  private async cancellableCall<T>(call: Promise<T>): Promise<T> {
+    this.cancellable = true
+    try {
+      return await call
+    } finally {
+      this.cancellable = false
+      if (this.cancelling) {
+        this.cancelling = false
+        this.queryCancelled = true
+      }
+    }
+  }
+
   /**
    * True when the user cancelled the work that just ended. Then it shows the short status.
    * A cancelled query may still end without an error: MySQL ends a cancelled SLEEP like that.
    */
   private endCancelled(): boolean {
-    if (this.cancelling) {
+    const cancelled = this.queryCancelled
+    if (cancelled) {
       this.status = QUERY_CANCELLED_STATUS
     }
-    return this.cancelling
+    this.queryCancelled = false
+    return cancelled
   }
 
   /** Checks that `config` can connect. It does not touch this tab. */
@@ -745,18 +807,18 @@ export class Session {
     if (!table) {
       return
     }
-    this.cancellable = true
-    const page = await this.api.browse(this.id, {
-      table,
-      filter: this.filter,
-      filters: this.filters,
-      orderBy: this.orderBy,
-      descending: this.descending,
-      limit: PAGE_SIZE,
-      offset: this.offset,
-      total,
-    })
-    this.cancellable = false
+    const page = await this.cancellableCall(
+      this.api.browse(this.id, {
+        table,
+        filter: this.filter,
+        filters: this.filters,
+        orderBy: this.orderBy,
+        descending: this.descending,
+        limit: PAGE_SIZE,
+        offset: this.offset,
+        total,
+      }),
+    )
     // The user may have picked another table while this one was loading.
     if (this.table === table) {
       // markRaw: Vue does not wrap the rows. A page is only replaced, never changed in place.
@@ -1423,8 +1485,62 @@ export class Session {
 
   /** Writes a SQL dump of the current database to the file at `path`. */
   async backup(path: string): Promise<void> {
-    await this.api.dumpDatabase(this.id, path)
+    if (this.dumping) {
+      throw 'A backup already runs in this tab'
+    }
+    this.dumping = true
+    this.dumpCancelling = false
+    this.backupProgress = 'Backing up…'
+    try {
+      await this.api.dumpDatabase(this.id, path, this.showBackupProgress.bind(this))
+    } catch (error) {
+      if (!this.dumpCancelling) {
+        throw error
+      }
+      this.status = BACKUP_CANCELLED_STATUS
+      return
+    } finally {
+      this.dumping = false
+      this.dumpCancelling = false
+      this.backupProgress = ''
+    }
+    // A cancel that came after the end did nothing. The file is saved.
     this.status = `Backup saved to ${path}`
+  }
+
+  /** The busy text of the tab. A backup shows how far it is. */
+  get busyText(): string {
+    return this.backupProgress || 'Working…'
+  }
+
+  /** Shows the progress like `Backing up… 48 MB, 0:32 · Dumping table orders (12 of 40)`. */
+  showBackupProgress(progress: DumpProgress): void {
+    // The last message can arrive after the backup ended. Then it must not show.
+    if (!this.dumping) {
+      return
+    }
+    const minutes = Math.floor(progress.seconds / 60)
+    let text = `Backing up… ${this.sizeText(progress.bytes)}, ${minutes}:${this.two(progress.seconds % 60)}`
+    if (progress.table) {
+      // The tool may dump more tables than the list has, like the other schemas of PostgreSQL.
+      const total = this.tables.length
+      const count =
+        progress.tables <= total ? `${progress.tables} of ${total}` : `${progress.tables}`
+      text += ` · Dumping table ${progress.table} (${count})`
+    }
+    this.backupProgress = text
+  }
+
+  /** A file size like `512 KB`, `48 MB` or `1.2 GB`. */
+  private sizeText(bytes: number): string {
+    const mb = 1024 * 1024
+    if (bytes < mb) {
+      return `${Math.round(bytes / 1024)} KB`
+    }
+    if (bytes < 1024 * mb) {
+      return `${Math.round(bytes / mb)} MB`
+    }
+    return `${(bytes / (1024 * mb)).toFixed(1)} GB`
   }
 
   /** The columns of any table or view of the current database. */
@@ -1564,9 +1680,7 @@ export class Session {
   /** Shows the last result that has columns. Adds up the affected rows of the rest. */
   async runQuery(sql: string): Promise<void> {
     const started = performance.now()
-    this.cancellable = true
-    const sets = await this.api.runQuery(this.id, sql)
-    this.cancellable = false
+    const sets = await this.cancellableCall(this.api.runQuery(this.id, sql))
     const seconds = ((performance.now() - started) / 1000).toFixed(2)
 
     let result: ResultSet | null = null
