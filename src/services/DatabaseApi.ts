@@ -28,6 +28,8 @@ import type {
   RowsExport,
   RowsSql,
   SaveResult,
+  SchemaChange,
+  SyncSql,
   TableKeys,
   TablePage,
   TableRef,
@@ -359,6 +361,31 @@ export class DatabaseApi {
   /** The query shapes of the server from the last `days` days. PostgreSQL does not use `days`. */
   queryStats(id: string, days: number): Promise<QueryStat[]> {
     return invoke('query_stats', { id, days })
+  }
+
+  /** What must change in the database of tab `target` to make it like tab `source`. */
+  compareSchemas(source: string, target: string): Promise<SchemaChange[]> {
+    return invoke('compare_schemas', { source, target })
+  }
+
+  /** The SQL for the picked differences. It only builds the SQL. Nothing runs. */
+  schemaSyncSql(source: string, target: string, picked: string[]): Promise<SyncSql> {
+    return invoke('schema_sync_sql', { source, target, picked })
+  }
+
+  /**
+   * Builds the sync SQL again on the backend and runs it on tab `target`, in one transaction
+   * where the database can. It refuses when the new SQL is not `reviewed`, the SQL the user saw,
+   * or when the target tab works on another database than `database` now.
+   */
+  runSchemaSync(
+    source: string,
+    target: string,
+    picked: string[],
+    reviewed: string[],
+    database: string | null,
+  ): Promise<void> {
+    return invoke('run_schema_sync', { source, target, picked, reviewed, database })
   }
 
   savePassword(id: string, password: string): Promise<void> {

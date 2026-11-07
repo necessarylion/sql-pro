@@ -203,15 +203,16 @@ impl Repository for SqliteRepository {
         let name = literal(&table.name);
         let sql = format!(
             "SELECT i.name, coalesce(c.name, ''), CASE WHEN i.\"unique\" THEN 'YES' ELSE 'NO' END, \
-                CASE WHEN i.origin = 'pk' THEN 'YES' ELSE 'NO' END, i.origin <> 'pk', c.seqno \
+                CASE WHEN i.origin = 'pk' THEN 'YES' ELSE 'NO' END, 'NO', \
+                CASE WHEN i.partial THEN 'YES' ELSE 'NO' END, 'NO', NULL, i.origin <> 'pk', c.seqno \
             FROM pragma_index_list({name}) i \
             JOIN pragma_index_info(i.name) c \
             UNION ALL \
-            SELECT '', name, 'YES', 'YES', 0, pk \
+            SELECT '', name, 'YES', 'YES', 'NO', 'NO', 'NO', NULL, 0, pk \
             FROM pragma_table_info({name}) \
             WHERE pk > 0 AND NOT EXISTS \
                 (SELECT 1 FROM pragma_index_list({name}) WHERE origin = 'pk') \
-            ORDER BY 5, 1, 6"
+            ORDER BY 9, 1, 10"
         );
         Ok(indexes(&single(self.query(&sql).await?)))
     }

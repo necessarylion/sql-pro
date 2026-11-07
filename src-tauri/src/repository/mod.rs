@@ -135,7 +135,16 @@ pub trait Repository: Send + Sync {
 
     /// The statement that drops a foreign key. Both names are already quoted.
     fn drop_foreign_key_sql(&self, table: &str, name: &str) -> String {
-        format!("ALTER TABLE {table} DROP CONSTRAINT {name}")
+        drop_constraint_sql(table, name)
+    }
+
+    /// The statement that drops `index` of `table`. An index that a constraint owns
+    /// (only `PostgreSQL` and SQL Server tell) is dropped with its constraint.
+    fn drop_any_index_sql(&self, table: &TableRef, index: &IndexInfo) -> String {
+        if index.constraint {
+            return drop_constraint_sql(&self.table_name(table), &self.quote(&index.name));
+        }
+        self.drop_index_sql(table, &index.name)
     }
 
     /// The statement that creates `table`, as the database itself writes it.
@@ -325,6 +334,28 @@ pub trait Repository: Send + Sync {
             self.table_name(table),
             self.quote(column)
         )
+    }
+
+    /// Makes the default of each column of `table` a SQL expression, the way `ADD COLUMN`
+    /// and `SET DEFAULT` take it. Most databases list it like that already.
+    async fn default_expressions(
+        &self,
+        _table: &TableRef,
+        _columns: &mut [ColumnInfo],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    /// SQL that gives the database the connection works on now. A typed `USE` changes it.
+    /// `None` when that cannot change (`SQLite`).
+    fn current_database_sql(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// The type that makes its own number sequence, like `serial`, when `column` takes
+    /// its default from a sequence that a new table would not have. `None` for most.
+    fn serial_type(&self, _column: &ColumnInfo) -> Option<&'static str> {
+        None
     }
 
     /// One column in the select list of a browse or an export.
@@ -743,26 +774,64 @@ fn relations(keys: &ResultSet, unique: &ResultSet) -> Vec<Relation> {
     relations
 }
 
-/// Builds indexes from rows shaped as: name, column, unique (YES/NO), primary (YES/NO).
+/// Builds indexes from rows shaped as: name, column, unique (YES/NO), primary (YES/NO),
+/// and when the database can tell: expression, partial, constraint (all YES/NO) and
+/// the full `CREATE INDEX` statement.
+/// When a row has a ninth value, the eighth is only the start of the statement, up to the
+/// open bracket, and the ninth is the part of this row (`MySQL`). A NULL part means no
+/// statement.
+/// An empty column also counts as an expression.
 /// The rows of one index must follow each other, in column order.
 fn indexes(set: &ResultSet) -> Vec<IndexInfo> {
     let mut indexes: Vec<IndexInfo> = Vec::new();
+    let mut parts = false;
     for row in &set.rows {
         let name = cell(row, 0);
         let same = indexes.last().is_some_and(|last| last.name == name);
+        parts = row.len() > 8;
         if !same {
             indexes.push(IndexInfo {
                 name,
                 columns: Vec::new(),
                 unique: cell(row, 2) == "YES",
                 primary: cell(row, 3) == "YES",
+                expression: false,
+                partial: cell(row, 5) == "YES",
+                constraint: cell(row, 6) == "YES",
+                definition: row.get(7).cloned().flatten(),
             });
         }
         if let Some(index) = indexes.last_mut() {
-            index.columns.push(cell(row, 1));
+            let column = cell(row, 1);
+            index.expression |= column.is_empty() || cell(row, 4) == "YES";
+            index.columns.push(column);
+            if parts {
+                match (index.definition.as_mut(), row.get(8).cloned().flatten()) {
+                    (Some(definition), Some(part)) => {
+                        if same {
+                            definition.push_str(", ");
+                        }
+                        definition.push_str(&part);
+                    }
+                    _ => index.definition = None,
+                }
+            }
+        }
+    }
+    if parts {
+        for index in &mut indexes {
+            if let Some(definition) = &mut index.definition {
+                definition.push(')');
+            }
         }
     }
     indexes
+}
+
+/// The statement that drops a constraint. Both names are already quoted.
+/// `PostgreSQL`, SQL Server and `MySQL` 8 share this syntax.
+fn drop_constraint_sql(table: &str, name: &str) -> String {
+    format!("ALTER TABLE {table} DROP CONSTRAINT {name}")
 }
 
 /// Builds foreign keys from rows shaped as: key id, name, column, parent schema,

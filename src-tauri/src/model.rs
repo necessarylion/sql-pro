@@ -137,6 +137,10 @@ pub struct Relation {
 
 /// One index of a table.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "plain flags from the catalog, each one stands alone"
+)]
 pub struct IndexInfo {
     /// Empty for the primary key of a `SQLite` row id table. It has no index name.
     pub name: String,
@@ -144,6 +148,20 @@ pub struct IndexInfo {
     pub columns: Vec<String>,
     pub unique: bool,
     pub primary: bool,
+    /// True when a part is an expression, like `lower(email)`. Schema compare cannot copy it.
+    #[serde(skip)]
+    pub expression: bool,
+    /// True when the index has a `WHERE` part. Schema compare cannot copy that part.
+    #[serde(skip)]
+    pub partial: bool,
+    /// True when a `UNIQUE` or `PRIMARY KEY` constraint owns the index. Then it is
+    /// dropped with `DROP CONSTRAINT`, not with `DROP INDEX`.
+    #[serde(skip)]
+    pub constraint: bool,
+    /// The full `CREATE INDEX` statement, when the database can give it. It keeps the
+    /// index kind, the column order, `INCLUDE` columns, prefixes and the `WHERE` part.
+    #[serde(skip)]
+    pub definition: Option<String>,
 }
 
 /// One foreign key of a table: `columns` point at `ref_columns` of `ref_table`.
@@ -607,4 +625,50 @@ mod tests {
         assert_eq!(config.ssl.mode, SslMode::VerifyCa);
         assert_eq!(config.ssl.ca_path, "/ca.pem");
     }
+}
+
+/// What one difference of a schema compare does to the target database.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChangeAction {
+    /// The table is only in the source.
+    CreateTable,
+    /// The table is only in the target.
+    DropTable,
+    AddColumn,
+    DropColumn,
+    /// The type, null rule or default of the column differs.
+    AlterColumn,
+    AddIndex,
+    DropIndex,
+    /// The columns or the unique rule of the index differ. It is dropped and made again.
+    AlterIndex,
+    AddForeignKey,
+    DropForeignKey,
+}
+
+/// One difference between the source and the target of a schema compare.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaChange {
+    /// Picks this difference when the sync SQL is made.
+    pub id: String,
+    /// The table in the target. For `CreateTable` the table of the source.
+    pub table: TableRef,
+    pub action: ChangeAction,
+    /// The column, index or foreign key. Empty for a table, and for a foreign key without a name.
+    pub name: String,
+    /// What differs, like `int NOT NULL → bigint`.
+    pub detail: String,
+}
+
+/// The SQL that makes the target like the source, in a safe order.
+#[derive(Debug, Default, Serialize)]
+pub struct SyncSql {
+    pub statements: Vec<String>,
+    /// The picked differences that cannot be done in SQL here, with the reason.
+    pub warnings: Vec<String>,
+    /// The database the target tab worked on when the SQL was made. `None` on `SQLite`.
+    /// The run sends it back, so SQL made for one database never runs on another.
+    pub database: Option<String>,
 }

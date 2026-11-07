@@ -64,6 +64,22 @@ struct Grant {
     grantable: bool,
 }
 
+/// The start of the `CREATE INDEX` of the index of row `s` of `information_schema.STATISTICS`,
+/// up to the open bracket. It keeps `UNIQUE`, `FULLTEXT` and `SPATIAL`.
+const INDEX_HEAD_SQL: &str = "CONCAT('CREATE ', \
+        CASE WHEN s.NON_UNIQUE = 0 THEN 'UNIQUE ' \
+            WHEN s.INDEX_TYPE IN ('FULLTEXT', 'SPATIAL') THEN CONCAT(s.INDEX_TYPE, ' ') \
+            ELSE '' END, \
+        'INDEX `', REPLACE(s.INDEX_NAME, '`', '``'), '` ON `', REPLACE(s.TABLE_NAME, '`', '``'), \
+        '` (')";
+
+/// The part of row `s` in the `CREATE INDEX`, with its prefix length and `DESC`, like
+/// `` `body`(20) DESC ``. NULL for an expression: its text is not in this view on every server.
+const INDEX_PART_SQL: &str = "IF(s.COLUMN_NAME IS NULL, NULL, CONCAT('`', \
+        REPLACE(s.COLUMN_NAME, '`', '``'), '`', \
+        IF(s.SUB_PART IS NULL, '', CONCAT('(', s.SUB_PART, ')')), \
+        IF(s.COLLATION = 'D', ' DESC', '')))";
+
 pub struct MysqlRepository {
     pool: MySqlPool,
     has_database: bool,
@@ -135,6 +151,51 @@ impl MysqlRepository {
 
     /// The definition of a column as `SHOW CREATE TABLE` prints it, without the name.
     /// Example: ``varchar(20) NOT NULL DEFAULT 'x' COMMENT 'note'``.
+    /// `MySQL` lists a text default without its quotes, like `abc`. A plain number, `NULL`,
+    /// `CURRENT_TIMESTAMP`, a bit or binary value or a value in quotes stays as it is. `MySQL` 8 marks an
+    /// expression default with `DEFAULT_GENERATED`. Such an expression, like `uuid()`,
+    /// must be in brackets. Only `CURRENT_TIMESTAMP` works without them.
+    // ponytail: guessed from the text. A text default that looks like a number keeps
+    // no quotes, and MySQL turns it into text again. Read `SHOW CREATE TABLE` if needed.
+    fn mysql_default(&self, column: &ColumnInfo) -> Option<String> {
+        let value = column.default.as_deref()?;
+        let upper = value.to_ascii_uppercase();
+        let time = upper.starts_with("CURRENT_TIMESTAMP");
+        if column.extra.contains("DEFAULT_GENERATED") && !time {
+            // `MySQL` lists the quotes inside an expression with a backslash: `_utf8mb4\'a\'`.
+            // ponytail: a real backslash before a quote in the expression breaks here.
+            return Some(format!("({})", value.replace("\\'", "'")));
+        }
+        // A bit or binary default is listed as SQL already: `b'1'` or `0x6162`.
+        let data_type = column.data_type.to_ascii_lowercase();
+        let bits = data_type.starts_with("bit") && upper.starts_with("B'");
+        let binary = data_type.contains("binary")
+            && value.len() > 2
+            && upper.starts_with("0X")
+            && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit());
+        let raw = Self::plain_number(value)
+            || bits
+            || binary
+            || upper == "NULL"
+            || time
+            || (value.len() >= 2 && value.starts_with('\'') && value.ends_with('\''));
+        Some(if raw {
+            value.to_owned()
+        } else {
+            self.literal(value)
+        })
+    }
+
+    /// True for a number like `5`, `-2` or `1.25`. Not `inf` or `NaN`, which are words.
+    fn plain_number(value: &str) -> bool {
+        let digits = value.strip_prefix('-').unwrap_or(value);
+        let (whole, part) = digits.split_once('.').unwrap_or((digits, "0"));
+        !whole.is_empty()
+            && !part.is_empty()
+            && whole.bytes().all(|byte| byte.is_ascii_digit())
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+    }
+
     async fn column_definition(&self, table: &TableRef, column: &str) -> AppResult<String> {
         let create = self.create_sql(table).await?.unwrap_or_default();
         let prefix = format!("{} ", self.quote(column));
@@ -180,6 +241,16 @@ impl MysqlRepository {
             }
         }
         Ok(definition)
+    }
+
+    /// Puts `DEFAULT value` in `definition` in place of the old default.
+    fn with_default(definition: &str, old: &ColumnInfo, value: &str) -> AppResult<String> {
+        let old_part = format!(" DEFAULT {}", old.default.as_deref().unwrap_or("NULL"));
+        let rest = definition.replacen(&old_part, "", 1);
+        if rest.contains(" DEFAULT ") {
+            return Err("Cannot read the current default of the column. Change it by hand.".into());
+        }
+        Ok(format!("{rest} DEFAULT {value}"))
     }
 
     fn is_text_type(data_type: &str) -> bool {
@@ -421,11 +492,12 @@ impl MysqlRepository {
     /// A part of an index on an expression has no column name. It shows as empty text.
     fn indexes_sql(&self, table: &TableRef) -> String {
         format!(
-            "SELECT INDEX_NAME, COLUMN_NAME, CASE WHEN NON_UNIQUE = 0 THEN 'YES' ELSE 'NO' END, \
-                CASE WHEN INDEX_NAME = 'PRIMARY' THEN 'YES' ELSE 'NO' END \
-            FROM information_schema.STATISTICS \
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {} \
-            ORDER BY INDEX_NAME <> 'PRIMARY', INDEX_NAME, SEQ_IN_INDEX",
+            "SELECT s.INDEX_NAME, s.COLUMN_NAME, CASE WHEN s.NON_UNIQUE = 0 THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN s.INDEX_NAME = 'PRIMARY' THEN 'YES' ELSE 'NO' END, 'NO', 'NO', 'NO', \
+                {INDEX_HEAD_SQL}, {INDEX_PART_SQL} \
+            FROM information_schema.STATISTICS s \
+            WHERE s.TABLE_SCHEMA = DATABASE() AND s.TABLE_NAME = {} \
+            ORDER BY s.INDEX_NAME <> 'PRIMARY', s.INDEX_NAME, s.SEQ_IN_INDEX",
             self.literal(&table.name)
         )
     }
@@ -500,6 +572,40 @@ impl Repository for MysqlRepository {
 
     fn auto_increment(&self) -> &'static str {
         "AUTO_INCREMENT"
+    }
+
+    /// `MariaDB` writes each default in `information_schema` as SQL already: a text in
+    /// quotes (`'abc'`), an expression bare (`uuid()`), and no default as `NULL`.
+    /// `MySQL` writes a text there without quotes, like `SHOW COLUMNS` does. Then
+    /// `mysql_default` decides.
+    async fn default_expressions(
+        &self,
+        table: &TableRef,
+        columns: &mut [ColumnInfo],
+    ) -> AppResult<()> {
+        let sql = format!(
+            "SELECT COLUMN_NAME, COLUMN_DEFAULT, VERSION() LIKE '%MariaDB%' \
+            FROM information_schema.COLUMNS \
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = {}",
+            self.literal(&table.name)
+        );
+        let set = single(self.query(&sql).await?);
+        let mariadb = set.rows.first().is_some_and(|row| cell(row, 2) == "1");
+        for column in columns {
+            column.default = if mariadb {
+                let listed = set.rows.iter().find(|row| cell(row, 0) == column.name);
+                listed
+                    .and_then(|row| row.get(1).cloned().flatten())
+                    .filter(|value| value != "NULL")
+            } else {
+                self.mysql_default(column)
+            };
+        }
+        Ok(())
+    }
+
+    fn current_database_sql(&self) -> Option<&'static str> {
+        Some("SELECT DATABASE()")
     }
 
     fn drop_index_sql(&self, table: &TableRef, name: &str) -> String {
@@ -655,15 +761,27 @@ impl Repository for MysqlRepository {
         let table_sql = self.table_name(table);
         let column = self.quote(&old.name);
         let mut statements = Vec::new();
-        if new.data_type != old.data_type || new.nullable != old.nullable {
+        // `SET DEFAULT` takes no bare `CURRENT_TIMESTAMP`, and with brackets it becomes
+        // `now()`. So such a default goes into a `MODIFY`.
+        let time = new.default != old.default
+            && new
+                .default
+                .as_deref()
+                .is_some_and(|value| value.to_ascii_uppercase().starts_with("CURRENT_TIMESTAMP"));
+        if new.data_type != old.data_type || new.nullable != old.nullable || time {
             // MODIFY needs the full definition, so we start from the current one.
             let current = self.column_definition(table, &old.name).await?;
-            let definition = Self::redefine(&current, old, new)?;
+            let mut definition = Self::redefine(&current, old, new)?;
+            if let Some(value) = new.default.as_deref().filter(|_| time) {
+                definition = Self::with_default(&definition, old, value)?;
+            }
             statements.push(format!(
                 "ALTER TABLE {table_sql} MODIFY COLUMN {column} {definition}"
             ));
         }
-        statements.extend(default_sql(&table_sql, &column, old, new));
+        if !time {
+            statements.extend(default_sql(&table_sql, &column, old, new));
+        }
         Ok(statements)
     }
 

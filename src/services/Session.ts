@@ -67,6 +67,7 @@ import type { DiscardPrompt } from './DiscardPrompt'
 import { Environment } from './Environment'
 import { QueryStatList } from './QueryStatList'
 import { RowCopy } from './RowCopy'
+import { SchemaSync } from './SchemaSync'
 import { TableDraft } from './TableDraft'
 import { TableSelection } from './TableSelection'
 import type { ColumnDraft } from './TableDraft'
@@ -157,6 +158,8 @@ export class Session {
   duplicateAsked = 0
   /** The Ask AI chat of this tab. */
   chat: AiChat
+  /** The Compare view of this tab: two tabs, their differences and the sync SQL. */
+  schemaSync: SchemaSync
   /** A question that waits for the Ask AI view. The view sends it once, in read-only mode. */
   readOnlyQuestion: string | null = null
   /** The timer that removes the "Diagram saved" status. */
@@ -169,6 +172,7 @@ export class Session {
     this.api = api
     this.prompt = prompt
     this.chat = new AiChat(api, prompt)
+    this.schemaSync = new SchemaSync(api, prompt)
   }
 
   /** The shown view. A new view clears the error of the old one. */
@@ -459,6 +463,7 @@ export class Session {
       this.queryStatsSetup = ''
       this.queryStatsAccount = ''
       this.snippetOutputs = {}
+      this.schemaSync.clear()
       this.clearTable()
       this.setUsers([], false)
     }
@@ -479,6 +484,7 @@ export class Session {
     // The old diagram and chat are about the other database.
     this.diagram = null
     this.chat.clear()
+    this.schemaSync.clear()
     if (this.view === 'diagram') {
       await this.loadDiagram()
     }

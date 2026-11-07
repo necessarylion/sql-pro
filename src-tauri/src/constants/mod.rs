@@ -179,6 +179,39 @@ pub const PROCESS_GONE: &str = "This process is not running any more";
 pub const SQLITE_FOREIGN_KEYS_FIXED: &str =
     "SQLite cannot add or drop a foreign key of an existing table";
 
+/// The name start of the indexes `SQLite` makes by itself for `UNIQUE` and `PRIMARY KEY`.
+/// They cannot be made or dropped by name, so schema compare leaves them out.
+pub const SQLITE_AUTO_INDEX: &str = "sqlite_autoindex_";
+
+/// The error when the sync SQL is not the SQL the user reviewed any more.
+pub const SYNC_SQL_CHANGED: &str = "The databases changed since the SQL was made. \
+    Nothing ran. Compare again and check the new SQL.";
+
+/// The warning for an index on an expression. Its columns are not known, so no SQL is made.
+pub const EXPRESSION_INDEX: &str = "It is built on an expression. Copy it by hand.";
+
+/// The warning for an index with a `WHERE` part. The app does not read that part.
+pub const PARTIAL_INDEX: &str = "It only covers the rows of a WHERE part. Copy it by hand.";
+
+/// The warning for a column whose auto increment, identity or generated rule differs.
+pub const COLUMN_RULE_CHANGED: &str =
+    "Its auto increment, identity or generated rule differs. Change it by hand.";
+
+/// The warning for a new column that is generated or has a rule the app cannot copy.
+pub const COLUMN_RULE_NOT_COPIED: &str =
+    "It is a generated column or has a rule the app cannot copy. Add it by hand.";
+
+/// The warning for a new table that has a generated column. The app cannot build it.
+pub const TABLE_NOT_COPIED: &str = "It has a generated column, which the app cannot copy. \
+    Create the table by hand. Its indexes and foreign keys are left out too.";
+
+/// The error when the target tab works on another database than when the SQL was made.
+pub const OTHER_DATABASE: &str = "The target tab works on another database than when the SQL \
+    was made. Nothing ran. Compare again.";
+
+/// The warning for a foreign key without a name. It cannot be dropped by name.
+pub const UNNAMED_FOREIGN_KEY: &str = "The foreign key has no name, so it cannot be changed here";
+
 /// The error for a try to drop the primary key as an index.
 pub const PRIMARY_KEY_NOT_DROPPED: &str = "The primary key cannot be dropped here";
 
