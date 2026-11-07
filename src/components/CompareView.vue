@@ -318,7 +318,7 @@ function isTableLevel(table: TableChanges): boolean {
           <span class="detail dim">{{ joined(data.diff.targetOnly) }}</span>
         </div>
         <div v-if="data.diff.generated.length" class="change">
-          <span class="action">Generated, left out</span>
+          <span class="action">Filled by the database, left out</span>
           <span class="detail dim">{{ joined(data.diff.generated) }}</span>
         </div>
       </template>

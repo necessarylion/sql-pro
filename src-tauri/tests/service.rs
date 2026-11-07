@@ -3087,21 +3087,18 @@ async fn data_sync(service: &ConnectionService, driver: Driver) {
         (1, 3, 1)
     );
     if sqlite {
-        assert_eq!(
-            diff.deletes,
-            [r#"DELETE FROM "data_item" WHERE "id" = '5'"#]
-        );
+        assert_eq!(diff.deletes, [r#"DELETE FROM "data_item" WHERE "id" = 5"#]);
         assert_eq!(
             diff.updates,
             [
-                r#"UPDATE "data_item" SET "note" = '' WHERE "id" = '2'"#,
-                r#"UPDATE "data_item" SET "name" = 'it''s' WHERE "id" = '3'"#,
-                r#"UPDATE "data_item" SET "name" = 'same' WHERE "id" = '2999'"#,
+                r#"UPDATE "data_item" SET "note" = '' WHERE "id" = 2"#,
+                r#"UPDATE "data_item" SET "name" = 'it''s' WHERE "id" = 3"#,
+                r#"UPDATE "data_item" SET "name" = 'same' WHERE "id" = 2999"#,
             ]
         );
         assert_eq!(
             diff.inserts,
-            [r#"INSERT INTO "data_item" ("id", "name", "note") VALUES ('4', 'new', NULL)"#]
+            [r#"INSERT INTO "data_item" ("id", "name", "note") VALUES (4, 'new', NULL)"#]
         );
     }
 
@@ -3150,36 +3147,162 @@ async fn data_sync(service: &ConnectionService, driver: Driver) {
 
     // Round two: the rest, for every table.
     for name in ["data_item", "data_pair", "data_auto"] {
-        let table = find_table(service, DATA_SOURCE, name).await;
-        let diff = service
-            .compare_data(DATA_SOURCE, DATA_TARGET, &table)
-            .await
-            .expect("compare");
-        let mut reviewed = diff.deletes.clone();
-        reviewed.extend(diff.updates.clone());
-        reviewed.extend(diff.inserts.clone());
-        assert_ne!(reviewed.len(), 0, "{name}");
-        service
-            .run_data_sync(
-                DATA_SOURCE,
-                DATA_TARGET,
-                &table,
-                all,
-                &reviewed,
-                diff.database.as_deref(),
-            )
-            .await
-            .expect(name);
-        let left = service
-            .compare_data(DATA_SOURCE, DATA_TARGET, &table)
-            .await
-            .expect("compare");
-        assert_eq!(
-            (left.delete_rows, left.update_rows, left.insert_rows),
-            (0, 0, 0),
-            "{name}"
-        );
+        sync_table(service, name).await;
     }
+    data_types(service, driver).await;
+}
+
+/// Compares table `name`, runs all of its SQL, and checks that a new compare finds
+/// nothing. Gives the first compare.
+async fn sync_table(service: &ConnectionService, name: &str) -> sql_pro_lib::model::DataDiff {
+    let all = DataKinds {
+        insert: true,
+        update: true,
+        delete: true,
+    };
+    let table = find_table(service, DATA_SOURCE, name).await;
+    let diff = service
+        .compare_data(DATA_SOURCE, DATA_TARGET, &table)
+        .await
+        .expect("compare");
+    let mut reviewed = diff.deletes.clone();
+    reviewed.extend(diff.updates.clone());
+    reviewed.extend(diff.inserts.clone());
+    assert_ne!(reviewed.len(), 0, "{name}");
+    service
+        .run_data_sync(
+            DATA_SOURCE,
+            DATA_TARGET,
+            &table,
+            all,
+            &reviewed,
+            diff.database.as_deref(),
+        )
+        .await
+        .expect(name);
+    let left = service
+        .compare_data(DATA_SOURCE, DATA_TARGET, &table)
+        .await
+        .expect("compare");
+    assert_eq!(
+        (left.delete_rows, left.update_rows, left.insert_rows),
+        (0, 0, 0),
+        "{name}"
+    );
+    diff
+}
+
+/// The first cell of the first row of `sql` on the target tab.
+async fn target_cell(service: &ConnectionService, sql: &str) -> Option<String> {
+    let sets = service.run_query(DATA_TARGET, sql).await.expect(sql);
+    sets.into_iter()
+        .next()?
+        .rows
+        .into_iter()
+        .next()?
+        .into_iter()
+        .next()?
+}
+
+/// Makes table `make` on both tabs and fills it with `source` and `target`.
+async fn data_table(service: &ConnectionService, make: &str, source: &str, target: &str) {
+    run_all(service, DATA_SOURCE, &[make, source]).await;
+    run_all(service, DATA_TARGET, &[make, target]).await;
+}
+
+/// Values that only some databases have trouble with: binary bytes that are not UTF-8,
+/// columns the database fills itself, columns with no type (`SQLite`), and NULL keys.
+async fn data_types(service: &ConnectionService, driver: Driver) {
+    let (bytes, wanted) = match driver {
+        Driver::Sqlite => {
+            // No declared type: a quoted '1' would never match the number 1.
+            data_table(
+                service,
+                "CREATE TABLE data_bin (id PRIMARY KEY, v)",
+                "INSERT INTO data_bin VALUES (1, 10), (2, 'two'), (3, X'FF00'), (5, NULL)",
+                "INSERT INTO data_bin VALUES (1, 11), (4, 5), (5, '')",
+            )
+            .await;
+            let diff = sync_table(service, "data_bin").await;
+            assert_eq!(
+                (diff.delete_rows, diff.update_rows, diff.insert_rows),
+                (1, 2, 2)
+            );
+            // A text key may be NULL in SQLite. Such a row cannot be matched.
+            data_table(
+                service,
+                "CREATE TABLE data_nk (id TEXT PRIMARY KEY, v INTEGER)",
+                "INSERT INTO data_nk VALUES (NULL, 1)",
+                "SELECT 1",
+            )
+            .await;
+            let table = find_table(service, DATA_SOURCE, "data_nk").await;
+            let refused = service.compare_data(DATA_SOURCE, DATA_TARGET, &table).await;
+            assert!(
+                refused
+                    .expect_err("null key")
+                    .to_string()
+                    .contains("NULL in its primary key")
+            );
+            (
+                "SELECT group_concat(id || ':' || typeof(id) || ':' || typeof(v) || ':' || \
+                    coalesce(hex(v), 'null'), ',') FROM (SELECT * FROM data_bin ORDER BY id)",
+                "1:integer:integer:3130,2:integer:text:74776F,3:integer:blob:FF00,\
+                    5:integer:null:",
+            )
+        }
+        Driver::Mysql => {
+            data_table(
+                service,
+                "CREATE TABLE data_bin (id INTEGER PRIMARY KEY, b VARBINARY(10), l BLOB)",
+                "INSERT INTO data_bin VALUES (1, 0xFF00, 0x00FE), (2, X'', 'text'), (3, NULL, NULL)",
+                "INSERT INTO data_bin VALUES (1, 0xFF01, NULL)",
+            )
+            .await;
+            sync_table(service, "data_bin").await;
+            (
+                "SELECT GROUP_CONCAT(CONCAT(id, ':', IFNULL(HEX(b), 'null'), ':', \
+                    IFNULL(HEX(l), 'null')) ORDER BY id) FROM data_bin",
+                "1:FF00:00FE,2::74657874,3:null:null",
+            )
+        }
+        Driver::Mssql => {
+            data_table(
+                service,
+                "CREATE TABLE data_bin (id INTEGER PRIMARY KEY, b VARBINARY(10), \
+                    rv ROWVERSION, n INTEGER IDENTITY(1,1), name VARCHAR(10))",
+                "INSERT INTO data_bin (id, b, name) VALUES (1, 0xFF00, 'a'), (2, 0x, 'b'), \
+                    (3, NULL, 'c')",
+                "INSERT INTO data_bin (id, b, name) VALUES (9, NULL, 'x'), (1, 0xFF01, 'z')",
+            )
+            .await;
+            let diff = sync_table(service, "data_bin").await;
+            assert_eq!(diff.generated, ["rv", "n"]);
+            (
+                "SELECT STRING_AGG(CONCAT(id, ':', ISNULL(CONVERT(VARCHAR(30), b, 1), 'null'), \
+                    ':', name), ',') WITHIN GROUP (ORDER BY id) FROM data_bin",
+                "1:0xFF00:a,2:0x:b,3:null:c",
+            )
+        }
+        Driver::Postgres => {
+            data_table(
+                service,
+                "CREATE TABLE data_bin (id INTEGER PRIMARY KEY, b BYTEA, \
+                    n INTEGER GENERATED ALWAYS AS IDENTITY, name VARCHAR(10))",
+                "INSERT INTO data_bin (id, b, name) VALUES (1, '\\xff00', 'a'), (2, NULL, 'b')",
+                "INSERT INTO data_bin (id, b, name) VALUES (9, NULL, 'x'), (1, '\\xff01', 'z')",
+            )
+            .await;
+            let diff = sync_table(service, "data_bin").await;
+            assert_eq!(diff.generated, ["n"]);
+            (
+                "SELECT string_agg(id || ':' || coalesce(encode(b, 'hex'), 'null') || ':' || \
+                    name, ',' ORDER BY id) FROM data_bin",
+                "1:ff00:a,2:null:b",
+            )
+        }
+    };
+    assert_eq!(target_cell(service, bytes).await.as_deref(), Some(wanted));
 }
 
 #[tokio::test]

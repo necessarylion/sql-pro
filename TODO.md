@@ -30,7 +30,7 @@ The Compare view in Data mode compares the rows of one table. These parts are no
 
 - Only one table at a time.
 - With more than 10 000 different rows there is no SQL.
-- The compare reads keys in the order of the database. It guesses that order: numbers as numbers, text without case. A key that sorts another way (like a SQL Server GUID) makes it hold more rows, so a big table can hit the limit.
-- Generated columns are left out.
+- Columns the database fills itself are left out: generated columns, identity columns outside the key, and SQL Server `rowversion`.
 - PostgreSQL does not move the sequence of an identity or serial column after the inserts. Set it by hand.
-- Binary values are written as their `0x…` text. On SQL Server such a statement fails.
+- A table with a float key pages with `OFFSET`, which is slow deep into a big table.
+- Run does not check how many rows each statement changed. A compare after the run shows what is left.

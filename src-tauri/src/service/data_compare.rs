@@ -9,7 +9,6 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use super::ConnectionService;
-use super::export::Exporter;
 use super::schema_compare::SchemaCompare;
 use crate::constants::{
     MAX_DATA_DIFFS, MAX_QUERY_ROWS, OTHER_DATABASE, SYNC_SQL_CHANGED, TOO_MANY_DATA_DIFFS,
@@ -39,11 +38,9 @@ pub struct RowDiff {
 /// Merges the rows of both sides, read page by page in the order of the key.
 ///
 /// A row waits until the other side brings the same key, or the other side ends.
-/// So the result is right in any order. The order only keeps the waiting rows few:
-/// the side that is behind is read next.
-// ponytail: "behind" compares keys as numbers, else as text without case. A database
-// that sorts its keys another way (a GUID on SQL Server) makes more rows wait, and a
-// big table can then hit the limit. Sort by a binary collation per driver if that bites.
+/// So the result is right in any order. The side that is behind is read next, so
+/// few rows wait: the side with fewer waiting rows, and on a tie the side with the
+/// lower last key (numbers as numbers, else text without case).
 pub struct RowMerge {
     /// The positions of the key columns in a row.
     key: Vec<usize>,
@@ -86,8 +83,12 @@ impl RowMerge {
             [true, false] => Some(TARGET),
             [false, true] => Some(SOURCE),
             [false, false] => {
-                let behind =
-                    Self::key_order(self.last[TARGET].as_ref(), self.last[SOURCE].as_ref());
+                // The side with more waiting rows is ahead, so the other one is read.
+                // When both wait the same, the key order decides.
+                let waiting = self.waiting[TARGET].len().cmp(&self.waiting[SOURCE].len());
+                let behind = waiting.then_with(|| {
+                    Self::key_order(self.last[TARGET].as_ref(), self.last[SOURCE].as_ref())
+                });
                 Some(if behind == Ordering::Less {
                     TARGET
                 } else {
@@ -95,6 +96,11 @@ impl RowMerge {
                 })
             }
         }
+    }
+
+    /// The key of the last row read on `side`. `None` before the first page.
+    pub fn last_key(&self, side: usize) -> Option<&Cells> {
+        self.last[side].as_ref()
     }
 
     /// Takes the next page of one side. A page shorter than a full one is its last.
@@ -191,10 +197,39 @@ impl RowMerge {
 
 /// The columns of one table on both sides, as the compare uses them.
 struct Columns {
-    /// The columns both sides have, without generated ones, in the order of the source.
+    /// The columns both sides have, without the ones the database fills, in the order of
+    /// the source.
     shared: Vec<(ColumnInfo, ColumnInfo)>,
     /// The positions of the key columns in `shared`.
     key: Vec<usize>,
+    /// Per side, how each column of `shared` is read, and true when the value read is
+    /// already a SQL literal (`Repository::compare_column`).
+    read: [Vec<(String, bool)>; 2],
+}
+
+impl Columns {
+    /// The value of column `index` of a row of `side` as SQL for the target.
+    fn value(
+        &self,
+        target: &dyn Repository,
+        side: usize,
+        index: usize,
+        cell: Option<&str>,
+    ) -> String {
+        match cell {
+            None => "NULL".to_owned(),
+            Some(text) if self.read[side][index].1 => text.to_owned(),
+            Some(text) => target.literal(text),
+        }
+    }
+
+    /// True when the key of a row of `side` has a NULL. Such a row cannot be matched in SQL.
+    fn null_key(&self, side: usize, row: &Cells) -> bool {
+        self.key.iter().any(|&index| match &row[index] {
+            None => true,
+            Some(text) => self.read[side][index].1 && text == "NULL",
+        })
+    }
 }
 
 impl ConnectionService {
@@ -222,8 +257,13 @@ impl ConnectionService {
             database: Self::current_database(to).await?,
             ..DataDiff::default()
         };
-        let columns = Self::shared_columns(&label, &source_columns, &target_columns, &mut diff)?;
-        let rows = Self::merge_rows(from, to, table, &columns).await?;
+        let columns = Self::shared_columns(
+            &label,
+            [from, to],
+            [&source_columns, &target_columns],
+            &mut diff,
+        )?;
+        let rows = Self::merge_rows([from, to], table, &label, &columns).await?;
         if rows.limited {
             diff.limited = true;
             return Ok(diff);
@@ -289,8 +329,8 @@ impl ConnectionService {
     /// The columns both sides have. Fails when the primary keys are not the same.
     fn shared_columns(
         label: &str,
-        source: &[ColumnInfo],
-        target: &[ColumnInfo],
+        repositories: [&dyn Repository; 2],
+        [source, target]: [&[ColumnInfo]; 2],
         diff: &mut DataDiff,
     ) -> AppResult<Columns> {
         let source_key = Self::key_names(source);
@@ -317,13 +357,16 @@ impl ConnectionService {
         let mut columns = Columns {
             shared: Vec::new(),
             key: Vec::new(),
+            read: [Vec::new(), Vec::new()],
         };
         for wanted in source {
             let Some(found) = target.iter().find(|found| found.name == wanted.name) else {
                 diff.source_only.push(wanted.name.clone());
                 continue;
             };
-            if Self::generated(wanted) || Self::generated(found) {
+            let filled = Self::filled(repositories[SOURCE], wanted)
+                || Self::filled(repositories[TARGET], found);
+            if filled {
                 diff.generated.push(wanted.name.clone());
                 continue;
             }
@@ -332,6 +375,8 @@ impl ConnectionService {
                 diff.key.push(wanted.name.clone());
             }
             diff.columns.push(wanted.name.clone());
+            columns.read[SOURCE].push(repositories[SOURCE].compare_column(wanted));
+            columns.read[TARGET].push(repositories[TARGET].compare_column(found));
             columns.shared.push((wanted.clone(), found.clone()));
         }
         for found in target {
@@ -341,7 +386,8 @@ impl ConnectionService {
         }
         if diff.key != source_key {
             return Err(AppError::Message(format!(
-                "The primary key of {label} has a generated column. It cannot be compared."
+                "The primary key of {label} has a column the database fills itself. \
+                It cannot be compared."
             )));
         }
         Ok(columns)
@@ -355,63 +401,105 @@ impl ConnectionService {
             .collect()
     }
 
-    /// True for a column the database fills itself (`MySQL` writes `VIRTUAL GENERATED`).
-    /// A `MySQL` default like `CURRENT_TIMESTAMP` is `DEFAULT_GENERATED`, a plain column.
-    fn generated(column: &ColumnInfo) -> bool {
+    /// True for a column the database fills itself, which a row write cannot set:
+    /// a generated column (`MySQL` writes `VIRTUAL GENERATED`), an identity column that
+    /// is not part of the key (SQL Server refuses to change it), or a SQL Server
+    /// `rowversion`. A `MySQL` default like `CURRENT_TIMESTAMP` is `DEFAULT_GENERATED`,
+    /// a plain column.
+    fn filled(repository: &dyn Repository, column: &ColumnInfo) -> bool {
         let extra = column.extra.to_ascii_lowercase();
-        extra.contains("generated") && !extra.contains("default_generated")
+        (extra.contains("generated") && !extra.contains("default_generated"))
+            || (extra == "identity" && !column.primary_key)
+            || repository.database_written(column)
     }
 
     /// Reads both sides in pages ordered by the key, and merges them in one pass.
+    /// The next page starts after the last key read, so a deep page is as fast as the first.
     async fn merge_rows(
-        from: &dyn Repository,
-        to: &dyn Repository,
+        sides: [&dyn Repository; 2],
         table: &TableRef,
+        label: &str,
         columns: &Columns,
     ) -> AppResult<RowDiff> {
-        let sides = [from, to];
+        // ponytail: a float key may not come back as the same text, so a page after it
+        // could miss or repeat a row. Such a table pages with OFFSET, which is slower.
+        let keyset = columns.key.iter().all(|&index| {
+            let kind = columns.shared[index].0.data_type.to_ascii_lowercase();
+            !["float", "double", "real"]
+                .iter()
+                .any(|word| kind.contains(word))
+        });
         let mut selects = Vec::with_capacity(2);
+        let mut keys = Vec::with_capacity(2);
         for (side, repository) in sides.iter().enumerate() {
-            let mut list = Vec::with_capacity(columns.shared.len());
-            for pair in &columns.shared {
-                list.push(repository.select_column(if side == SOURCE { &pair.0 } else { &pair.1 }));
-            }
-            let mut keys = Vec::with_capacity(columns.key.len());
-            for &index in &columns.key {
-                keys.push(repository.quote(&columns.shared[index].0.name));
-            }
-            selects.push((
-                format!(
-                    "SELECT {} FROM {}",
-                    list.join(", "),
-                    repository.table_name(table)
-                ),
-                format!(" ORDER BY {}", keys.join(", ")),
+            let list: Vec<&str> = columns.read[side]
+                .iter()
+                .map(|(select, _)| select.as_str())
+                .collect();
+            let names: Vec<String> = columns
+                .key
+                .iter()
+                .map(|&index| repository.quote(&columns.shared[index].0.name))
+                .collect();
+            selects.push(format!(
+                "SELECT {} FROM {}",
+                list.join(", "),
+                repository.table_name(table)
             ));
+            keys.push(names);
         }
         // `query` keeps at most MAX_QUERY_ROWS rows, so one page is exactly that many.
         let mut merge = RowMerge::new(
             columns.key.clone(),
             MAX_QUERY_ROWS,
-            MAX_DATA_DIFFS + 2 * MAX_QUERY_ROWS,
+            2 * MAX_DATA_DIFFS + 2 * MAX_QUERY_ROWS,
         );
         let mut offsets = [0_u64; 2];
         while let Some(side) = merge.next_side() {
-            let (select, ordering) = &selects[side];
+            let repository = sides[side];
+            let ordering = format!(" ORDER BY {}", keys[side].join(", "));
+            let after = match merge.last_key(side) {
+                Some(last) if keyset => {
+                    let mut values = Vec::with_capacity(last.len());
+                    for (&index, cell) in columns.key.iter().zip(last) {
+                        values.push(columns.value(repository, side, index, cell.as_deref()));
+                    }
+                    format!(" WHERE {}", Self::after_key(&keys[side], &values))
+                }
+                _ => String::new(),
+            };
+            let offset = if keyset { 0 } else { offsets[side] };
             let sql = format!(
-                "{select}{}",
-                sides[side].page_sql(ordering, MAX_QUERY_ROWS, offsets[side])
+                "{}{after}{}",
+                selects[side],
+                repository.page_sql(&ordering, MAX_QUERY_ROWS, offset)
             );
-            let rows = sides[side]
-                .query(&sql)
-                .await?
-                .pop()
-                .unwrap_or_default()
-                .rows;
+            let rows = repository.query(&sql).await?.pop().unwrap_or_default().rows;
+            if rows.iter().any(|row| columns.null_key(side, row)) {
+                return Err(AppError::Message(format!(
+                    "The table {label} has a row with NULL in its primary key. \
+                    Such a row cannot be matched."
+                )));
+            }
             offsets[side] += MAX_QUERY_ROWS as u64;
             merge.push_page(side, rows);
         }
         Ok(merge.finish(MAX_DATA_DIFFS))
+    }
+
+    /// The rows after a key in key order: `a > 1 OR (a = 1 AND b > 'x')`. It is spelled
+    /// out, because SQL Server has no row value compare like `(a, b) > (1, 'x')`.
+    fn after_key(names: &[String], values: &[String]) -> String {
+        let mut parts = Vec::with_capacity(names.len());
+        for last in 0..names.len() {
+            let mut part = Vec::with_capacity(last + 1);
+            for index in 0..last {
+                part.push(format!("{} = {}", names[index], values[index]));
+            }
+            part.push(format!("{} > {}", names[last], values[last]));
+            parts.push(format!("({})", part.join(" AND ")));
+        }
+        parts.join(" OR ")
     }
 
     /// Turns the row differences into SQL for the target.
@@ -431,7 +519,7 @@ impl ConnectionService {
         for row in &rows.deletes {
             diff.deletes.push(format!(
                 "DELETE FROM {name} WHERE {}",
-                Self::key_match(target, &names, &columns.key, row)
+                Self::key_match(target, columns, &names, TARGET, row)
             ));
         }
         diff.update_rows = rows.updates.len();
@@ -441,20 +529,20 @@ impl ConnectionService {
                 sets.push(format!(
                     "{} = {}",
                     names[index],
-                    Exporter::insert_values(target, std::slice::from_ref(&row[index]))
+                    columns.value(target, SOURCE, index, row[index].as_deref())
                 ));
             }
             diff.updates.push(format!(
                 "UPDATE {name} SET {} WHERE {}",
                 sets.join(", "),
-                Self::key_match(target, &names, &columns.key, row)
+                Self::key_match(target, columns, &names, SOURCE, row)
             ));
         }
         diff.insert_rows = rows.inserts.len();
         if rows.inserts.is_empty() {
             return;
         }
-        // An identity column gets the value of the source, so the database must allow it.
+        // An identity key gets the value of the source, so the database must allow it.
         let identity = columns
             .shared
             .iter()
@@ -472,8 +560,11 @@ impl ConnectionService {
             diff.inserts.push(sql);
         }
         for row in &rows.inserts {
-            diff.inserts
-                .push(format!("{start}{})", Exporter::insert_values(target, row)));
+            let mut values = Vec::with_capacity(row.len());
+            for (index, cell) in row.iter().enumerate() {
+                values.push(columns.value(target, SOURCE, index, cell.as_deref()));
+            }
+            diff.inserts.push(format!("{start}{})", values.join(", ")));
         }
         if let Some(sql) = identity
             .then(|| target.identity_insert_sql(table, false))
@@ -483,14 +574,20 @@ impl ConnectionService {
         }
     }
 
-    /// `a = 1 AND b = 'x'` for the key of `row`. A key value is never NULL.
-    fn key_match(target: &dyn Repository, names: &[String], key: &[usize], row: &Cells) -> String {
-        let mut parts = Vec::with_capacity(key.len());
-        for &index in key {
+    /// `a = 1 AND b = 'x'` for the key of a row of `side`. A key value is never NULL.
+    fn key_match(
+        target: &dyn Repository,
+        columns: &Columns,
+        names: &[String],
+        side: usize,
+        row: &Cells,
+    ) -> String {
+        let mut parts = Vec::with_capacity(columns.key.len());
+        for &index in &columns.key {
             parts.push(format!(
                 "{} = {}",
                 names[index],
-                Exporter::insert_values(target, std::slice::from_ref(&row[index]))
+                columns.value(target, side, index, row[index].as_deref())
             ));
         }
         parts.join(" AND ")
@@ -603,6 +700,35 @@ mod tests {
         let order = RowMerge::key_order(Some(&row(&[Some("b")])), Some(&row(&[Some("A")])));
         assert_eq!(order, Ordering::Greater);
         assert_eq!(RowMerge::key_order(None, Some(&row(&[]))), Ordering::Less);
+    }
+
+    #[test]
+    fn a_key_order_it_cannot_guess_still_holds_few_rows() {
+        // The database sorts the keys from high to low, like a SQL Server GUID that the
+        // text order gets wrong. Two equal sides must not read far ahead of each other.
+        let mut rows = Vec::new();
+        for id in (1..=20).rev() {
+            rows.push(row(&[Some(&id.to_string())]));
+        }
+        let mut merge = RowMerge::new(vec![0], 2, 4);
+        let mut offsets = [0; 2];
+        while let Some(side) = merge.next_side() {
+            let start = offsets[side].min(rows.len());
+            let end = (start + 2).min(rows.len());
+            merge.push_page(side, rows[start..end].to_vec());
+            offsets[side] += 2;
+        }
+        assert_eq!(merge.finish(100), RowDiff::default());
+    }
+
+    #[test]
+    fn the_next_page_starts_after_the_last_key() {
+        let names = ["a".to_owned(), "b".to_owned()];
+        let values = ["1".to_owned(), "'x'".to_owned()];
+        assert_eq!(
+            ConnectionService::after_key(&names, &values),
+            "(a > 1) OR (a = 1 AND b > 'x')"
+        );
     }
 
     #[test]

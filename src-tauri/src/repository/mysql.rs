@@ -552,6 +552,19 @@ impl Repository for MysqlRepository {
         "() VALUES ()"
     }
 
+    /// A binary value is read as hex and written as `X'…'`. As text, bytes that are not
+    /// UTF-8 would come back as the text `0x…` and be written as those letters.
+    fn compare_column(&self, column: &ColumnInfo) -> (String, bool) {
+        let name = self.quote(&column.name);
+        let kind = column.data_type.to_ascii_lowercase();
+        if kind.starts_with("binary") || kind.starts_with("varbinary") || kind.ends_with("blob") {
+            // No `AS` name, so `ORDER BY` still sorts by the bytes, not the hex text.
+            (format!("CONCAT('X''', HEX({name}), '''')"), true)
+        } else {
+            (name, false)
+        }
+    }
+
     fn explain_prefix(&self) -> Option<&'static str> {
         Some("EXPLAIN")
     }

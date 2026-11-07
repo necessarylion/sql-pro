@@ -363,6 +363,17 @@ pub trait Repository: Send + Sync {
         self.quote(&column.name)
     }
 
+    /// How data compare reads `column`: the select expression, and true when the value it
+    /// gives is a SQL literal already, to write as it is. NULL stays NULL.
+    fn compare_column(&self, column: &ColumnInfo) -> (String, bool) {
+        (self.select_column(column), false)
+    }
+
+    /// True for a column that only the database writes, so a row write cannot set it.
+    fn database_written(&self, _column: &ColumnInfo) -> bool {
+        false
+    }
+
     /// The end of a SELECT that reads one page of rows.
     /// `ordering` is empty or ` ORDER BY ...`.
     fn page_sql(&self, ordering: &str, limit: usize, offset: u64) -> String {

@@ -118,6 +118,13 @@ impl Repository for SqliteRepository {
         literal(value)
     }
 
+    /// `quote()` gives each value as a SQL literal of its own storage class. A quoted
+    /// text would stay text in a column with no declared type, and a blob would break.
+    /// No `AS` name, so `ORDER BY` and `WHERE` still mean the column, not the quoted text.
+    fn compare_column(&self, column: &ColumnInfo) -> (String, bool) {
+        (format!("quote({})", self.quote(&column.name)), true)
+    }
+
     fn default_values(&self) -> &'static str {
         "DEFAULT VALUES"
     }

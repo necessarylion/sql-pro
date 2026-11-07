@@ -565,6 +565,17 @@ impl Repository for MssqlRepository {
         }
     }
 
+    /// A binary value comes as `0x…` text, which is a SQL literal as it is.
+    fn compare_column(&self, column: &ColumnInfo) -> (String, bool) {
+        let binary = BINARY_TYPES.contains(&Self::base_type(&column.data_type).as_str());
+        (self.select_column(column), binary)
+    }
+
+    /// A `rowversion` (`timestamp`) changes on every write. No `INSERT` or `UPDATE` can set it.
+    fn database_written(&self, column: &ColumnInfo) -> bool {
+        Self::base_type(&column.data_type) == "timestamp"
+    }
+
     /// SQL Server pages with `OFFSET … FETCH`, and that needs an ORDER BY.
     fn page_sql(&self, ordering: &str, limit: usize, offset: u64) -> String {
         let ordering = if ordering.is_empty() {

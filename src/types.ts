@@ -552,7 +552,7 @@ export interface DataDiff {
   columns: string[]
   sourceOnly: string[]
   targetOnly: string[]
-  /** Generated columns. The database makes their values, so they are left out. */
+  /** Columns the database fills itself (generated, identity outside the key, rowversion). Left out. */
   generated: string[]
   /** True when there are too many differences. Then there is no SQL. */
   limited: boolean

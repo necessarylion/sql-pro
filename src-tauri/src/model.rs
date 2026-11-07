@@ -692,7 +692,8 @@ pub struct DataDiff {
     pub columns: Vec<String>,
     pub source_only: Vec<String>,
     pub target_only: Vec<String>,
-    /// Generated columns. The database makes their values, so they are left out.
+    /// Columns the database fills itself: generated, identity outside the key, and SQL
+    /// Server `rowversion`. A row write cannot set them, so they are left out.
     pub generated: Vec<String>,
     /// True when there are more than `MAX_DATA_DIFFS` differences. Then there is no SQL.
     pub limited: bool,

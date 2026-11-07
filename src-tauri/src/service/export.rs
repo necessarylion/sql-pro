@@ -423,7 +423,7 @@ impl<'run> Exporter<'run> {
     /// a quoted text. All three databases turn such a text into the column type.
     // ponytail: binary values that are not UTF-8 arrive as `0x…` text and are written
     // as that text, not as bytes. Read them as bytes if binary columns must round trip.
-    pub(super) fn insert_values(repository: &dyn Repository, row: &[Option<String>]) -> String {
+    fn insert_values(repository: &dyn Repository, row: &[Option<String>]) -> String {
         let mut values = Vec::with_capacity(row.len());
         for cell in row {
             values.push(match cell {
