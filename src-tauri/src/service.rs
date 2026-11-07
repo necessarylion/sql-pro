@@ -4,13 +4,14 @@ mod attachment;
 mod claude;
 mod export;
 mod import;
+mod notes;
 mod processes;
 mod query_stats;
 mod spare;
 
 use std::collections::HashMap;
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -19,15 +20,16 @@ use parking_lot::Mutex;
 use crate::constants::{
     AI_IMAGE_MAX_BYTES, ANY_HOST, CANNOT_MANAGE_USERS, CHARSET_ONLY_MYSQL, CLAUDE_READ_ONLY_NOTE,
     DROP_CURRENT_DATABASE, EXPLAIN_ONE_STATEMENT, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS,
-    MSSQL_NO_USER_ACCOUNTS, NO_EXPLAIN, NO_USER_ACCOUNTS, NOT_A_READ, OPEN_TRANSACTION,
-    PRIMARY_KEY_NOT_DROPPED, QUERY_STATS_FIXED, SQLITE_NO_DATABASES, VIEW,
+    MSSQL_NO_USER_ACCOUNTS, NO_EXPLAIN, NO_HOME_FOR_NOTES, NO_USER_ACCOUNTS, NOT_A_READ,
+    NOTES_FOLDER, OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, QUERY_STATS_FIXED,
+    SQLITE_NO_DATABASES, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
     ConnectionConfig, DbObject, DbUser, Diagram, DiagramTable, Driver, ExportRequest,
-    FilterOperator, FilterRule, NewColumn, NewForeignKey, NewIndex, NewUser, ResultSet, RowUpdate,
-    RowsExport, RowsSql, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
+    FilterOperator, FilterRule, NewColumn, NewForeignKey, NewIndex, NewUser, Notes, ResultSet,
+    RowUpdate, RowsExport, RowsSql, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::repository::{
     ClaudeCli, DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, not_saved,
@@ -56,6 +58,8 @@ pub struct ConnectionService {
     factory: RepositoryFactory,
     connections: Mutex<HashMap<String, Connection>>,
     claude: ClaudeCli,
+    /// Holds the notes of each database for the AI. See `NOTES_FOLDER`.
+    notes_folder: Option<PathBuf>,
 }
 
 impl ConnectionService {
@@ -64,6 +68,7 @@ impl ConnectionService {
             factory,
             connections: Mutex::new(HashMap::new()),
             claude: ClaudeCli::default(),
+            notes_folder: std::env::home_dir().map(|home| home.join(NOTES_FOLDER)),
         }
     }
 
@@ -333,7 +338,9 @@ impl ConnectionService {
 
     /// Sends `message` to Claude about the database of tab `id`, and gives the reply.
     /// With no `session`, a new conversation starts. Then the database kind and all
-    /// tables with their columns go first. No password is ever sent.
+    /// tables with their columns go first. The notes of the database (`claude.md`) go in
+    /// front then, and also when `include_notes` is true (the user changed them).
+    /// A fact Claude wants to remember is added to the notes. No password is ever sent.
     pub async fn ask_claude(
         &self,
         id: &str,
@@ -341,6 +348,7 @@ impl ConnectionService {
         session: Option<&str>,
         options: &AiOptions,
         attachments: &[Attachment],
+        include_notes: bool,
     ) -> AppResult<ClaudeReply> {
         claude::check_options(options)?;
         let files = attachment::check_all(attachments)?;
@@ -363,6 +371,11 @@ impl ConnectionService {
             }
             claude::first_prompt(config.driver, &config.database, &tables, message)
         };
+        if session.is_none() || include_notes {
+            // ponytail: no notes when they cannot be read (no database). The question still goes.
+            let notes = self.read_notes(id).ok().map(|notes| notes.text);
+            prompt = claude::with_notes(notes.as_deref(), &prompt);
+        }
         if options.read_only {
             prompt = format!("{CLAUDE_READ_ONLY_NOTE}\n\n{prompt}");
         }
@@ -375,7 +388,7 @@ impl ConnectionService {
             }
             other => return Err(AppError::Message(format!("Unknown AI provider: {other}"))),
         };
-        let (sql, message) = match &output.structured_output {
+        let (sql, message, remember) = match &output.structured_output {
             Some(value) => (
                 claude::sql_of(value),
                 value
@@ -383,16 +396,59 @@ impl ConnectionService {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default()
                     .to_owned(),
+                claude::remember_of(value),
             ),
             None => claude::parse_reply(&output.result),
         };
         let is_read = sql.as_deref().is_some_and(claude::is_read_only);
+        let remember_error = remember
+            .as_deref()
+            .and_then(|fact| self.add_note(id, fact).err())
+            .map(|error| error.to_string());
         Ok(ClaudeReply {
             session_id: output.session_id,
             message,
             sql,
             is_read,
+            remember,
+            remember_error,
         })
+    }
+
+    /// The notes folder and the safe folder name of the current database of tab `id`.
+    fn notes_place(&self, id: &str) -> AppResult<(PathBuf, String)> {
+        let base = self.notes_folder.clone().ok_or(NO_HOME_FOR_NOTES)?;
+        let config = self.connection(id)?.config;
+        // `config` holds the real server, not the local end of an SSH tunnel.
+        let folder =
+            notes::folder_name(config.driver, &config.host, config.port, &config.database)?;
+        Ok((base, folder))
+    }
+
+    /// The notes of the current database of tab `id`. The file is created when it is missing.
+    pub fn read_notes(&self, id: &str) -> AppResult<Notes> {
+        let (base, folder) = self.notes_place(id)?;
+        let text = notes::read(&base, &folder)?;
+        let path = notes::path(&base, &folder).to_string_lossy().into_owned();
+        // The title shows the readable name, without the `-<hash>` part.
+        let database = folder.rsplit_once('-').map_or(&*folder, |(name, _)| name);
+        Ok(Notes {
+            database: database.to_owned(),
+            path,
+            text,
+        })
+    }
+
+    /// Replaces the notes of the current database of tab `id` with `text`.
+    pub fn write_notes(&self, id: &str, text: &str) -> AppResult<()> {
+        let (base, folder) = self.notes_place(id)?;
+        notes::write(&base, &folder, text)
+    }
+
+    /// Adds one fact of the AI to the notes of the current database of tab `id`.
+    fn add_note(&self, id: &str, fact: &str) -> AppResult<()> {
+        let (base, folder) = self.notes_place(id)?;
+        notes::append(&base, &folder, fact)
     }
 
     /// Reads a file for the AI and checks its type and size. See `attachment::check`.

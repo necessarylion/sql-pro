@@ -1,9 +1,11 @@
 //! One spare connection that is open already, so a new tab opens at once.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 
+use crate::constants::DEAD_CONNECTION_SECONDS;
 use crate::model::ConnectionConfig;
 use crate::repository::{Repository, RepositoryFactory, SshTunnel};
 
@@ -32,8 +34,15 @@ impl Spare {
     /// Gives the spare when it has the same config and still answers. Else `None`.
     pub(super) async fn take(&self, config: &ConnectionConfig) -> Option<Opened> {
         let (spare_config, (repository, tunnel)) = self.state.lock().ready.take()?;
-        // An idle connection can die (server timeout, NAT). One cheap query checks it.
-        if spare_config == *config && repository.query("SELECT 1").await.is_ok() {
+        // An idle connection can die (server timeout, NAT, sleep). One cheap query checks
+        // it. A dead socket can hang instead of fail, so the check has a time limit.
+        let wait = Duration::from_secs(DEAD_CONNECTION_SECONDS);
+        if spare_config == *config
+            && matches!(
+                tokio::time::timeout(wait, repository.query("SELECT 1")).await,
+                Ok(Ok(_))
+            )
+        {
             return Some((repository, tunnel));
         }
         repository.close().await;
