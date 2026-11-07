@@ -44,6 +44,16 @@ export class PlanTree {
     }
   }
 
+  /** True when any step of the tree, folded or not, has a cost. */
+  static hasCost(nodes: PlanNode[]): boolean {
+    for (const node of nodes) {
+      if (node.cost !== null || PlanTree.hasCost(node.children)) {
+        return true
+      }
+    }
+    return false
+  }
+
   /** A row count or cost: whole numbers get thousands separators, others two decimals. */
   static amount(value: number | null): string {
     if (value === null) {

@@ -2018,6 +2018,20 @@ async fn query_plan(service: &ConnectionService, table: &TableRef, driver: Drive
     if driver == Driver::Mssql {
         plan_setting_stays_private(service).await;
     }
+    // A plan that fails leaves the tab working, with no plan setting on.
+    let _ = service.query_plan(ID, "SELECT 1/0 AS x", true).await;
+    assert!(
+        service
+            .query_plan(ID, "SELECT * FROM sqlpro_missing", false)
+            .await
+            .is_err()
+    );
+    let sets = service
+        .run_query(ID, "SELECT 1 AS one")
+        .await
+        .expect("query after a failed plan");
+    assert_eq!(sets.len(), 1);
+    assert_eq!(sets[0].rows, vec![vec![text("1")]]);
 }
 
 /// A query of the same tab that comes during an Analyze waits for it. It never runs while

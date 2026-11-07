@@ -35,12 +35,9 @@ function visibleRows(): PlanRow[] {
   return tree.value.rows()
 }
 
+/** From the whole tree, so folding a step never changes the columns. */
 function anyCost(): boolean {
-  return rows.value.some(hasCostValue)
-}
-
-function hasCostValue(row: PlanRow): boolean {
-  return row.node.cost !== null
+  return PlanTree.hasCost(props.plan.nodes)
 }
 
 function clearPick(): void {

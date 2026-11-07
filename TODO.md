@@ -16,7 +16,11 @@ The Query view shows Explain and Analyze as a tree (`service/query_plan.rs`). Th
 
 - SQLite has no Analyze. It gives no real times.
 - SQL Server Analyze fails when the result of the query has a type the driver cannot read (`text`,
-  `xml`, ...), like Run does. Cast those columns in the query.
+  `xml`, ...), like Run does. Cast those columns in the query. After any failed plan the tab opens a
+  new connection.
+- Older than the query plan: on SQL Server, an AI read that fails inside its `BEGIN TRAN` guard
+  leaves the connection unusable (error 3971) until the tab connects again. Analyze avoids this by
+  closing the connection after an error (`MssqlRepository::query_steps`). AI reads should do the same.
 - MySQL with `explain_json_format_version = 2` writes another JSON form. Then only the Raw tab shows.
 - The share of a step is its own time or cost against the total. Loops, parallel workers and
   subplans are counted a little differently by each database, so a share is a hint, not exact.

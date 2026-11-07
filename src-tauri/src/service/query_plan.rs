@@ -45,6 +45,7 @@ impl ConnectionService {
         } else {
             // The settings stay on for the connection. So they run on the same connection
             // as the statement, with nothing between, and `after` turns them off again.
+            // After an error the connection is closed, with its settings and transaction.
             let body = if analyze {
                 Self::guarded_sql(repository, &plan_sql.sql)
             } else {
@@ -52,10 +53,8 @@ impl ConnectionService {
             };
             let mut steps: Vec<&str> = plan_sql.before.into_iter().collect();
             steps.push(&body);
-            let end = repository.read_only_guard().1;
-            let on_error: &[&str] = if analyze { &[end] } else { &[] };
             let always: Vec<&str> = plan_sql.after.into_iter().collect();
-            repository.query_steps(&steps, on_error, &always).await?
+            repository.query_steps(&steps, &always).await?
         };
         let output = last_with_columns(sets);
         let raw = match repository.explain_prefix() {

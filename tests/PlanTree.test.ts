@@ -1,7 +1,6 @@
 // The folding and the number text of the query plan tree. Run: bun test
 import { expect, test } from 'bun:test'
-import { reactive } from 'vue'
-import { markRaw } from 'vue'
+import { markRaw, reactive } from 'vue'
 import type { DatabaseApi } from '../src/services/DatabaseApi'
 import { PlanTree } from '../src/services/PlanTree'
 import { Session } from '../src/services/Session'
@@ -56,6 +55,13 @@ test('a closed step hides its children until it is opened again', function () {
   expect(operations(tree)).toEqual(['0:Sort', '1:Hash Join', '2:Seq Scan', '2:Hash'])
   tree.toggle('0.0.1')
   expect(operations(tree)).toHaveLength(5)
+})
+
+test('the cost column depends on the whole tree, not on what is open', function () {
+  const deep = [step('Sort', [step('Seq Scan')])]
+  deep[0].children[0].cost = 12
+  expect(PlanTree.hasCost(deep)).toBe(true)
+  expect(PlanTree.hasCost(PLAN)).toBe(false)
 })
 
 test('numbers are short and readable', function () {
