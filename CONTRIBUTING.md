@@ -52,6 +52,19 @@ cargo test
 - New UI must work in the dark and the light theme.
 - Ask for confirmation before any destructive action.
 
+## Report a bug
+
+Open an issue at https://github.com/necessarylion/sql-pro/issues. Please write:
+
+- The app version and your operating system.
+- The database and its version (for example PostgreSQL 17).
+- The steps to reproduce the bug.
+- What you expected to happen.
+- What happened instead.
+
+Do not paste passwords or production data. Remove them from logs and screenshots.
+For a security problem, do not open an issue. Follow [SECURITY.md](SECURITY.md).
+
 ## Pull requests
 
 - Keep a pull request small and about one thing.
