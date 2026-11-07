@@ -457,14 +457,19 @@ pub async fn schema_sync_sql(
     service.schema_sync_sql(&source, &target, &picked).await
 }
 
-/// Runs the reviewed sync SQL on tab `target`. The frontend asks the user first.
+/// Builds the sync SQL again and runs it on tab `target`, only when it is still the
+/// `reviewed` SQL. The frontend asks the user first.
 #[tauri::command]
 pub async fn run_schema_sync(
     service: Service<'_>,
+    source: String,
     target: String,
-    statements: Vec<String>,
+    picked: Vec<String>,
+    reviewed: Vec<String>,
 ) -> AppResult<()> {
-    service.run_schema_sync(&target, statements).await
+    service
+        .run_schema_sync(&source, &target, &picked, &reviewed)
+        .await
 }
 
 #[tauri::command]

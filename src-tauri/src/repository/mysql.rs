@@ -504,15 +504,20 @@ impl Repository for MysqlRepository {
 
     /// `SHOW COLUMNS` lists a text default without its quotes, like `abc`.
     /// A number, `NULL`, a time function or a value in quotes already stays as it is.
+    /// `MySQL` 8 marks an expression default with `DEFAULT_GENERATED`. Such an expression,
+    /// like `uuid()`, must be in brackets. Only `CURRENT_TIMESTAMP` works without them.
     // ponytail: guessed from the text. A text default that looks like a number keeps
     // no quotes, and MySQL turns it into text again. Read `SHOW CREATE TABLE` if needed.
     fn default_expression(&self, column: &ColumnInfo) -> Option<String> {
         let value = column.default.as_deref()?;
         let upper = value.to_ascii_uppercase();
+        let time = upper.starts_with("CURRENT_TIMESTAMP");
+        if column.extra.contains("DEFAULT_GENERATED") && !time {
+            return Some(format!("({value})"));
+        }
         let raw = value.parse::<f64>().is_ok()
             || upper == "NULL"
-            || upper.starts_with("CURRENT_TIMESTAMP")
-            || column.extra.contains("DEFAULT_GENERATED")
+            || time
             || (value.len() >= 2 && value.starts_with('\'') && value.ends_with('\''));
         Some(if raw {
             value.to_owned()

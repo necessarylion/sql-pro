@@ -21,4 +21,6 @@ The Compare view compares tables, columns, indexes and foreign keys. These parts
 - A renamed table or column shows as a drop and an add.
 - Two different kinds of database (like MySQL to PostgreSQL) cannot be compared.
 - SQLite cannot change a column or a foreign key of an existing table. The SQL shows a warning for those.
-- A new PostgreSQL or SQL Server table is built from its columns. Sequences, checks and comments are not copied.
+- A new PostgreSQL or SQL Server table is built from its columns. Checks and comments are not copied. A `serial` column becomes `serial` again.
+- An index on an expression, or with a `WHERE` part, is found but not copied. The SQL shows a warning.
+- A changed auto increment, identity or generated rule is found but not changed. The SQL shows a warning.

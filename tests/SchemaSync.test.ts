@@ -66,8 +66,13 @@ class FakeApi {
     return { statements, warnings: [] }
   }
 
-  async runSchemaSync(target: string, statements: string[]): Promise<void> {
-    this.runs.push([target, statements])
+  async runSchemaSync(
+    source: string,
+    target: string,
+    picked: string[],
+    reviewed: string[],
+  ): Promise<void> {
+    this.runs.push([target, reviewed, source, picked])
   }
 }
 
@@ -145,6 +150,7 @@ test('run asks first, names the drops, and does nothing on no', async function (
   expect(prompt.questions[0]).toContain('Run 4 statements on "prod"?')
   expect(prompt.questions[0]).toContain('It drops 1 table and 1 column')
   expect(prompt.questions[0]).toContain('MySQL cannot undo')
+  expect(prompt.questions[0]).not.toContain('It changes')
 
   prompt.answer = true
   const loads = api.tableLoads
@@ -152,6 +158,9 @@ test('run asks first, names the drops, and does nothing on no', async function (
   expect(await sync.runOnTarget(dev, prod)).toBe(true)
   expect(api.runs[0][0]).toBe(prod.id)
   expect((api.runs[0][1] as string[]).length).toBe(4)
+  // The backend gets the picks too, so it builds the SQL again itself.
+  expect(api.runs[0][2]).toBe(dev.id)
+  expect((api.runs[0][3] as string[]).length).toBe(4)
   // The target lists its tables again, and the compare runs again.
   expect(api.tableLoads).toBe(loads + 1)
   expect(sync.changes).toEqual([])
@@ -163,7 +172,7 @@ test('open in Query puts the SQL into the target tab', async function () {
   const dev = await tab(api, DEFAULT_CONFIGS.sqlite, 'dev')
   const prod = await tab(api, DEFAULT_CONFIGS.sqlite, 'prod')
   await sync.compare(dev, prod)
-  sync.openInQuery(prod)
+  sync.openInQuery(dev, prod)
   expect(prod.view).toBe('query')
   expect(prod.sql).toBe(sync.script)
   expect(dev.sql).toBe('')
@@ -178,4 +187,50 @@ test('a switch to another database forgets the differences', async function () {
   await dev.useDatabase('other')
   expect(dev.schemaSync.changes).toBeNull()
   expect(dev.schemaSync.picked).toEqual([])
+})
+
+test('the run confirm names changed columns', async function () {
+  const { api, prompt, sync } = setup()
+  api.changes = [change('users', 'alterColumn', 'name')]
+  const dev = await tab(api, DEFAULT_CONFIGS.postgres, 'dev')
+  const prod = await tab(api, DEFAULT_CONFIGS.postgres, 'prod')
+  await sync.compare(dev, prod)
+  prompt.answer = false
+  await sync.runOnTarget(dev, prod)
+  expect(prompt.questions[0]).toContain('It changes 1 column. Values that do not fit')
+  expect(prompt.questions[0]).not.toContain('MySQL')
+})
+
+test('another target tab drops the old SQL, so it cannot run there', async function () {
+  const { api, sync } = setup()
+  const dev = await tab(api, DEFAULT_CONFIGS.mysql, 'dev')
+  const prod = await tab(api, DEFAULT_CONFIGS.mysql, 'prod')
+  const other = await tab(api, DEFAULT_CONFIGS.mysql, 'other')
+  await sync.compare(dev, prod)
+  sync.pickTabs(dev.id, other.id)
+  expect(sync.changes).toBeNull()
+  expect(sync.script).toBe('')
+  await expect(sync.runOnTarget(dev, other)).rejects.toContain('no SQL')
+  expect(api.runs).toEqual([])
+})
+
+test('a target that switched its database refuses the old SQL', async function () {
+  const { api, prompt, sync } = setup()
+  const dev = await tab(api, DEFAULT_CONFIGS.mysql, 'dev')
+  const prod = await tab(api, DEFAULT_CONFIGS.mysql, 'prod')
+  await sync.compare(dev, prod)
+  expect(sync.fits(dev, prod)).toBe(true)
+  await prod.useDatabase('other')
+  expect(sync.fits(dev, prod)).toBe(false)
+  await expect(sync.runOnTarget(dev, prod)).rejects.toContain('Compare again')
+  let refused = ''
+  try {
+    sync.openInQuery(dev, prod)
+  } catch (error) {
+    refused = String(error)
+  }
+  expect(refused).toContain('Compare again')
+  expect(prompt.questions).toEqual([])
+  expect(api.runs).toEqual([])
+  expect(prod.sql).toBe('')
 })

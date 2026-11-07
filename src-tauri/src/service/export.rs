@@ -389,7 +389,10 @@ impl<'run> Exporter<'run> {
         let mut parts = Vec::with_capacity(columns.len() + 1);
         let mut keys = Vec::new();
         for column in columns {
-            let mut part = format!("{} {}", repository.quote(&column.name), column.data_type);
+            // A `serial` type makes its own sequence. The old default would need it already.
+            let serial = repository.serial_type(column);
+            let data_type = serial.unwrap_or(&column.data_type);
+            let mut part = format!("{} {data_type}", repository.quote(&column.name));
             if column.extra == "identity" {
                 part.push(' ');
                 part.push_str(repository.auto_increment());
@@ -397,7 +400,7 @@ impl<'run> Exporter<'run> {
             if !column.nullable {
                 part.push_str(" NOT NULL");
             }
-            if let Some(default) = &column.default {
+            if let Some(default) = column.default.as_ref().filter(|_| serial.is_none()) {
                 part.push_str(" DEFAULT ");
                 part.push_str(default);
             }

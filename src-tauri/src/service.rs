@@ -908,6 +908,9 @@ impl ConnectionService {
             columns: Self::column_names(&columns, &index.columns)?,
             unique: index.unique,
             primary: false,
+            expression: false,
+            partial: false,
+            constraint: false,
         };
         repository
             .query(&Self::index_sql(repository.as_ref(), table, &index))

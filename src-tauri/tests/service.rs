@@ -2607,33 +2607,38 @@ async fn run_all(service: &ConnectionService, id: &str, statements: &[&str]) {
 /// Makes the target like the source with schema compare, in two rounds: first only the
 /// new table, then all the rest. In the end the compare finds no difference.
 /// `SQLite` cannot change a column, so there the shared column is the same on both sides.
+/// `PostgreSQL` also copies a `serial` table with a `UNIQUE` column. Its index on an
+/// expression cannot be copied, so it stays as the one difference with a warning.
 #[allow(clippy::too_many_lines, reason = "one end-to-end flow")]
 async fn schema_sync(service: &ConnectionService, driver: Driver) {
-    let name_type = if driver == Driver::Sqlite {
-        "VARCHAR(40) NOT NULL"
+    let sqlite = driver == Driver::Sqlite;
+    let postgres = driver == Driver::Postgres;
+    let mut source = vec![
+        "CREATE TABLE sync_parent (id INTEGER PRIMARY KEY, name VARCHAR(40) NOT NULL, \
+            note VARCHAR(10) DEFAULT 'it''s')",
+        "CREATE INDEX sync_parent_name ON sync_parent (name)",
+        "CREATE TABLE sync_child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL, \
+            FOREIGN KEY (parent_id) REFERENCES sync_parent (id))",
+    ];
+    if postgres {
+        source.push("CREATE TABLE sync_serial (id SERIAL PRIMARY KEY, email VARCHAR(40) UNIQUE)");
+        source.push("CREATE INDEX sync_serial_lower ON sync_serial (lower(email))");
+    }
+    run_all(service, SYNC_SOURCE, &source).await;
+    // SQLite cannot drop a column with a UNIQUE constraint. The others drop the
+    // constraint first. It owns an index, which `DROP INDEX` cannot drop.
+    let parent = if sqlite {
+        "CREATE TABLE sync_parent (id INTEGER PRIMARY KEY, name VARCHAR(40) NOT NULL, \
+            old_col INTEGER)"
     } else {
-        "VARCHAR(20)"
+        "CREATE TABLE sync_parent (id INTEGER PRIMARY KEY, name VARCHAR(20), \
+            old_col INTEGER, CONSTRAINT sync_parent_old_key UNIQUE (old_col))"
     };
-    run_all(
-        service,
-        SYNC_SOURCE,
-        &[
-            "CREATE TABLE sync_parent (id INTEGER PRIMARY KEY, name VARCHAR(40) NOT NULL, \
-                note VARCHAR(10) DEFAULT 'it''s')",
-            "CREATE INDEX sync_parent_name ON sync_parent (name)",
-            "CREATE TABLE sync_child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL, \
-                FOREIGN KEY (parent_id) REFERENCES sync_parent (id))",
-        ],
-    )
-    .await;
-    let parent = format!(
-        "CREATE TABLE sync_parent (id INTEGER PRIMARY KEY, name {name_type}, old_col INTEGER)"
-    );
     run_all(
         service,
         SYNC_TARGET,
         &[
-            &parent,
+            parent,
             "CREATE INDEX sync_parent_old ON sync_parent (old_col)",
             "CREATE TABLE sync_gone (id INTEGER PRIMARY KEY)",
         ],
@@ -2659,8 +2664,12 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
         "AddIndex sync_parent sync_parent_name",
         "DropIndex sync_parent sync_parent_old",
     ];
-    if driver != Driver::Sqlite {
+    if !sqlite {
         expected.insert(2, "AlterColumn sync_parent name");
+        expected.push("DropIndex sync_parent sync_parent_old_key");
+    }
+    if postgres {
+        expected.push("CreateTable sync_serial ");
     }
     assert_eq!(found, expected);
 
@@ -2678,8 +2687,21 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
     assert_ne!(sql.statements.len(), 0);
     let again = service.compare_schemas(SYNC_SOURCE, SYNC_TARGET).await;
     assert_eq!(again.expect("compare").len(), changes.len());
+
+    // SQL that is not what the backend builds now never runs.
+    let other = ["DROP TABLE sync_parent".to_owned()];
+    let refused = service
+        .run_schema_sync(SYNC_SOURCE, SYNC_TARGET, &create, &other)
+        .await;
+    assert_eq!(
+        refused.expect_err("other sql").to_string(),
+        sql_pro_lib::constants::SYNC_SQL_CHANGED
+    );
+    let tables = service.tables(SYNC_TARGET).await.expect("tables");
+    assert!(tables.iter().any(|table| table.name == "sync_parent"));
+
     service
-        .run_schema_sync(SYNC_TARGET, sql.statements)
+        .run_schema_sync(SYNC_SOURCE, SYNC_TARGET, &create, &sql.statements)
         .await
         .expect("run round one");
     let rest = service
@@ -2695,36 +2717,41 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
         .schema_sync_sql(SYNC_SOURCE, SYNC_TARGET, &ids)
         .await
         .expect("sync sql");
-    assert!(sql.warnings.is_empty(), "{:?}", sql.warnings);
+    let warned: Vec<&str> = if postgres {
+        vec![
+            "Add index sync_serial_lower to sync_serial: \
+            It is built on an expression. Copy it by hand.",
+        ]
+    } else {
+        Vec::new()
+    };
+    assert_eq!(sql.warnings, warned);
     service
-        .run_schema_sync(SYNC_TARGET, sql.statements)
+        .run_schema_sync(SYNC_SOURCE, SYNC_TARGET, &ids, &sql.statements)
         .await
         .expect("run round two");
     let left = service
         .compare_schemas(SYNC_SOURCE, SYNC_TARGET)
         .await
         .expect("compare");
-    assert!(left.is_empty(), "{left:?}");
-
-    // A failed script is named, and on SQLite it keeps nothing.
-    let failed = service
-        .run_schema_sync(
+    let mut found = Vec::new();
+    for change in &left {
+        found.push(format!("{:?} {}", change.action, change.name));
+    }
+    let wanted: Vec<&str> = if postgres {
+        vec!["AddIndex sync_serial_lower"]
+    } else {
+        Vec::new()
+    };
+    assert_eq!(found, wanted);
+    if postgres {
+        // The serial column works: a new row gets its number.
+        run_all(
+            service,
             SYNC_TARGET,
-            vec![
-                "CREATE TABLE sync_half (id INTEGER)".to_owned(),
-                "DROP TABLE sync_missing".to_owned(),
-            ],
+            &["INSERT INTO sync_serial (email) VALUES ('a@b.c')"],
         )
         .await;
-    assert!(
-        failed
-            .expect_err("missing table")
-            .to_string()
-            .starts_with("Statement 2")
-    );
-    if driver == Driver::Sqlite {
-        let tables = service.tables(SYNC_TARGET).await.expect("tables");
-        assert!(tables.iter().all(|table| table.name != "sync_half"));
     }
 }
 

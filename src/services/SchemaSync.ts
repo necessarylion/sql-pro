@@ -1,6 +1,7 @@
 import { DRIVER_LABELS } from '../constants'
 import {
   CHANGED_TABLES,
+  COLUMN_CHANGE_ACTIONS,
   DATA_LOSS_ACTIONS,
   ONLY_IN_SOURCE,
   ONLY_IN_TARGET,
@@ -37,6 +38,8 @@ export class SchemaSync {
   picked: string[] = []
   /** null = no SQL for the picked differences yet. */
   sql: SyncSql | null = null
+  /** The databases of the two tabs at the compare. A tab can switch its database later. */
+  private databases = ['', '']
   private api: DatabaseApi
   private prompt: DiscardPrompt
 
@@ -79,6 +82,7 @@ export class SchemaSync {
     this.targetId = target.id
     this.changes = null
     this.sql = null
+    this.databases = [SchemaSync.database(source), SchemaSync.database(target)]
     const changes = await this.api.compareSchemas(source.id, target.id)
     this.changes = changes
     this.picked = []
@@ -88,6 +92,13 @@ export class SchemaSync {
     if (changes.length > 0) {
       await this.makeSql()
     }
+  }
+
+  /** Picks another source or target tab. The old differences and SQL do not fit it. */
+  pickTabs(sourceId: string, targetId: string): void {
+    this.sourceId = sourceId
+    this.targetId = targetId
+    this.clear()
   }
 
   /** Forgets the differences and the SQL, like after a switch to another database. */
@@ -164,8 +175,22 @@ export class SchemaSync {
     return groups.filter(SchemaSync.hasTables)
   }
 
+  /**
+   * True when the SQL fits the two tabs as they are now: the same tabs, on the same databases.
+   * Else it must never be used, because it would change another database.
+   */
+  fits(source: Session | undefined, target: Session | undefined): boolean {
+    return (
+      source?.id === this.sourceId &&
+      target?.id === this.targetId &&
+      SchemaSync.database(source) === this.databases[0] &&
+      SchemaSync.database(target) === this.databases[1]
+    )
+  }
+
   /** Puts the SQL into the Query view of the target tab. The user runs it there. */
-  openInQuery(target: Session): void {
+  openInQuery(source: Session, target: Session): void {
+    this.checkFits(source, target)
     target.openInQuery(this.script)
   }
 
@@ -178,10 +203,12 @@ export class SchemaSync {
     if (statements.length === 0) {
       throw 'There is no SQL to run. Pick differences and make the SQL first.'
     }
+    this.checkFits(source, target)
     if (!(await this.prompt.ask(this.runQuestion(target), SYNC_RUN_TITLE))) {
       return false
     }
-    await this.api.runSchemaSync(target.id, statements)
+    // The backend builds the SQL again and runs it only when it is still this SQL.
+    await this.api.runSchemaSync(source.id, target.id, this.picked, statements)
     await target.loadTables()
     await this.compare(source, target)
     return true
@@ -193,8 +220,14 @@ export class SchemaSync {
     const lines = [`Run ${count} ${count === 1 ? 'statement' : 'statements'} on "${target.title}"?`]
     let tables = 0
     let columns = 0
+    let changed = 0
     for (const change of this.changes ?? []) {
-      if (this.isPicked(change) && DATA_LOSS_ACTIONS.includes(change.action)) {
+      if (!this.isPicked(change)) {
+        continue
+      }
+      if (COLUMN_CHANGE_ACTIONS.includes(change.action)) {
+        changed += 1
+      } else if (DATA_LOSS_ACTIONS.includes(change.action)) {
         if (change.action === 'dropTable') {
           tables += 1
         } else {
@@ -208,10 +241,26 @@ export class SchemaSync {
           'with all their data. This cannot be undone.',
       )
     }
+    if (changed > 0) {
+      lines.push(
+        `It changes ${SchemaSync.count(changed, 'column')}. ` +
+          'Values that do not fit a new type can be cut or lost, or the change fails.',
+      )
+    }
     if (target.config?.driver === 'mysql') {
       lines.push('MySQL cannot undo a schema change. When one fails, the ones before it stay.')
     }
     return lines.join('\n\n')
+  }
+
+  private checkFits(source: Session, target: Session): void {
+    if (!this.fits(source, target)) {
+      throw 'The SQL was made for other tabs or databases. Compare again.'
+    }
+  }
+
+  private static database(tab: Session | undefined): string {
+    return tab?.config?.database ?? ''
   }
 
   private static count(amount: number, noun: string): string {

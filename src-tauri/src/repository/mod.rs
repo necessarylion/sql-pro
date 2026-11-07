@@ -135,7 +135,16 @@ pub trait Repository: Send + Sync {
 
     /// The statement that drops a foreign key. Both names are already quoted.
     fn drop_foreign_key_sql(&self, table: &str, name: &str) -> String {
-        format!("ALTER TABLE {table} DROP CONSTRAINT {name}")
+        drop_constraint_sql(table, name)
+    }
+
+    /// The statement that drops `index` of `table`. An index that a constraint owns
+    /// (only `PostgreSQL` and SQL Server tell) is dropped with its constraint.
+    fn drop_any_index_sql(&self, table: &TableRef, index: &IndexInfo) -> String {
+        if index.constraint {
+            return drop_constraint_sql(&self.table_name(table), &self.quote(&index.name));
+        }
+        self.drop_index_sql(table, &index.name)
     }
 
     /// The statement that creates `table`, as the database itself writes it.
@@ -331,6 +340,12 @@ pub trait Repository: Send + Sync {
     /// `SET DEFAULT` take it. Most databases list it like that already.
     fn default_expression(&self, column: &ColumnInfo) -> Option<String> {
         column.default.clone()
+    }
+
+    /// The type that makes its own number sequence, like `serial`, when `column` takes
+    /// its default from a sequence that a new table would not have. `None` for most.
+    fn serial_type(&self, _column: &ColumnInfo) -> Option<&'static str> {
+        None
     }
 
     /// One column in the select list of a browse or an export.
@@ -749,7 +764,9 @@ fn relations(keys: &ResultSet, unique: &ResultSet) -> Vec<Relation> {
     relations
 }
 
-/// Builds indexes from rows shaped as: name, column, unique (YES/NO), primary (YES/NO).
+/// Builds indexes from rows shaped as: name, column, unique (YES/NO), primary (YES/NO),
+/// and when the database can tell: expression, partial, constraint (all YES/NO).
+/// An empty column also counts as an expression.
 /// The rows of one index must follow each other, in column order.
 fn indexes(set: &ResultSet) -> Vec<IndexInfo> {
     let mut indexes: Vec<IndexInfo> = Vec::new();
@@ -762,13 +779,24 @@ fn indexes(set: &ResultSet) -> Vec<IndexInfo> {
                 columns: Vec::new(),
                 unique: cell(row, 2) == "YES",
                 primary: cell(row, 3) == "YES",
+                expression: false,
+                partial: cell(row, 5) == "YES",
+                constraint: cell(row, 6) == "YES",
             });
         }
         if let Some(index) = indexes.last_mut() {
-            index.columns.push(cell(row, 1));
+            let column = cell(row, 1);
+            index.expression |= column.is_empty() || cell(row, 4) == "YES";
+            index.columns.push(column);
         }
     }
     indexes
+}
+
+/// The statement that drops a constraint. Both names are already quoted.
+/// `PostgreSQL`, SQL Server and `MySQL` 8 share this syntax.
+fn drop_constraint_sql(table: &str, name: &str) -> String {
+    format!("ALTER TABLE {table} DROP CONSTRAINT {name}")
 }
 
 /// Builds foreign keys from rows shaped as: key id, name, column, parent schema,

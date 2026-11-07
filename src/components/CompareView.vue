@@ -17,6 +17,8 @@ const target = computed(readTarget)
 const problem = computed(describeProblem)
 const groups = computed(readGroups)
 const summary = computed(describeSummary)
+/** False when a tab switched its database after the compare. Then the SQL must not be used. */
+const usable = computed(sqlFits)
 
 onMounted(pickDefaults)
 
@@ -92,6 +94,19 @@ function describeSummary(): string {
   return `${all} ${all === 1 ? 'difference' : 'differences'} · ${picked} picked`
 }
 
+/** A new tab drops the old differences and SQL, so they never run on the wrong database. */
+function pickSource(event: Event): void {
+  sync.value.pickTabs((event.target as HTMLSelectElement).value, sync.value.targetId)
+}
+
+function pickTarget(event: Event): void {
+  sync.value.pickTabs(sync.value.sourceId, (event.target as HTMLSelectElement).value)
+}
+
+function sqlFits(): boolean {
+  return sync.value.script !== '' && sync.value.fits(source.value, target.value)
+}
+
 function compare(): void {
   props.session.run(sync.value.compare(source.value, target.value))
 }
@@ -102,10 +117,14 @@ function makeSql(): void {
 
 /** Puts the SQL into the Query view of the target tab and shows that tab. */
 function openInQuery(): void {
-  if (target.value) {
-    sync.value.openInQuery(target.value)
-    manager.activate(target.value)
+  if (source.value && target.value) {
+    props.session.run(openAndShow(source.value, target.value))
   }
+}
+
+async function openAndShow(from: Session, to: Session): Promise<void> {
+  sync.value.openInQuery(from, to)
+  manager.activate(to)
 }
 
 function runOnTarget(): void {
@@ -139,12 +158,16 @@ function isTableLevel(table: TableChanges): boolean {
   <div class="bar info">
     <GitCompareArrowsIcon class="glyph" :size="13" />
     <span class="name">Compare</span>
-    <select v-model="sync.sourceId" title="Source: the database to copy the schema from">
+    <select
+      :value="sync.sourceId"
+      title="Source: the database to copy the schema from"
+      @change="pickSource"
+    >
       <option value="" disabled>Source…</option>
       <option v-for="tab in tabs" :key="tab.id" :value="tab.id">{{ tabLabel(tab) }}</option>
     </select>
     <ArrowRightIcon class="dim" :size="12" />
-    <select v-model="sync.targetId" title="Target: the database to change">
+    <select :value="sync.targetId" title="Target: the database to change" @change="pickTarget">
       <option value="" disabled>Target…</option>
       <option v-for="tab in tabs" :key="tab.id" :value="tab.id">{{ tabLabel(tab) }}</option>
     </select>
@@ -213,7 +236,7 @@ function isTableLevel(table: TableChanges): boolean {
           Make SQL
         </button>
         <button
-          :disabled="!sync.script || session.busy"
+          :disabled="!usable || session.busy"
           title="Put the SQL into the Query view of the target tab. Nothing runs."
           @click="openInQuery"
         >
@@ -222,7 +245,7 @@ function isTableLevel(table: TableChanges): boolean {
         </button>
         <button
           class="run"
-          :disabled="!sync.script || session.busy"
+          :disabled="!usable || session.busy"
           title="Run the SQL on the target. It asks first."
           @click="runOnTarget"
         >
@@ -230,6 +253,9 @@ function isTableLevel(table: TableChanges): boolean {
           Run on target
         </button>
       </div>
+      <p v-if="sync.script && !usable" class="empty error">
+        A tab changed its database after the compare. Compare again before you use the SQL.
+      </p>
       <ul v-if="sync.sql?.warnings.length" class="warnings">
         <li v-for="warning in sync.sql.warnings" :key="warning">{{ warning }}</li>
       </ul>

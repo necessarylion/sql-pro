@@ -374,7 +374,10 @@ impl MssqlRepository {
     fn indexes_sql(&self, table: &TableRef) -> String {
         format!(
             "SELECT i.name, c.name, CASE WHEN i.is_unique = 1 THEN 'YES' ELSE 'NO' END, \
-                CASE WHEN i.is_primary_key = 1 THEN 'YES' ELSE 'NO' END \
+                CASE WHEN i.is_primary_key = 1 THEN 'YES' ELSE 'NO' END, 'NO', \
+                CASE WHEN i.has_filter = 1 THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN i.is_unique_constraint = 1 OR i.is_primary_key = 1 \
+                    THEN 'YES' ELSE 'NO' END \
             FROM sys.indexes i \
             JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
             JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \

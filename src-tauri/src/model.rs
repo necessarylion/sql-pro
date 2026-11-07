@@ -137,6 +137,10 @@ pub struct Relation {
 
 /// One index of a table.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "plain flags from the catalog, each one stands alone"
+)]
 pub struct IndexInfo {
     /// Empty for the primary key of a `SQLite` row id table. It has no index name.
     pub name: String,
@@ -144,6 +148,16 @@ pub struct IndexInfo {
     pub columns: Vec<String>,
     pub unique: bool,
     pub primary: bool,
+    /// True when a part is an expression, like `lower(email)`. Schema compare cannot copy it.
+    #[serde(skip)]
+    pub expression: bool,
+    /// True when the index has a `WHERE` part. Schema compare cannot copy that part.
+    #[serde(skip)]
+    pub partial: bool,
+    /// True when a `UNIQUE` or `PRIMARY KEY` constraint owns the index. Then it is
+    /// dropped with `DROP CONSTRAINT`, not with `DROP INDEX`.
+    #[serde(skip)]
+    pub constraint: bool,
 }
 
 /// One foreign key of a table: `columns` point at `ref_columns` of `ref_table`.

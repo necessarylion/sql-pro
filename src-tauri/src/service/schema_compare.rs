@@ -10,7 +10,10 @@ use std::fmt::Write as _;
 use super::ConnectionService;
 use super::claude::dialect;
 use super::export::Exporter;
-use crate::constants::{EXPRESSION_INDEX, SQLITE_AUTO_INDEX, UNNAMED_FOREIGN_KEY, VIEW};
+use crate::constants::{
+    COLUMN_RULE_CHANGED, COLUMN_RULE_NOT_COPIED, EXPRESSION_INDEX, PARTIAL_INDEX,
+    SQLITE_AUTO_INDEX, SYNC_SQL_CHANGED, UNNAMED_FOREIGN_KEY, VIEW,
+};
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ChangeAction, ColumnInfo, ColumnSpec, Driver, ForeignKey, IndexInfo, SchemaChange, SyncSql,
@@ -253,7 +256,11 @@ impl SchemaCompare {
                 Diff::AddIndex(index) => steps.push(Step::AddIndex(table.clone(), index.clone())),
                 Diff::DropIndex(index) => steps.push(Step::DropIndex(table.clone(), index.clone())),
                 Diff::AlterIndex { old, new } => {
-                    steps.push(Step::DropIndex(table.clone(), old.clone()));
+                    // The new one cannot be made in SQL here. So the old one stays too,
+                    // and only the warning of the new one shows.
+                    if !new.expression && !new.partial {
+                        steps.push(Step::DropIndex(table.clone(), old.clone()));
+                    }
                     steps.push(Step::AddIndex(table.clone(), new.clone()));
                 }
                 Diff::AddForeignKey(key) => {
@@ -472,6 +479,17 @@ impl SchemaCompare {
         left.data_type.eq_ignore_ascii_case(&right.data_type)
             && left.nullable == right.nullable
             && left.default == right.default
+            && left.extra.eq_ignore_ascii_case(&right.extra)
+    }
+
+    /// True when the column numbers its rows itself, like `AUTO_INCREMENT` or `IDENTITY`.
+    fn numbers_itself(column: &ColumnInfo) -> bool {
+        column.extra.eq_ignore_ascii_case("auto_increment") || column.extra == "identity"
+    }
+
+    /// True when the extra rule is one that a plain column definition already holds.
+    fn plain_extra(column: &ColumnInfo) -> bool {
+        column.extra.is_empty() || column.extra.eq_ignore_ascii_case("DEFAULT_GENERATED")
     }
 
     fn same_key(left: &ForeignKey, right: &ForeignKey) -> bool {
@@ -507,6 +525,10 @@ impl SchemaCompare {
         if let Some(default) = &column.default {
             text.push_str(" DEFAULT ");
             text.push_str(default);
+        }
+        if !Self::plain_extra(column) {
+            text.push(' ');
+            text.push_str(&column.extra);
         }
         text
     }
@@ -576,20 +598,35 @@ impl ConnectionService {
         Ok(sql)
     }
 
-    /// Runs the sync SQL on tab `target` in one transaction, so a failure keeps nothing.
+    /// Builds the sync SQL again from what the two databases hold now, and runs it on tab
+    /// `target` in one transaction, so a failure keeps nothing. No SQL text comes from
+    /// the frontend. `reviewed` is the SQL the user saw. When the new SQL is not the same
+    /// (a tab changed its database, or someone changed a schema), nothing runs.
     /// `MySQL` commits each `CREATE`, `ALTER` and `DROP` by itself. There a failure keeps
     /// the statements before it.
-    pub async fn run_schema_sync(&self, target: &str, statements: Vec<String>) -> AppResult<()> {
-        let repository = self.repository(target)?;
-        let mut script = Vec::with_capacity(statements.len());
-        for (index, sql) in statements.into_iter().enumerate() {
+    pub async fn run_schema_sync(
+        &self,
+        source: &str,
+        target: &str,
+        picked: &[String],
+        reviewed: &[String],
+    ) -> AppResult<()> {
+        let sql = self.schema_sync_sql(source, target, picked).await?;
+        if sql.statements != reviewed {
+            return Err(SYNC_SQL_CHANGED.into());
+        }
+        if sql.statements.is_empty() {
+            return Err("There is no SQL to run".into());
+        }
+        let mut script = Vec::with_capacity(sql.statements.len());
+        for (index, sql) in sql.statements.into_iter().enumerate() {
             script.push(Statement {
                 label: format!("Statement {}", index + 1),
                 sql,
                 params: Vec::new(),
             });
         }
-        repository.run_script(script).await
+        self.repository(target)?.run_script(script).await
     }
 
     /// The differences of the two tabs, and the kind of database they both use.
@@ -655,25 +692,41 @@ impl ConnectionService {
                         .drop_foreign_key_sql(&target.table_name(table), &target.quote(&key.name)),
                 ]
             }
-            Step::DropIndex(table, index) => vec![target.drop_index_sql(table, &index.name)],
+            Step::DropIndex(table, index) => vec![target.drop_any_index_sql(table, index)],
             Step::DropTable(table) => vec![Self::drop_table_sql(target, table)],
             Step::DropColumn(table, name) => vec![target.drop_column_sql(table, name)],
             Step::CreateTable(schema) => {
                 vec![Exporter::create_table_sql(source, &schema.table, &schema.columns).await?]
             }
             Step::AddColumn(table, column) => {
-                let definition =
-                    Self::column_definition(target, &Self::spec(column), column.nullable)?;
+                let mut spec = Self::spec(column);
+                if let Some(serial) = target.serial_type(column) {
+                    serial.clone_into(&mut spec.data_type);
+                    spec.default = None;
+                }
+                let mut definition = Self::column_definition(target, &spec, column.nullable)?;
+                if SchemaCompare::numbers_itself(column) {
+                    definition.push(' ');
+                    definition.push_str(target.auto_increment());
+                } else if !SchemaCompare::plain_extra(column) {
+                    return Err(COLUMN_RULE_NOT_COPIED.into());
+                }
                 vec![target.add_column_sql(&target.table_name(table), &definition)]
             }
             Step::AlterColumn(table, old, new) => {
+                if !old.extra.eq_ignore_ascii_case(&new.extra) {
+                    return Err(COLUMN_RULE_CHANGED.into());
+                }
                 target
                     .modify_column_sql(table, old, &Self::spec(new))
                     .await?
             }
             Step::AddIndex(table, index) => {
-                if index.columns.iter().any(String::is_empty) {
+                if index.expression {
                     return Err(EXPRESSION_INDEX.into());
+                }
+                if index.partial {
+                    return Err(PARTIAL_INDEX.into());
                 }
                 vec![Self::index_sql(target, table, index)]
             }
@@ -727,6 +780,9 @@ mod tests {
             columns: columns.iter().map(|column| (*column).to_owned()).collect(),
             unique,
             primary: false,
+            expression: false,
+            partial: false,
+            constraint: false,
         }
     }
 
@@ -755,6 +811,9 @@ mod tests {
                 columns: vec!["id".to_owned()],
                 unique: true,
                 primary: true,
+                expression: false,
+                partial: false,
+                constraint: true,
             }],
             foreign_keys: Vec::new(),
         }
@@ -965,6 +1024,34 @@ mod tests {
                 "Create table posts",
                 "Add index posts_user to posts",
             ]
+        );
+    }
+
+    #[test]
+    fn an_index_that_cannot_be_made_keeps_the_old_one() {
+        let mut source = schema("users", vec![column("email", "text", true)]);
+        let mut target = source.clone();
+        source
+            .indexes
+            .push(index("users_email", &["lower(email)"], false));
+        source.indexes[1].expression = true;
+        target.indexes.push(index("users_email", &["email"], false));
+        let changes = SchemaCompare::diff(&[source], &[target]);
+        let all: Vec<&Change> = changes.iter().collect();
+        let steps = SchemaCompare::plan(&all, SyncRules::of(Driver::Postgres));
+        assert_eq!(phases(&steps), vec!["Add index users_email to users"]);
+    }
+
+    #[test]
+    fn a_changed_auto_increment_is_a_difference() {
+        let source = schema("users", vec![column("n", "int", false)]);
+        let mut target = source.clone();
+        target.columns[1].extra = "auto_increment".to_owned();
+        let changes = SchemaCompare::diff(&[source], &[target]);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            changes[0].info.detail,
+            "int NOT NULL auto_increment → int NOT NULL"
         );
     }
 

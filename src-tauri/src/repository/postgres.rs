@@ -325,7 +325,12 @@ impl PostgresRepository {
             "SELECT ic.relname, \
                 coalesce(a.attname, pg_get_indexdef(i.indexrelid, k.position::int, true)), \
                 CASE WHEN i.indisunique THEN 'YES' ELSE 'NO' END, \
-                CASE WHEN i.indisprimary THEN 'YES' ELSE 'NO' END \
+                CASE WHEN i.indisprimary THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN a.attname IS NULL THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN i.indpred IS NOT NULL THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid \
+                    AND c.conrelid = i.indrelid AND c.contype IN ('p', 'u', 'x')) \
+                    THEN 'YES' ELSE 'NO' END \
             FROM pg_index i \
             JOIN pg_class ic ON ic.oid = i.indexrelid \
             CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(col, position) \
@@ -414,6 +419,20 @@ impl Repository for PostgresRepository {
     /// A failed transaction makes this query fail. The caller counts that as open.
     fn open_transaction_sql(&self) -> Option<&'static str> {
         Some("SELECT CASE WHEN now() = statement_timestamp() THEN 0 ELSE 1 END")
+    }
+
+    /// A `serial` column has the default `nextval('<table>_<column>_seq'::regclass)`.
+    /// A copy with that default fails, because the sequence is not there. `serial` makes it.
+    fn serial_type(&self, column: &ColumnInfo) -> Option<&'static str> {
+        if !column.default.as_deref()?.starts_with("nextval(") {
+            return None;
+        }
+        match column.data_type.as_str() {
+            "smallint" => Some("smallserial"),
+            "integer" => Some("serial"),
+            "bigint" => Some("bigserial"),
+            _ => None,
+        }
     }
 
     fn auto_increment(&self) -> &'static str {
