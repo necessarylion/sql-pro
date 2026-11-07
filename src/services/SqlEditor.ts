@@ -8,6 +8,7 @@ import {
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { sql } from '@codemirror/lang-sql'
 import { HighlightStyle, bracketMatching, syntaxHighlighting } from '@codemirror/language'
+import { highlightSelectionMatches, search, searchKeymap } from '@codemirror/search'
 import { Compartment, EditorState, Prec, type Extension } from '@codemirror/state'
 import {
   EditorView,
@@ -74,6 +75,31 @@ const LOOK = EditorView.theme({
     borderRadius: '5px',
     color: 'var(--text)',
   },
+  // Find and replace panel.
+  '.cm-panels': { background: 'var(--toolbar)', color: 'var(--text)' },
+  '.cm-panels-top': { borderBottom: '1px solid var(--border)' },
+  '.cm-search': { padding: '4px 28px 4px 8px', fontSize: 'calc(12px * var(--font-scale))' },
+  '.cm-search input, .cm-search button': { margin: '2px 4px 2px 0', font: 'inherit' },
+  '.cm-search .cm-textfield': {
+    background: 'var(--bg)',
+    color: 'var(--text)',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    padding: '2px 6px',
+  },
+  '.cm-search .cm-button': {
+    background: 'var(--toolbar)',
+    backgroundImage: 'none',
+    color: 'var(--text)',
+    border: '1px solid var(--border)',
+    borderRadius: '4px',
+    padding: '2px 8px',
+  },
+  '.cm-search label': { margin: '0 6px 0 0', color: 'var(--text-2)' },
+  '.cm-search [name=close]': { color: 'var(--text-2)', top: '4px', right: '6px' },
+  '.cm-searchMatch': { background: 'color-mix(in srgb, var(--warn) 30%, transparent)' },
+  '.cm-searchMatch-selected': { background: 'color-mix(in srgb, var(--accent) 45%, transparent)' },
+  '.cm-selectionMatch': { background: 'color-mix(in srgb, var(--accent) 20%, transparent)' },
   '.cm-tooltip-autocomplete ul li[aria-selected]': {
     background: 'var(--accent)',
     color: 'var(--on-accent)',
@@ -138,7 +164,15 @@ export class SqlEditor {
           bracketMatching(),
           autocompletion(),
           placeholder('SELECT * FROM …'),
-          keymap.of([...completionKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
+          search({ top: true }),
+          highlightSelectionMatches(),
+          keymap.of([
+            ...completionKeymap,
+            ...searchKeymap,
+            ...defaultKeymap,
+            ...historyKeymap,
+            indentWithTab,
+          ]),
           this.language.of(sql()),
           syntaxHighlighting(HIGHLIGHT),
           LOOK,
