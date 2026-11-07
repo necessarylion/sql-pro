@@ -39,7 +39,7 @@ base64 = "0.22"
 async-trait = "0.1"
 futures-util = "0.3"
 thiserror = "2"
-parking_lot = "0.12"
+parking_lot = "0.13"
 # The OS password store: Keychain on macOS, Credential Manager on Windows,
 # and the Secret Service (GNOME Keyring, KWallet) over D-Bus on Linux.
 # Version 4 finds the same items as version 3, so saved passwords stay.
