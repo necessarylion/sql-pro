@@ -382,6 +382,15 @@ pub trait Repository: Send + Sync {
         self.literal(value)
     }
 
+    /// Why data compare cannot match rows by this key column. `None` when it can.
+    fn key_problem(
+        &self,
+        _column: &ColumnInfo,
+        _cast: Option<&ColumnCast>,
+    ) -> Option<&'static str> {
+        None
+    }
+
     /// A value as SQL for a column, in `INSERT` and `UPDATE`. `cast` is the entry of
     /// `column_casts` for the column.
     fn value_literal(&self, _cast: Option<&ColumnCast>, value: &str) -> String {

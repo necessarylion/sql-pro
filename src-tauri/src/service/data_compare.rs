@@ -440,6 +440,12 @@ impl ConnectionService {
                 continue;
             }
             if wanted.primary_key {
+                for (side, column) in [(SOURCE, wanted), (TARGET, found)] {
+                    let cast = columns.casts[side].get(&column.name);
+                    if let Some(problem) = repositories[side].key_problem(column, cast) {
+                        return Err(AppError::Message(format!("The table {label}: {problem}")));
+                    }
+                }
                 columns.key.push(columns.shared.len());
                 diff.key.push(wanted.name.clone());
             }

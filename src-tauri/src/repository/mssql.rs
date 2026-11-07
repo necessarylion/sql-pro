@@ -590,7 +590,20 @@ impl Repository for MssqlRepository {
             return (format!("CAST({name} AS NVARCHAR(MAX))"), false);
         }
         let binary = BINARY_TYPES.contains(&base.as_str());
-        (self.select_column(&column), binary)
+        // `select_column` names a cast `AS [name]`. Then `ORDER BY [name]` would sort by
+        // the text, not by the column, and the next page would skip rows.
+        let select = self.select_column(&column);
+        let alias = format!(" AS {}", self.quote(&column.name));
+        let read = select.strip_suffix(&alias).unwrap_or(&select).to_owned();
+        (read, binary)
+    }
+
+    /// A `sql_variant` key holds values of many types. A text value never matches an
+    /// `int` one, so `WHERE` would find no row.
+    fn key_problem(&self, column: &ColumnInfo, cast: Option<&ColumnCast>) -> Option<&'static str> {
+        let kind = cast.map_or(column.data_type.as_str(), |cast| cast.data_type.as_str());
+        (Self::base_type(kind) == "sql_variant")
+            .then_some("Its primary key is a sql_variant, which cannot be matched in SQL.")
     }
 
     /// `datetime` reads a text by the language of the session (British reads

@@ -2276,9 +2276,10 @@ async fn processes(service: &ConnectionService, config: &ConnectionConfig) {
         .kill_process(ID, other, false)
         .await
         .expect("kill the second tab");
-    // PostgreSQL ends the process a moment after the signal.
+    // PostgreSQL ends the process a moment after the signal. SQL Server can be slow
+    // while the other tests run.
     let mut ended = false;
-    for _ in 0..30 {
+    for _ in 0..100 {
         let listed = service.list_processes(ID).await.expect("list processes");
         if listed.iter().all(|process| process.id != other) {
             ended = true;
@@ -3343,6 +3344,52 @@ async fn mssql_key_types(service: &ConnectionService) {
     assert_eq!(names.as_deref(), Some("“q”=‘x’,€ key=price 5 €"));
 }
 
+/// A `hierarchyid` key over more than one page. Its text order (`/1/`, `/10/`, ...) is
+/// not its real order, so the read must sort by the column, not by the text.
+async fn mssql_tree_pages(service: &ConnectionService) {
+    let make = "CREATE TABLE data_pages (h HIERARCHYID PRIMARY KEY, v INT)";
+    for (id, changed) in [(DATA_SOURCE, 0), (DATA_TARGET, 2001)] {
+        let mut statements = vec![make.to_owned()];
+        let ids: Vec<u32> = (1..=2001).collect();
+        for chunk in ids.chunks(500) {
+            let rows: Vec<String> = chunk
+                .iter()
+                .map(|key| {
+                    format!(
+                        "('/{key}/', {})",
+                        u8::from(*key == changed || *key == 5 && changed > 0)
+                    )
+                })
+                .collect();
+            statements.push(format!("INSERT INTO data_pages VALUES {}", rows.join(", ")));
+        }
+        let statements: Vec<&str> = statements.iter().map(String::as_str).collect();
+        run_all(service, id, &statements).await;
+    }
+    let diff = sync_table(service, "data_pages").await;
+    assert_eq!(
+        (diff.delete_rows, diff.update_rows, diff.insert_rows),
+        (0, 2, 0)
+    );
+
+    // A sql_variant key cannot be matched.
+    data_table(
+        service,
+        "CREATE TABLE data_variant (s SQL_VARIANT PRIMARY KEY, v INT)",
+        "INSERT INTO data_variant VALUES (5, 1)",
+        "SELECT 1",
+    )
+    .await;
+    let table = find_table(service, DATA_SOURCE, "data_variant").await;
+    let refused = service.compare_data(DATA_SOURCE, DATA_TARGET, &table).await;
+    assert!(
+        refused
+            .expect_err("sql_variant key")
+            .to_string()
+            .contains("sql_variant")
+    );
+}
+
 /// CLR types, `xml` and `sql_variant` are read as text and written back as text.
 /// A `hierarchyid` key is cast to its own type.
 async fn mssql_clr_types(service: &ConnectionService) {
@@ -3453,6 +3500,7 @@ async fn data_types(service: &ConnectionService, driver: Driver) {
             mssql_varchar_keys(service).await;
             mssql_key_types(service).await;
             mssql_clr_types(service).await;
+            mssql_tree_pages(service).await;
             (
                 "SELECT STRING_AGG(CONCAT(id, ':', ISNULL(CONVERT(VARCHAR(30), b, 1), 'null'), \
                     ':', name), ',') WITHIN GROUP (ORDER BY id) FROM data_bin",
