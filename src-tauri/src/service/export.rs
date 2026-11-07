@@ -6,7 +6,7 @@ use std::path::Path;
 
 use rust_xlsxwriter::{ColNum, Format, RowNum, Workbook, Worksheet};
 
-use crate::constants::{COLUMN_RULE_NOT_COPIED, MAX_QUERY_ROWS};
+use crate::constants::MAX_QUERY_ROWS;
 use crate::error::{AppError, AppResult};
 use crate::model::{ColumnInfo, ExportFormat, ExportRequest, RowsExport, TableRef};
 use crate::repository::Repository;
@@ -385,14 +385,6 @@ impl<'run> Exporter<'run> {
     ) -> AppResult<String> {
         if let Some(sql) = repository.create_sql(table).await? {
             return Ok(sql);
-        }
-        // A generated column would come out as a plain column or with its expression as
-        // a default. Both are wrong, so nothing is built.
-        if let Some(column) = columns.iter().find(|column| column.extra == "generated") {
-            return Err(AppError::Message(format!(
-                "Column {} of {}: {COLUMN_RULE_NOT_COPIED}",
-                column.name, table.name
-            )));
         }
         let mut parts = Vec::with_capacity(columns.len() + 1);
         let mut keys = Vec::new();

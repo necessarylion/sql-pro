@@ -2608,12 +2608,15 @@ async fn run_all(service: &ConnectionService, id: &str, statements: &[&str]) {
 /// new table, then all the rest. In the end the compare finds no difference.
 /// `SQLite` cannot change a column, so there the shared column is the same on both sides.
 /// `PostgreSQL` also copies a `serial` table with a `UNIQUE` column and an index on an
-/// expression. That index is copied from the statement `pg_get_indexdef` gives.
+/// expression. That index is copied from the statement `pg_get_indexdef` gives. Its
+/// generated column with a changed expression cannot be changed, so it stays with a warning.
+/// SQL Server copies an index with `DESC`, `INCLUDE` and `WHERE`.
 #[allow(clippy::too_many_lines, reason = "one end-to-end flow")]
 async fn schema_sync(service: &ConnectionService, driver: Driver) {
     let sqlite = driver == Driver::Sqlite;
     let postgres = driver == Driver::Postgres;
     let mysql = driver == Driver::Mysql;
+    let sql_server = driver == Driver::Mssql;
     let mut source = vec![
         "CREATE TABLE sync_parent (id INTEGER PRIMARY KEY, name VARCHAR(40) NOT NULL, \
             note VARCHAR(10) DEFAULT 'it''s')",
@@ -2624,13 +2627,26 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
     if postgres {
         source.push("CREATE TABLE sync_serial (id SERIAL PRIMARY KEY, email VARCHAR(40) UNIQUE)");
         source.push("CREATE INDEX sync_serial_lower ON sync_serial (lower(email))");
+        source.push(
+            "CREATE TABLE sync_gen (id INTEGER PRIMARY KEY, a INTEGER, \
+                total INTEGER GENERATED ALWAYS AS (a * 2) STORED)",
+        );
+    }
+    if sql_server {
+        source.push(
+            "CREATE INDEX sync_parent_inc ON sync_parent (name DESC) INCLUDE (note) \
+                WHERE note IS NOT NULL",
+        );
     }
     // MySQL and MariaDB: an expression default, a text default that looks like a number
-    // word, and indexes with a prefix, DESC and FULLTEXT.
+    // word, bit and binary defaults, a time default that is only added to a column, and
+    // indexes with a prefix, DESC and FULLTEXT.
     if mysql {
         source.push(
             "CREATE TABLE sync_extra (id INTEGER PRIMARY KEY, body TEXT, \
-                code VARCHAR(36) DEFAULT (concat('a', 'b')), label VARCHAR(10) DEFAULT 'inf')",
+                code VARCHAR(36) DEFAULT (concat('a', 'b')), label VARCHAR(10) DEFAULT 'inf', \
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP, flag BIT(1) DEFAULT b'1', \
+                raw VARBINARY(4) DEFAULT 'ab')",
         );
         source.push("CREATE INDEX sync_extra_body ON sync_extra (body(20), label DESC)");
         source.push("CREATE FULLTEXT INDEX sync_extra_text ON sync_extra (body)");
@@ -2640,7 +2656,16 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
         run_all(
             service,
             SYNC_TARGET,
-            &["CREATE TABLE sync_extra (id INTEGER PRIMARY KEY, body TEXT)"],
+            &["CREATE TABLE sync_extra (id INTEGER PRIMARY KEY, body TEXT, created_at DATETIME)"],
+        )
+        .await;
+    }
+    if postgres {
+        run_all(
+            service,
+            SYNC_TARGET,
+            &["CREATE TABLE sync_gen (id INTEGER PRIMARY KEY, a INTEGER, \
+                total INTEGER GENERATED ALWAYS AS (a * 3) STORED)"],
         )
         .await;
     }
@@ -2688,12 +2713,19 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
         expected.push("DropIndex sync_parent sync_parent_old_key");
     }
     if postgres {
+        expected.insert(1, "AlterColumn sync_gen total");
         expected.push("CreateTable sync_serial ");
+    }
+    if sql_server {
+        expected.insert(5, "AddIndex sync_parent sync_parent_inc");
     }
     if mysql {
         let extra = [
             "AddColumn sync_extra code",
             "AddColumn sync_extra label",
+            "AlterColumn sync_extra created_at",
+            "AddColumn sync_extra flag",
+            "AddColumn sync_extra raw",
             "AddIndex sync_extra sync_extra_body",
             "AddIndex sync_extra sync_extra_text",
         ];
@@ -2757,7 +2789,15 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
         .schema_sync_sql(SYNC_SOURCE, SYNC_TARGET, &ids)
         .await
         .expect("sync sql");
-    assert!(sql.warnings.is_empty(), "{:?}", sql.warnings);
+    let warned = if postgres {
+        vec![format!(
+            "Change column total of public.sync_gen: {}",
+            sql_pro_lib::constants::COLUMN_RULE_CHANGED
+        )]
+    } else {
+        Vec::new()
+    };
+    assert_eq!(sql.warnings, warned);
     service
         .run_schema_sync(
             SYNC_SOURCE,
@@ -2776,7 +2816,12 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
     for change in &left {
         found.push(format!("{:?} {}", change.action, change.name));
     }
-    assert_eq!(found, Vec::<String>::new());
+    let wanted: Vec<&str> = if postgres {
+        vec!["AlterColumn total"]
+    } else {
+        Vec::new()
+    };
+    assert_eq!(found, wanted);
     if postgres {
         // The serial column works: a new row gets its number.
         run_all(

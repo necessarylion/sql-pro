@@ -781,7 +781,13 @@ impl ConnectionService {
                 vec![target.add_column_sql(&target.table_name(table), &definition)]
             }
             Step::AlterColumn(table, old, new) => {
-                if !old.extra.eq_ignore_ascii_case(&new.extra) {
+                // A generated column keeps its expression as its default (`PostgreSQL`).
+                // `SET DEFAULT` cannot change it. `MySQL` marks a plain expression default
+                // like `CURRENT_TIMESTAMP` with `DEFAULT_GENERATED`, which SQL can change.
+                let generated = old.extra == "generated" || new.extra == "generated";
+                let rule_changed = !old.extra.eq_ignore_ascii_case(&new.extra)
+                    && (!SchemaCompare::plain_extra(old) || !SchemaCompare::plain_extra(new));
+                if generated || rule_changed {
                     return Err(COLUMN_RULE_CHANGED.into());
                 }
                 target

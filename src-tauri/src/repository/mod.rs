@@ -777,13 +777,18 @@ fn relations(keys: &ResultSet, unique: &ResultSet) -> Vec<Relation> {
 /// Builds indexes from rows shaped as: name, column, unique (YES/NO), primary (YES/NO),
 /// and when the database can tell: expression, partial, constraint (all YES/NO) and
 /// the full `CREATE INDEX` statement.
+/// When a row has a ninth value, the eighth is only the start of the statement, up to the
+/// open bracket, and the ninth is the part of this row (`MySQL`). A NULL part means no
+/// statement.
 /// An empty column also counts as an expression.
 /// The rows of one index must follow each other, in column order.
 fn indexes(set: &ResultSet) -> Vec<IndexInfo> {
     let mut indexes: Vec<IndexInfo> = Vec::new();
+    let mut parts = false;
     for row in &set.rows {
         let name = cell(row, 0);
         let same = indexes.last().is_some_and(|last| last.name == name);
+        parts = row.len() > 8;
         if !same {
             indexes.push(IndexInfo {
                 name,
@@ -800,6 +805,24 @@ fn indexes(set: &ResultSet) -> Vec<IndexInfo> {
             let column = cell(row, 1);
             index.expression |= column.is_empty() || cell(row, 4) == "YES";
             index.columns.push(column);
+            if parts {
+                match (index.definition.as_mut(), row.get(8).cloned().flatten()) {
+                    (Some(definition), Some(part)) => {
+                        if same {
+                            definition.push_str(", ");
+                        }
+                        definition.push_str(&part);
+                    }
+                    _ => index.definition = None,
+                }
+            }
+        }
+    }
+    if parts {
+        for index in &mut indexes {
+            if let Some(definition) = &mut index.definition {
+                definition.push(')');
+            }
         }
     }
     indexes

@@ -64,20 +64,21 @@ struct Grant {
     grantable: bool,
 }
 
-/// The full `CREATE INDEX` of the index of row `s` of `information_schema.STATISTICS`.
-/// It keeps `UNIQUE`, `FULLTEXT` and `SPATIAL`, prefix lengths like `body(20)` and `DESC`.
-/// NULL when a part is an expression: its text is not in this view on every server.
-const INDEX_DEFINITION_SQL: &str = "(SELECT IF(SUM(d.COLUMN_NAME IS NULL) > 0, NULL, CONCAT('CREATE ', \
-        CASE WHEN MAX(d.NON_UNIQUE) = 0 THEN 'UNIQUE ' \
-            WHEN MAX(d.INDEX_TYPE) IN ('FULLTEXT', 'SPATIAL') THEN CONCAT(MAX(d.INDEX_TYPE), ' ') \
+/// The start of the `CREATE INDEX` of the index of row `s` of `information_schema.STATISTICS`,
+/// up to the open bracket. It keeps `UNIQUE`, `FULLTEXT` and `SPATIAL`.
+const INDEX_HEAD_SQL: &str = "CONCAT('CREATE ', \
+        CASE WHEN s.NON_UNIQUE = 0 THEN 'UNIQUE ' \
+            WHEN s.INDEX_TYPE IN ('FULLTEXT', 'SPATIAL') THEN CONCAT(s.INDEX_TYPE, ' ') \
             ELSE '' END, \
         'INDEX `', REPLACE(s.INDEX_NAME, '`', '``'), '` ON `', REPLACE(s.TABLE_NAME, '`', '``'), \
-        '` (', GROUP_CONCAT(CONCAT('`', REPLACE(d.COLUMN_NAME, '`', '``'), '`', \
-            IF(d.SUB_PART IS NULL, '', CONCAT('(', d.SUB_PART, ')')), \
-            IF(d.COLLATION = 'D', ' DESC', '')) ORDER BY d.SEQ_IN_INDEX SEPARATOR ', '), ')')) \
-    FROM information_schema.STATISTICS d \
-    WHERE d.TABLE_SCHEMA = s.TABLE_SCHEMA AND d.TABLE_NAME = s.TABLE_NAME \
-        AND d.INDEX_NAME = s.INDEX_NAME)";
+        '` (')";
+
+/// The part of row `s` in the `CREATE INDEX`, with its prefix length and `DESC`, like
+/// `` `body`(20) DESC ``. NULL for an expression: its text is not in this view on every server.
+const INDEX_PART_SQL: &str = "IF(s.COLUMN_NAME IS NULL, NULL, CONCAT('`', \
+        REPLACE(s.COLUMN_NAME, '`', '``'), '`', \
+        IF(s.SUB_PART IS NULL, '', CONCAT('(', s.SUB_PART, ')')), \
+        IF(s.COLLATION = 'D', ' DESC', '')))";
 
 pub struct MysqlRepository {
     pool: MySqlPool,
@@ -151,7 +152,7 @@ impl MysqlRepository {
     /// The definition of a column as `SHOW CREATE TABLE` prints it, without the name.
     /// Example: ``varchar(20) NOT NULL DEFAULT 'x' COMMENT 'note'``.
     /// `MySQL` lists a text default without its quotes, like `abc`. A plain number, `NULL`,
-    /// `CURRENT_TIMESTAMP` or a value in quotes already stays as it is. `MySQL` 8 marks an
+    /// `CURRENT_TIMESTAMP`, a bit or binary value or a value in quotes stays as it is. `MySQL` 8 marks an
     /// expression default with `DEFAULT_GENERATED`. Such an expression, like `uuid()`,
     /// must be in brackets. Only `CURRENT_TIMESTAMP` works without them.
     // ponytail: guessed from the text. A text default that looks like a number keeps
@@ -165,7 +166,16 @@ impl MysqlRepository {
             // ponytail: a real backslash before a quote in the expression breaks here.
             return Some(format!("({})", value.replace("\\'", "'")));
         }
+        // A bit or binary default is listed as SQL already: `b'1'` or `0x6162`.
+        let data_type = column.data_type.to_ascii_lowercase();
+        let bits = data_type.starts_with("bit") && upper.starts_with("B'");
+        let binary = data_type.contains("binary")
+            && value.len() > 2
+            && upper.starts_with("0X")
+            && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit());
         let raw = Self::plain_number(value)
+            || bits
+            || binary
             || upper == "NULL"
             || time
             || (value.len() >= 2 && value.starts_with('\'') && value.ends_with('\''));
@@ -231,6 +241,16 @@ impl MysqlRepository {
             }
         }
         Ok(definition)
+    }
+
+    /// Puts `DEFAULT value` in `definition` in place of the old default.
+    fn with_default(definition: &str, old: &ColumnInfo, value: &str) -> AppResult<String> {
+        let old_part = format!(" DEFAULT {}", old.default.as_deref().unwrap_or("NULL"));
+        let rest = definition.replacen(&old_part, "", 1);
+        if rest.contains(" DEFAULT ") {
+            return Err("Cannot read the current default of the column. Change it by hand.".into());
+        }
+        Ok(format!("{rest} DEFAULT {value}"))
     }
 
     fn is_text_type(data_type: &str) -> bool {
@@ -474,7 +494,7 @@ impl MysqlRepository {
         format!(
             "SELECT s.INDEX_NAME, s.COLUMN_NAME, CASE WHEN s.NON_UNIQUE = 0 THEN 'YES' ELSE 'NO' END, \
                 CASE WHEN s.INDEX_NAME = 'PRIMARY' THEN 'YES' ELSE 'NO' END, 'NO', 'NO', 'NO', \
-                {INDEX_DEFINITION_SQL} \
+                {INDEX_HEAD_SQL}, {INDEX_PART_SQL} \
             FROM information_schema.STATISTICS s \
             WHERE s.TABLE_SCHEMA = DATABASE() AND s.TABLE_NAME = {} \
             ORDER BY s.INDEX_NAME <> 'PRIMARY', s.INDEX_NAME, s.SEQ_IN_INDEX",
@@ -741,15 +761,27 @@ impl Repository for MysqlRepository {
         let table_sql = self.table_name(table);
         let column = self.quote(&old.name);
         let mut statements = Vec::new();
-        if new.data_type != old.data_type || new.nullable != old.nullable {
+        // `SET DEFAULT` takes no bare `CURRENT_TIMESTAMP`, and with brackets it becomes
+        // `now()`. So such a default goes into a `MODIFY`.
+        let time = new.default != old.default
+            && new
+                .default
+                .as_deref()
+                .is_some_and(|value| value.to_ascii_uppercase().starts_with("CURRENT_TIMESTAMP"));
+        if new.data_type != old.data_type || new.nullable != old.nullable || time {
             // MODIFY needs the full definition, so we start from the current one.
             let current = self.column_definition(table, &old.name).await?;
-            let definition = Self::redefine(&current, old, new)?;
+            let mut definition = Self::redefine(&current, old, new)?;
+            if let Some(value) = new.default.as_deref().filter(|_| time) {
+                definition = Self::with_default(&definition, old, value)?;
+            }
             statements.push(format!(
                 "ALTER TABLE {table_sql} MODIFY COLUMN {column} {definition}"
             ));
         }
-        statements.extend(default_sql(&table_sql, &column, old, new));
+        if !time {
+            statements.extend(default_sql(&table_sql, &column, old, new));
+        }
         Ok(statements)
     }
 
