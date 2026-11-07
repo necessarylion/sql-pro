@@ -327,6 +327,12 @@ pub trait Repository: Send + Sync {
         )
     }
 
+    /// The default of `column` as a SQL expression, the way `ADD COLUMN` and
+    /// `SET DEFAULT` take it. Most databases list it like that already.
+    fn default_expression(&self, column: &ColumnInfo) -> Option<String> {
+        column.default.clone()
+    }
+
     /// One column in the select list of a browse or an export.
     fn select_column(&self, column: &ColumnInfo) -> String {
         self.quote(&column.name)

@@ -179,6 +179,16 @@ pub const PROCESS_GONE: &str = "This process is not running any more";
 pub const SQLITE_FOREIGN_KEYS_FIXED: &str =
     "SQLite cannot add or drop a foreign key of an existing table";
 
+/// The name start of the indexes `SQLite` makes by itself for `UNIQUE` and `PRIMARY KEY`.
+/// They cannot be made or dropped by name, so schema compare leaves them out.
+pub const SQLITE_AUTO_INDEX: &str = "sqlite_autoindex_";
+
+/// The warning for an index on an expression. Its columns are not known, so no SQL is made.
+pub const EXPRESSION_INDEX: &str = "It is built on an expression. Copy it by hand.";
+
+/// The warning for a foreign key without a name. It cannot be dropped by name.
+pub const UNNAMED_FOREIGN_KEY: &str = "The foreign key has no name, so it cannot be changed here";
+
 /// The error for a try to drop the primary key as an index.
 pub const PRIMARY_KEY_NOT_DROPPED: &str = "The primary key cannot be dropped here";
 

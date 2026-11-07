@@ -7,6 +7,7 @@ mod import;
 mod notes;
 mod processes;
 mod query_stats;
+mod schema_compare;
 mod spare;
 
 use std::collections::HashMap;
@@ -29,8 +30,9 @@ use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
     ConnectionConfig, DbObject, DbUser, Diagram, DiagramTable, Driver, ExportRequest,
-    FilterOperator, FilterRule, NewColumn, NewForeignKey, NewIndex, NewUser, Notes, ResultSet,
-    RowUpdate, RowsExport, RowsSql, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
+    FilterOperator, FilterRule, ForeignKey, IndexInfo, NewColumn, NewForeignKey, NewIndex, NewUser,
+    Notes, ResultSet, RowUpdate, RowsExport, RowsSql, SaveResult, TableKeys, TablePage, TableRef,
+    UserList, Values,
 };
 use crate::repository::{
     ClaudeCli, DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, create_start,
@@ -901,15 +903,27 @@ impl ConnectionService {
         let name = Self::key_name("index", &index.name)?;
         let repository = self.repository(id)?;
         let columns = repository.columns(table).await?;
-        let sql = format!(
+        let index = IndexInfo {
+            name: name.to_owned(),
+            columns: Self::column_names(&columns, &index.columns)?,
+            unique: index.unique,
+            primary: false,
+        };
+        repository
+            .query(&Self::index_sql(repository.as_ref(), table, &index))
+            .await?;
+        Ok(())
+    }
+
+    /// The `CREATE INDEX` statement of `index`. All databases share this syntax.
+    fn index_sql(repository: &dyn Repository, table: &TableRef, index: &IndexInfo) -> String {
+        format!(
             "CREATE {}INDEX {} ON {} ({})",
             if index.unique { "UNIQUE " } else { "" },
-            repository.quote(name),
+            repository.quote(&index.name),
             repository.table_name(table),
-            Self::column_list(repository.as_ref(), &columns, &index.columns)?
-        );
-        repository.query(&sql).await?;
-        Ok(())
+            Self::quoted(repository, &index.columns)
+        )
     }
 
     /// Drops an index of the table. The primary key is refused.
@@ -944,19 +958,40 @@ impl ConnectionService {
         let columns = repository.columns(table).await?;
         let ref_table = Self::known_table(repository.as_ref(), &key.ref_table).await?;
         let ref_columns = repository.columns(&ref_table).await?;
-        let sql = format!(
+        let key = ForeignKey {
+            name: name.to_owned(),
+            columns: Self::column_names(&columns, &key.columns)?,
+            ref_schema: ref_table.schema,
+            ref_table: ref_table.name,
+            ref_columns: Self::column_names(&ref_columns, &key.ref_columns)?,
+            on_delete: key.on_delete.sql().to_owned(),
+            on_update: key.on_update.sql().to_owned(),
+        };
+        repository
+            .query(&Self::foreign_key_sql(repository.as_ref(), table, &key))
+            .await?;
+        Ok(())
+    }
+
+    /// The statement that adds foreign key `key` to `table`.
+    /// The rules go in as they are, so they must be SQL words like `CASCADE`.
+    fn foreign_key_sql(repository: &dyn Repository, table: &TableRef, key: &ForeignKey) -> String {
+        let ref_table = TableRef {
+            schema: key.ref_schema.clone(),
+            name: key.ref_table.clone(),
+            kind: String::new(),
+        };
+        format!(
             "ALTER TABLE {} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {} ({}) \
             ON DELETE {} ON UPDATE {}",
             repository.table_name(table),
-            repository.quote(name),
-            Self::column_list(repository.as_ref(), &columns, &key.columns)?,
+            repository.quote(&key.name),
+            Self::quoted(repository, &key.columns),
             repository.table_name(&ref_table),
-            Self::column_list(repository.as_ref(), &ref_columns, &key.ref_columns)?,
-            key.on_delete.sql(),
-            key.on_update.sql()
-        );
-        repository.query(&sql).await?;
-        Ok(())
+            Self::quoted(repository, &key.ref_columns),
+            key.on_delete,
+            key.on_update
+        )
     }
 
     /// Drops a foreign key of the table. Not on `SQLite`.
@@ -978,10 +1013,16 @@ impl ConnectionService {
     pub async fn drop_table(&self, id: &str, table: &TableRef) -> AppResult<()> {
         let repository = self.repository(id)?;
         let table = Self::known_table(repository.as_ref(), table).await?;
-        let keyword = if table.kind == VIEW { "VIEW" } else { "TABLE" };
-        let sql = format!("DROP {keyword} {}", repository.table_name(&table));
-        repository.query(&sql).await?;
+        repository
+            .query(&Self::drop_table_sql(repository.as_ref(), &table))
+            .await?;
         Ok(())
+    }
+
+    /// The statement that drops a table, or a view when `table.kind` says so.
+    fn drop_table_sql(repository: &dyn Repository, table: &TableRef) -> String {
+        let keyword = if table.kind == VIEW { "VIEW" } else { "TABLE" };
+        format!("DROP {keyword} {}", repository.table_name(table))
     }
 
     /// The triggers and routines of the current database.
@@ -1320,20 +1361,25 @@ impl ConnectionService {
         Ok(name)
     }
 
-    /// The quoted names of `names`, joined with commas. Each must be a column of the table.
-    fn column_list(
-        repository: &dyn Repository,
-        columns: &[ColumnInfo],
-        names: &[String],
-    ) -> AppResult<String> {
+    /// The names of `names` as the table has them. Each must be a column of the table.
+    fn column_names(columns: &[ColumnInfo], names: &[String]) -> AppResult<Vec<String>> {
         if names.is_empty() {
             return Err("Pick at least one column".into());
         }
+        let mut found = Vec::with_capacity(names.len());
+        for name in names {
+            found.push(Self::column(columns, name)?.name.clone());
+        }
+        Ok(found)
+    }
+
+    /// The quoted names, joined with commas.
+    fn quoted(repository: &dyn Repository, names: &[String]) -> String {
         let mut quoted = Vec::with_capacity(names.len());
         for name in names {
-            quoted.push(repository.quote(&Self::column(columns, name)?.name));
+            quoted.push(repository.quote(name));
         }
-        Ok(quoted.join(", "))
+        quoted.join(", ")
     }
 
     /// One column as `ADD COLUMN` and `CREATE TABLE` write it: name, type, null rule, default.

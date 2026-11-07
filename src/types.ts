@@ -170,7 +170,15 @@ export interface SaveResult {
 }
 
 export type SessionView =
-  'structure' | 'content' | 'query' | 'ask' | 'users' | 'processes' | 'queryStats' | 'diagram'
+  | 'structure'
+  | 'content'
+  | 'query'
+  | 'ask'
+  | 'users'
+  | 'processes'
+  | 'queryStats'
+  | 'diagram'
+  | 'compare'
 
 /** One reply of Claude Code in the Ask AI view. */
 export interface ClaudeReply {
@@ -492,4 +500,37 @@ export interface DbProcess {
   query: string | null
   /** True for the connection of this tab. */
   current: boolean
+}
+
+/** What one difference of a schema compare does to the target database. */
+export type ChangeAction =
+  | 'createTable'
+  | 'dropTable'
+  | 'addColumn'
+  | 'dropColumn'
+  | 'alterColumn'
+  | 'addIndex'
+  | 'dropIndex'
+  | 'alterIndex'
+  | 'addForeignKey'
+  | 'dropForeignKey'
+
+/** One difference between the source and the target of a schema compare. */
+export interface SchemaChange {
+  /** Picks this difference when the sync SQL is made. */
+  id: string
+  /** The table in the target. For `createTable` the table of the source. */
+  table: TableRef
+  action: ChangeAction
+  /** The column, index or foreign key. Empty for a table. */
+  name: string
+  /** What differs, like `int NOT NULL → bigint`. */
+  detail: string
+}
+
+/** The SQL that makes the target like the source, in a safe order. */
+export interface SyncSql {
+  statements: string[]
+  /** The picked differences that cannot be done in SQL here, with the reason. */
+  warnings: string[]
 }

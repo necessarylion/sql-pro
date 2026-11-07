@@ -2592,3 +2592,261 @@ async fn cancel_connect_keeps_nothing() {
     // A cancel when no connect runs does nothing.
     service.cancel_connect(ID);
 }
+
+/// The two tabs of the schema compare test.
+const SYNC_SOURCE: &str = "sync-source";
+const SYNC_TARGET: &str = "sync-target";
+
+/// Runs SQL statements in a tab, one by one.
+async fn run_all(service: &ConnectionService, id: &str, statements: &[&str]) {
+    for sql in statements {
+        service.run_query(id, sql).await.expect(sql);
+    }
+}
+
+/// Makes the target like the source with schema compare, in two rounds: first only the
+/// new table, then all the rest. In the end the compare finds no difference.
+/// `SQLite` cannot change a column, so there the shared column is the same on both sides.
+#[allow(clippy::too_many_lines, reason = "one end-to-end flow")]
+async fn schema_sync(service: &ConnectionService, driver: Driver) {
+    let name_type = if driver == Driver::Sqlite {
+        "VARCHAR(40) NOT NULL"
+    } else {
+        "VARCHAR(20)"
+    };
+    run_all(
+        service,
+        SYNC_SOURCE,
+        &[
+            "CREATE TABLE sync_parent (id INTEGER PRIMARY KEY, name VARCHAR(40) NOT NULL, \
+                note VARCHAR(10) DEFAULT 'it''s')",
+            "CREATE INDEX sync_parent_name ON sync_parent (name)",
+            "CREATE TABLE sync_child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL, \
+                FOREIGN KEY (parent_id) REFERENCES sync_parent (id))",
+        ],
+    )
+    .await;
+    let parent = format!(
+        "CREATE TABLE sync_parent (id INTEGER PRIMARY KEY, name {name_type}, old_col INTEGER)"
+    );
+    run_all(
+        service,
+        SYNC_TARGET,
+        &[
+            &parent,
+            "CREATE INDEX sync_parent_old ON sync_parent (old_col)",
+            "CREATE TABLE sync_gone (id INTEGER PRIMARY KEY)",
+        ],
+    )
+    .await;
+
+    let changes = service
+        .compare_schemas(SYNC_SOURCE, SYNC_TARGET)
+        .await
+        .expect("compare");
+    let mut found = Vec::new();
+    for change in &changes {
+        found.push(format!(
+            "{:?} {} {}",
+            change.action, change.table.name, change.name
+        ));
+    }
+    let mut expected = vec![
+        "CreateTable sync_child ",
+        "DropTable sync_gone ",
+        "AddColumn sync_parent note",
+        "DropColumn sync_parent old_col",
+        "AddIndex sync_parent sync_parent_name",
+        "DropIndex sync_parent sync_parent_old",
+    ];
+    if driver != Driver::Sqlite {
+        expected.insert(2, "AlterColumn sync_parent name");
+    }
+    assert_eq!(found, expected);
+
+    // Round one: only the new table. The SQL is only made here, so nothing changed yet.
+    let create: Vec<String> = changes
+        .iter()
+        .filter(|change| change.table.name == "sync_child")
+        .map(|change| change.id.clone())
+        .collect();
+    let sql = service
+        .schema_sync_sql(SYNC_SOURCE, SYNC_TARGET, &create)
+        .await
+        .expect("sync sql");
+    assert!(sql.warnings.is_empty(), "{:?}", sql.warnings);
+    assert_ne!(sql.statements.len(), 0);
+    let again = service.compare_schemas(SYNC_SOURCE, SYNC_TARGET).await;
+    assert_eq!(again.expect("compare").len(), changes.len());
+    service
+        .run_schema_sync(SYNC_TARGET, sql.statements)
+        .await
+        .expect("run round one");
+    let rest = service
+        .compare_schemas(SYNC_SOURCE, SYNC_TARGET)
+        .await
+        .expect("compare");
+    assert_eq!(rest.len(), changes.len() - 1);
+    assert!(rest.iter().all(|change| change.table.name != "sync_child"));
+
+    // Round two: everything that is left.
+    let ids: Vec<String> = rest.iter().map(|change| change.id.clone()).collect();
+    let sql = service
+        .schema_sync_sql(SYNC_SOURCE, SYNC_TARGET, &ids)
+        .await
+        .expect("sync sql");
+    assert!(sql.warnings.is_empty(), "{:?}", sql.warnings);
+    service
+        .run_schema_sync(SYNC_TARGET, sql.statements)
+        .await
+        .expect("run round two");
+    let left = service
+        .compare_schemas(SYNC_SOURCE, SYNC_TARGET)
+        .await
+        .expect("compare");
+    assert!(left.is_empty(), "{left:?}");
+
+    // A failed script is named, and on SQLite it keeps nothing.
+    let failed = service
+        .run_schema_sync(
+            SYNC_TARGET,
+            vec![
+                "CREATE TABLE sync_half (id INTEGER)".to_owned(),
+                "DROP TABLE sync_missing".to_owned(),
+            ],
+        )
+        .await;
+    assert!(
+        failed
+            .expect_err("missing table")
+            .to_string()
+            .starts_with("Statement 2")
+    );
+    if driver == Driver::Sqlite {
+        let tables = service.tables(SYNC_TARGET).await.expect("tables");
+        assert!(tables.iter().all(|table| table.name != "sync_half"));
+    }
+}
+
+#[tokio::test]
+async fn sqlite_schema_sync() {
+    let service = ConnectionService::new(RepositoryFactory);
+    let mut paths = Vec::new();
+    for id in [SYNC_SOURCE, SYNC_TARGET] {
+        let path = temp_path(id, "sqlite");
+        std::fs::File::create(&path).expect("temp file");
+        let config = ConnectionConfig {
+            driver: Driver::Sqlite,
+            host: String::new(),
+            port: 0,
+            user: String::new(),
+            password: String::new(),
+            database: path.to_string_lossy().into_owned(),
+            ssh: None,
+            ssl: sql_pro_lib::model::SslConfig::default(),
+        };
+        service
+            .connect(id.to_owned(), config)
+            .await
+            .expect("connect");
+        paths.push(path);
+    }
+    schema_sync(&service, Driver::Sqlite).await;
+    for (id, path) in [SYNC_SOURCE, SYNC_TARGET].iter().zip(&paths) {
+        service.disconnect(id).await;
+        std::fs::remove_file(path).expect("remove temp file");
+    }
+}
+
+/// Schema compare on a server: the source and the target are two new databases, so the
+/// other tests that run at the same time do not get in the way.
+async fn server_schema_sync(config: ConnectionConfig) {
+    const MAIN: &str = "sync-main";
+    const DATABASES: [&str; 2] = ["sqlpro_sync_source", "sqlpro_sync_target"];
+    let service = ConnectionService::new(RepositoryFactory);
+    service
+        .connect(MAIN.to_owned(), config.clone())
+        .await
+        .expect("connect");
+    for (id, database) in [SYNC_SOURCE, SYNC_TARGET].iter().zip(DATABASES) {
+        // A leftover of an earlier failed run is removed first.
+        let _ = service.drop_database(MAIN, database).await;
+        let created = service.create_database(MAIN, database, "", "").await;
+        created.expect("create database");
+        let mut tab = config.clone();
+        database.clone_into(&mut tab.database);
+        service
+            .connect((*id).to_owned(), tab)
+            .await
+            .expect("connect");
+    }
+
+    // Two kinds of database cannot be compared.
+    let path = temp_path("sync-other", "sqlite");
+    std::fs::File::create(&path).expect("temp file");
+    let sqlite = ConnectionConfig {
+        driver: Driver::Sqlite,
+        host: String::new(),
+        port: 0,
+        user: String::new(),
+        password: String::new(),
+        database: path.to_string_lossy().into_owned(),
+        ssh: None,
+        ssl: sql_pro_lib::model::SslConfig::default(),
+    };
+    service
+        .connect("sync-other".to_owned(), sqlite)
+        .await
+        .expect("connect");
+    let mixed = service.compare_schemas(SYNC_SOURCE, "sync-other").await;
+    assert!(
+        mixed
+            .expect_err("two kinds")
+            .to_string()
+            .contains("same kind")
+    );
+    service.disconnect("sync-other").await;
+    std::fs::remove_file(&path).ok();
+
+    schema_sync(&service, config.driver).await;
+    for id in [SYNC_SOURCE, SYNC_TARGET] {
+        service.disconnect(id).await;
+    }
+    for database in DATABASES {
+        service
+            .drop_database(MAIN, database)
+            .await
+            .expect("drop database");
+    }
+    service.disconnect(MAIN).await;
+}
+
+#[tokio::test]
+async fn mysql_schema_sync() {
+    if let Some(config) = config_from_env("SQLPRO_TEST_MYSQL", Driver::Mysql) {
+        server_schema_sync(config).await;
+    }
+}
+
+#[tokio::test]
+async fn mariadb_schema_sync() {
+    if let Some(config) = config_from_env("SQLPRO_TEST_MARIADB", Driver::Mysql) {
+        server_schema_sync(config).await;
+    }
+}
+
+#[tokio::test]
+async fn postgres_schema_sync() {
+    if let Some(config) = config_from_env("SQLPRO_TEST_POSTGRES", Driver::Postgres) {
+        server_schema_sync(config).await;
+    }
+}
+
+#[tokio::test]
+async fn mssql_schema_sync() {
+    // The test database may not be there yet. `master` always is.
+    if let Some(mut config) = config_from_env("SQLPRO_TEST_MSSQL", Driver::Mssql) {
+        "master".clone_into(&mut config.database);
+        server_schema_sync(config).await;
+    }
+}

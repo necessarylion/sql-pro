@@ -18,6 +18,7 @@ import {
   DownloadIcon,
   EyeIcon,
   GaugeIcon,
+  GitCompareArrowsIcon,
   LoaderCircleIcon,
   PlusIcon,
   RefreshCwIcon,
@@ -63,6 +64,7 @@ import TableDialog from './TableDialog.vue'
 import UsersView from './UsersView.vue'
 import ProcessesView from './ProcessesView.vue'
 import QueryStatsView from './QueryStatsView.vue'
+import CompareView from './CompareView.vue'
 
 const props = defineProps<{ session: Session }>()
 const manager = injectRequired(SESSION_MANAGER)
@@ -79,6 +81,7 @@ const VIEW_ICONS: Record<SessionView, Component> = {
   processes: ActivityIcon,
   queryStats: GaugeIcon,
   diagram: WorkflowIcon,
+  compare: GitCompareArrowsIcon,
 }
 
 // The size of the table menu. It keeps the menu inside the window.
@@ -804,6 +807,8 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
           <UsersView v-if="session.view === 'users'" :session="session" />
           <ProcessesView v-else-if="session.view === 'processes'" :session="session" />
           <QueryStatsView v-else-if="session.view === 'queryStats'" :session="session" />
+          <!-- Compare needs no table. It works on two tabs. -->
+          <CompareView v-else-if="session.view === 'compare'" :session="session" />
           <!-- The diagram shows all tables. It has its own bottom bar too. -->
           <DiagramView v-else-if="session.view === 'diagram'" :session="session" />
           <!-- No table is open, so no view with a bottom bar. Show the error or the status here. -->

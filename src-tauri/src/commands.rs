@@ -12,7 +12,8 @@ use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
     ConnectionConfig, CsvImport, CsvPreview, DbObject, DbProcess, Diagram, ExportRequest,
     NewColumn, NewForeignKey, NewIndex, NewUser, Notes, QueryStat, ResultSet, RowUpdate,
-    RowsExport, RowsSql, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
+    RowsExport, RowsSql, SaveResult, SchemaChange, SyncSql, TableKeys, TablePage, TableRef,
+    UserList, Values,
 };
 use crate::open_file::OpenedFiles;
 use crate::repository::PasswordRepository;
@@ -433,6 +434,37 @@ pub async fn write_text_file(path: PathBuf, text: String) -> AppResult<()> {
 #[tauri::command]
 pub async fn list_users(service: Service<'_>, id: String) -> AppResult<UserList> {
     service.list_users(&id).await
+}
+
+/// What must change in the database of tab `target` to make it like tab `source`.
+#[tauri::command]
+pub async fn compare_schemas(
+    service: Service<'_>,
+    source: String,
+    target: String,
+) -> AppResult<Vec<SchemaChange>> {
+    service.compare_schemas(&source, &target).await
+}
+
+/// The SQL for the picked differences. It only builds the SQL, nothing runs.
+#[tauri::command]
+pub async fn schema_sync_sql(
+    service: Service<'_>,
+    source: String,
+    target: String,
+    picked: Vec<String>,
+) -> AppResult<SyncSql> {
+    service.schema_sync_sql(&source, &target, &picked).await
+}
+
+/// Runs the reviewed sync SQL on tab `target`. The frontend asks the user first.
+#[tauri::command]
+pub async fn run_schema_sync(
+    service: Service<'_>,
+    target: String,
+    statements: Vec<String>,
+) -> AppResult<()> {
+    service.run_schema_sync(&target, statements).await
 }
 
 #[tauri::command]

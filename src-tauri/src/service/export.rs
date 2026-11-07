@@ -374,7 +374,15 @@ impl<'run> Exporter<'run> {
         table: &TableRef,
         columns: &[ColumnInfo],
     ) -> AppResult<String> {
-        let repository = self.repository;
+        Self::create_table_sql(self.repository, table, columns).await
+    }
+
+    /// See `create_statement`. Schema compare uses it for a table that is missing.
+    pub(super) async fn create_table_sql(
+        repository: &dyn Repository,
+        table: &TableRef,
+        columns: &[ColumnInfo],
+    ) -> AppResult<String> {
         if let Some(sql) = repository.create_sql(table).await? {
             return Ok(sql);
         }

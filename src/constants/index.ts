@@ -142,6 +142,7 @@ export const VIEW_LABELS: Record<SessionView, string> = {
   processes: 'Processes',
   queryStats: 'Query stats',
   diagram: 'Diagram',
+  compare: 'Compare',
 }
 
 /** Binary values arrive as hex text. Editing them would corrupt them. */

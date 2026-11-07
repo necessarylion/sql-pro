@@ -608,3 +608,46 @@ mod tests {
         assert_eq!(config.ssl.ca_path, "/ca.pem");
     }
 }
+
+/// What one difference of a schema compare does to the target database.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChangeAction {
+    /// The table is only in the source.
+    CreateTable,
+    /// The table is only in the target.
+    DropTable,
+    AddColumn,
+    DropColumn,
+    /// The type, null rule or default of the column differs.
+    AlterColumn,
+    AddIndex,
+    DropIndex,
+    /// The columns or the unique rule of the index differ. It is dropped and made again.
+    AlterIndex,
+    AddForeignKey,
+    DropForeignKey,
+}
+
+/// One difference between the source and the target of a schema compare.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaChange {
+    /// Picks this difference when the sync SQL is made.
+    pub id: String,
+    /// The table in the target. For `CreateTable` the table of the source.
+    pub table: TableRef,
+    pub action: ChangeAction,
+    /// The column, index or foreign key. Empty for a table, and for a foreign key without a name.
+    pub name: String,
+    /// What differs, like `int NOT NULL → bigint`.
+    pub detail: String,
+}
+
+/// The SQL that makes the target like the source, in a safe order.
+#[derive(Debug, Default, Serialize)]
+pub struct SyncSql {
+    pub statements: Vec<String>,
+    /// The picked differences that cannot be done in SQL here, with the reason.
+    pub warnings: Vec<String>,
+}

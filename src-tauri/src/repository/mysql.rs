@@ -502,6 +502,25 @@ impl Repository for MysqlRepository {
         "AUTO_INCREMENT"
     }
 
+    /// `SHOW COLUMNS` lists a text default without its quotes, like `abc`.
+    /// A number, `NULL`, a time function or a value in quotes already stays as it is.
+    // ponytail: guessed from the text. A text default that looks like a number keeps
+    // no quotes, and MySQL turns it into text again. Read `SHOW CREATE TABLE` if needed.
+    fn default_expression(&self, column: &ColumnInfo) -> Option<String> {
+        let value = column.default.as_deref()?;
+        let upper = value.to_ascii_uppercase();
+        let raw = value.parse::<f64>().is_ok()
+            || upper == "NULL"
+            || upper.starts_with("CURRENT_TIMESTAMP")
+            || column.extra.contains("DEFAULT_GENERATED")
+            || (value.len() >= 2 && value.starts_with('\'') && value.ends_with('\''));
+        Some(if raw {
+            value.to_owned()
+        } else {
+            self.literal(value)
+        })
+    }
+
     fn drop_index_sql(&self, table: &TableRef, name: &str) -> String {
         format!(
             "DROP INDEX {} ON {}",

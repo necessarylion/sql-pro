@@ -28,6 +28,8 @@ import type {
   RowsExport,
   RowsSql,
   SaveResult,
+  SchemaChange,
+  SyncSql,
   TableKeys,
   TablePage,
   TableRef,
@@ -359,6 +361,21 @@ export class DatabaseApi {
   /** The query shapes of the server from the last `days` days. PostgreSQL does not use `days`. */
   queryStats(id: string, days: number): Promise<QueryStat[]> {
     return invoke('query_stats', { id, days })
+  }
+
+  /** What must change in the database of tab `target` to make it like tab `source`. */
+  compareSchemas(source: string, target: string): Promise<SchemaChange[]> {
+    return invoke('compare_schemas', { source, target })
+  }
+
+  /** The SQL for the picked differences. It only builds the SQL. Nothing runs. */
+  schemaSyncSql(source: string, target: string, picked: string[]): Promise<SyncSql> {
+    return invoke('schema_sync_sql', { source, target, picked })
+  }
+
+  /** Runs the reviewed sync SQL on tab `target`, in one transaction where the database can. */
+  runSchemaSync(target: string, statements: string[]): Promise<void> {
+    return invoke('run_schema_sync', { target, statements })
   }
 
   savePassword(id: string, password: string): Promise<void> {
