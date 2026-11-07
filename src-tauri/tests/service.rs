@@ -26,6 +26,8 @@ const EXTRA_VIEW: &str = "sqlpro_extra_view";
 const MADE: &str = "sqlpro_made";
 /// The copy of the test table that the import makes.
 const IMPORTED: &str = "sqlpro_imported";
+/// The database that `restore` imports a `pg_dump` backup into.
+const RESTORED: &str = "sqlpro_restored";
 /// A name that must be quoted to work.
 const RENAMED: &str = "sqlpro renamed \"x\"";
 
@@ -983,7 +985,7 @@ async fn create_and_rename(service: &ConnectionService) {
 }
 
 /// Dumps the database to a file. Expects the test table with the name O'Brien in it.
-async fn dump(service: &ConnectionService, driver: Driver) {
+async fn dump(service: &ConnectionService, driver: Driver, database: &str) {
     let folder = std::env::temp_dir();
     let path = temp_path("dump", "sql");
     if driver == Driver::Mssql {
@@ -1003,6 +1005,10 @@ async fn dump(service: &ConnectionService, driver: Driver) {
         result => result.expect("dump"),
     }
     let sql = std::fs::read_to_string(&path).expect("dump file");
+    if driver == Driver::Postgres {
+        assert!(sql.contains("FROM stdin;"), "the dump has COPY rows");
+        restore(service, &path, database).await;
+    }
     std::fs::remove_file(&path).expect("remove dump");
     assert!(
         sql.lines()
@@ -1018,6 +1024,38 @@ async fn dump(service: &ConnectionService, driver: Driver) {
     assert!(service.dump_database(ID, &missing).await.is_err());
     assert!(!missing.exists());
     assert!(!folder.join("sqlpro-no-such-folder").exists());
+}
+
+/// Imports a `pg_dump` backup into a new database, with its `COPY … FROM stdin` rows and
+/// psql commands. Expects the two rows that `exercise` inserts. Goes back to the test database.
+async fn restore(service: &ConnectionService, path: &std::path::Path, back: &str) {
+    // A leftover of an earlier failed run is removed first.
+    let _ = service.drop_database(ID, RESTORED).await;
+    let created = service.create_database(ID, RESTORED, "", "");
+    created.await.expect("create restore database");
+    service
+        .use_database(ID, RESTORED.to_owned())
+        .await
+        .expect("use restore database");
+    let imported = service.import_sql(ID, path).await;
+    assert!(imported.expect("import the pg_dump file") > 0);
+    let table = listed(service, TABLE).await.expect("the restored table");
+    let rows = page(service, &table).await.rows;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0][1].as_deref(), Some("O'Brien"));
+    assert_eq!(rows[1][3].as_deref(), Some("line 1\nline 2"));
+    // The dump empties the search path. The import sets it back, so plain names still work.
+    let count = format!("SELECT count(*) FROM {TABLE}");
+    let found = service.run_query(ID, &count).await.expect("plain name");
+    assert_eq!(found[0].rows[0][0].as_deref(), Some("2"));
+    service
+        .use_database(ID, back.to_owned())
+        .await
+        .expect("back to the test database");
+    service
+        .drop_database(ID, RESTORED)
+        .await
+        .expect("drop restore database");
 }
 
 /// Exports the test table as SQL and as CSV. Expects the two rows that `exercise` inserts.
@@ -2426,7 +2464,7 @@ async fn exercise(config: ConnectionConfig) {
         vec![text("2"), None, None, text("line 1\nline 2")]
     );
 
-    dump(&service, driver).await;
+    dump(&service, driver, &config.database).await;
     export(&service, &table).await;
     insert_statements(&service, driver);
     import(&service, &table).await;
