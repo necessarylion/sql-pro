@@ -19,6 +19,7 @@ function diff(): DataDiff {
     targetOnly: ['old'],
     generated: [],
     limited: false,
+    unsorted: false,
     deleteRows: 1,
     updateRows: 2,
     insertRows: 1,

@@ -556,6 +556,8 @@ export interface DataDiff {
   generated: string[]
   /** True when there are too many differences. Then there is no SQL. */
   limited: boolean
+  /** With `limited`: the two databases likely sort the key in another order (collation). */
+  unsorted: boolean
   deleteRows: number
   updateRows: number
   insertRows: number

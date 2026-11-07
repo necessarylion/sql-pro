@@ -571,6 +571,12 @@ impl Repository for MssqlRepository {
         (self.select_column(column), binary)
     }
 
+    /// An `N'…'` text would make a `varchar` key compare as `nvarchar`, which sorts
+    /// another way. So the value takes the type of the column. That also lets an index work.
+    fn key_literal(&self, column: &ColumnInfo, value: &str) -> String {
+        format!("CAST({} AS {})", self.literal(value), column.data_type)
+    }
+
     /// A `rowversion` (`timestamp`) changes on every write. No `INSERT` or `UPDATE` can set it.
     fn database_written(&self, column: &ColumnInfo) -> bool {
         Self::base_type(&column.data_type) == "timestamp"

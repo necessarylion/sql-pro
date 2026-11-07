@@ -560,6 +560,9 @@ impl Repository for MysqlRepository {
         if kind.starts_with("binary") || kind.starts_with("varbinary") || kind.ends_with("blob") {
             // No `AS` name, so `ORDER BY` still sorts by the bytes, not the hex text.
             (format!("CONCAT('X''', HEX({name}), '''')"), true)
+        } else if kind.starts_with("bit") {
+            // A `bit` value is bytes too. `+ 0` gives its number, which a `bit` takes back.
+            (format!("{name} + 0"), true)
         } else {
             (name, false)
         }

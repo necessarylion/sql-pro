@@ -3210,6 +3210,37 @@ async fn data_table(service: &ConnectionService, make: &str, source: &str, targe
     run_all(service, DATA_TARGET, &[make, target]).await;
 }
 
+/// A `varchar` key sorts with the SQL collation of the server. The page after a key must
+/// use the same order, or rows are skipped and look like rows to delete.
+async fn mssql_varchar_keys(service: &ConnectionService) {
+    let mut keys: Vec<String> = (1..2000).map(|id| format!("a{id:04}")).collect();
+    // The source has exactly one full page up to `b-z`. An `nvarchar` compare puts `b-z`
+    // after `ba` and `bb`, so a page after `b-z` would miss them.
+    for key in ["b-z", "ba", "bb"] {
+        keys.push(key.to_owned());
+    }
+    let make = "CREATE TABLE data_text (k VARCHAR(10) COLLATE SQL_Latin1_General_CP1_CI_AS PRIMARY KEY, v INTEGER)";
+    for (id, extra) in [(DATA_SOURCE, ""), (DATA_TARGET, "a0000")] {
+        let mut all = keys.clone();
+        if !extra.is_empty() {
+            all.push(extra.to_owned());
+        }
+        let mut statements = vec![make.to_owned()];
+        for chunk in all.chunks(500) {
+            let rows: Vec<String> = chunk.iter().map(|key| format!("('{key}', 1)")).collect();
+            statements.push(format!("INSERT INTO data_text VALUES {}", rows.join(", ")));
+        }
+        let statements: Vec<&str> = statements.iter().map(String::as_str).collect();
+        run_all(service, id, &statements).await;
+    }
+    let diff = sync_table(service, "data_text").await;
+    assert_eq!(
+        diff.deletes,
+        ["DELETE FROM [dbo].[data_text] WHERE [k] = CAST(N'a0000' AS varchar(10))"]
+    );
+    assert_eq!((diff.update_rows, diff.insert_rows), (0, 0));
+}
+
 /// Values that only some databases have trouble with: binary bytes that are not UTF-8,
 /// columns the database fills itself, columns with no type (`SQLite`), and NULL keys.
 async fn data_types(service: &ConnectionService, driver: Driver) {
@@ -3254,16 +3285,19 @@ async fn data_types(service: &ConnectionService, driver: Driver) {
         Driver::Mysql => {
             data_table(
                 service,
-                "CREATE TABLE data_bin (id INTEGER PRIMARY KEY, b VARBINARY(10), l BLOB)",
-                "INSERT INTO data_bin VALUES (1, 0xFF00, 0x00FE), (2, X'', 'text'), (3, NULL, NULL)",
-                "INSERT INTO data_bin VALUES (1, 0xFF01, NULL)",
+                "CREATE TABLE data_bin (id INTEGER PRIMARY KEY, b VARBINARY(10), l BLOB, \
+                    bits BIT(8))",
+                "INSERT INTO data_bin VALUES (1, 0xFF00, 0x00FE, b'11001000'), \
+                    (2, X'', 'text', b'1'), (3, NULL, NULL, NULL)",
+                "INSERT INTO data_bin VALUES (1, 0xFF01, NULL, b'0')",
             )
             .await;
             sync_table(service, "data_bin").await;
             (
                 "SELECT GROUP_CONCAT(CONCAT(id, ':', IFNULL(HEX(b), 'null'), ':', \
-                    IFNULL(HEX(l), 'null')) ORDER BY id) FROM data_bin",
-                "1:FF00:00FE,2::74657874,3:null:null",
+                    IFNULL(HEX(l), 'null'), ':', IFNULL(bits + 0, 'null')) ORDER BY id) \
+                    FROM data_bin",
+                "1:FF00:00FE:200,2::74657874:1,3:null:null:null",
             )
         }
         Driver::Mssql => {
@@ -3278,6 +3312,7 @@ async fn data_types(service: &ConnectionService, driver: Driver) {
             .await;
             let diff = sync_table(service, "data_bin").await;
             assert_eq!(diff.generated, ["rv", "n"]);
+            mssql_varchar_keys(service).await;
             (
                 "SELECT STRING_AGG(CONCAT(id, ':', ISNULL(CONVERT(VARCHAR(30), b, 1), 'null'), \
                     ':', name), ',') WITHIN GROUP (ORDER BY id) FROM data_bin",

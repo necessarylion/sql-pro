@@ -697,6 +697,9 @@ pub struct DataDiff {
     pub generated: Vec<String>,
     /// True when there are more than `MAX_DATA_DIFFS` differences. Then there is no SQL.
     pub limited: bool,
+    /// With `limited`: too many rows waited for a match, but few are surely different.
+    /// The two databases likely sort the key in another order (another collation).
+    pub unsorted: bool,
     /// The rows that change. `inserts` can also hold the statements around the inserts.
     pub delete_rows: usize,
     pub update_rows: usize,

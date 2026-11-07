@@ -33,6 +33,9 @@ pub struct RowDiff {
     pub deletes: Vec<Cells>,
     /// True when there are too many differences. Then the lists are empty.
     pub limited: bool,
+    /// True when it gave up because too many rows waited, but few of them are surely
+    /// different. Then the two sides likely sort the key in another order.
+    pub unsorted: bool,
 }
 
 /// Merges the rows of both sides, read page by page in the order of the key.
@@ -54,7 +57,12 @@ pub struct RowMerge {
     /// The key of the last row read on each side.
     last: [Option<Cells>; 2],
     done: [bool; 2],
+    /// Counts every row read. A row's number is its place in the order of both sides.
     arrived: usize,
+    /// Per side, the number of the newest row that found its match. When both sides
+    /// sort the same way, a row of that side that still waits and came before it is
+    /// surely a difference: the other side has gone past its key.
+    passed: [usize; 2],
     limited: bool,
 }
 
@@ -69,6 +77,7 @@ impl RowMerge {
             last: [None, None],
             done: [false, false],
             arrived: 0,
+            passed: [0, 0],
             limited: false,
         }
     }
@@ -120,11 +129,13 @@ impl RowMerge {
     }
 
     fn push(&mut self, side: usize, key: Cells, row: Cells) {
-        let Some((_, found)) = self.waiting[1 - side].remove(&key) else {
-            self.arrived += 1;
+        self.arrived += 1;
+        let Some((number, found)) = self.waiting[1 - side].remove(&key) else {
             self.waiting[side].insert(key, (self.arrived, row));
             return;
         };
+        self.passed[side] = self.arrived;
+        self.passed[1 - side] = self.passed[1 - side].max(number);
         let (source, target) = if side == SOURCE {
             (row, found)
         } else {
@@ -141,8 +152,15 @@ impl RowMerge {
 
     /// The differences. With more than `max` of them, or when it gave up, the lists are empty.
     pub fn finish(self, max: usize) -> RowDiff {
+        if self.limited {
+            return RowDiff {
+                limited: true,
+                unsorted: self.sure() <= max,
+                ..RowDiff::default()
+            };
+        }
         let [source, target] = self.waiting;
-        if self.limited || self.changed.len() + source.len() + target.len() > max {
+        if self.changed.len() + source.len() + target.len() > max {
             return RowDiff {
                 limited: true,
                 ..RowDiff::default()
@@ -153,7 +171,21 @@ impl RowMerge {
             updates: self.changed,
             deletes: Self::in_order(target),
             limited: false,
+            unsorted: false,
         }
+    }
+
+    /// How many differences are sure, if both sides sort the key the same way.
+    fn sure(&self) -> usize {
+        let mut sure = self.changed.len();
+        for side in [SOURCE, TARGET] {
+            for (number, _) in self.waiting[side].values() {
+                if *number < self.passed[side] {
+                    sure += 1;
+                }
+            }
+        }
+        sure
     }
 
     /// The waiting rows in the order they came, so the SQL is the same on each run.
@@ -223,6 +255,27 @@ impl Columns {
         }
     }
 
+    /// A key value of a row of `side` as SQL that compares like `column` does.
+    fn key_value(
+        &self,
+        repository: &dyn Repository,
+        column: &ColumnInfo,
+        side: usize,
+        index: usize,
+        cell: Option<&str>,
+    ) -> String {
+        match cell {
+            Some(text) if !self.read[side][index].1 => repository.key_literal(column, text),
+            _ => self.value(repository, side, index, cell),
+        }
+    }
+
+    /// The column of `side` at `index` of `shared`.
+    fn column(&self, side: usize, index: usize) -> &ColumnInfo {
+        let (source, target) = &self.shared[index];
+        if side == SOURCE { source } else { target }
+    }
+
     /// True when the key of a row of `side` has a NULL. Such a row cannot be matched in SQL.
     fn null_key(&self, side: usize, row: &Cells) -> bool {
         self.key.iter().any(|&index| match &row[index] {
@@ -266,6 +319,7 @@ impl ConnectionService {
         let rows = Self::merge_rows([from, to], table, &label, &columns).await?;
         if rows.limited {
             diff.limited = true;
+            diff.unsorted = rows.unsorted;
             return Ok(diff);
         }
         Self::data_sql(to, table, &columns, &rows, &mut diff);
@@ -462,7 +516,13 @@ impl ConnectionService {
                 Some(last) if keyset => {
                     let mut values = Vec::with_capacity(last.len());
                     for (&index, cell) in columns.key.iter().zip(last) {
-                        values.push(columns.value(repository, side, index, cell.as_deref()));
+                        values.push(columns.key_value(
+                            repository,
+                            columns.column(side, index),
+                            side,
+                            index,
+                            cell.as_deref(),
+                        ));
                     }
                     format!(" WHERE {}", Self::after_key(&keys[side], &values))
                 }
@@ -587,7 +647,13 @@ impl ConnectionService {
             parts.push(format!(
                 "{} = {}",
                 names[index],
-                columns.value(target, side, index, row[index].as_deref())
+                columns.key_value(
+                    target,
+                    columns.column(TARGET, index),
+                    side,
+                    index,
+                    row[index].as_deref()
+                )
             ));
         }
         parts.join(" AND ")
@@ -781,5 +847,52 @@ mod tests {
         merge.push_page(TARGET, vec![row(&[Some("3")]), row(&[Some("4")])]);
         assert_eq!(merge.next_side(), None);
         assert!(merge.finish(100).limited);
+    }
+
+    #[test]
+    fn sides_that_sort_the_key_apart_are_named() {
+        // The same 20 keys, but the target gives them from high to low.
+        let mut source = Vec::new();
+        for id in 1..=20 {
+            source.push(row(&[Some(&id.to_string())]));
+        }
+        let mut target = source.clone();
+        target.reverse();
+        let mut merge = RowMerge::new(vec![0], 2, 8);
+        let mut offsets = [0; 2];
+        let sides = [&source, &target];
+        while let Some(side) = merge.next_side() {
+            let start = offsets[side].min(20);
+            merge.push_page(side, sides[side][start..(start + 2).min(20)].to_vec());
+            offsets[side] += 2;
+        }
+        let diff = merge.finish(5);
+        assert!(diff.limited);
+        assert!(diff.unsorted);
+
+        // Real differences on both sides, in the same order: many are sure.
+        let mut merge = RowMerge::new(vec![0], 4, 8);
+        let keys = |from: u32| -> Vec<Cells> {
+            (from..from + 4)
+                .map(|id| row(&[Some(&format!("{id:03}"))]))
+                .collect()
+        };
+        merge.push_page(
+            SOURCE,
+            [vec![row(&[Some("000")])], keys(100)[..3].to_vec()].concat(),
+        );
+        merge.push_page(
+            TARGET,
+            [vec![row(&[Some("000")])], keys(200)[..3].to_vec()].concat(),
+        );
+        merge.push_page(
+            SOURCE,
+            [vec![row(&[Some("300")])], keys(103)[..3].to_vec()].concat(),
+        );
+        merge.push_page(TARGET, vec![row(&[Some("300")]), row(&[Some("400")])]);
+        merge.push_page(SOURCE, vec![row(&[Some("400")]), row(&[Some("500")])]);
+        let diff = merge.finish(5);
+        assert!(diff.limited);
+        assert!(!diff.unsorted);
     }
 }

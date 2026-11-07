@@ -369,6 +369,11 @@ pub trait Repository: Send + Sync {
         (self.select_column(column), false)
     }
 
+    /// A key value as SQL that compares the way `column` sorts in `ORDER BY`.
+    fn key_literal(&self, _column: &ColumnInfo, value: &str) -> String {
+        self.literal(value)
+    }
+
     /// True for a column that only the database writes, so a row write cannot set it.
     fn database_written(&self, _column: &ColumnInfo) -> bool {
         false
