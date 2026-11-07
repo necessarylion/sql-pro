@@ -388,7 +388,8 @@ export interface Diagram {
   relations: Relation[]
 }
 
-export type ExportFormat = 'sql' | 'csv'
+/** The file format of an export. `xlsx` is an Excel file. */
+export type ExportFormat = 'sql' | 'csv' | 'json' | 'xlsx'
 
 /** A format of "Copy Rows As" in the row menu. */
 export type CopyFormat = 'text' | 'json' | 'html' | 'markdown' | 'csv' | 'csvHeader' | 'insert'
@@ -412,15 +413,18 @@ export interface ExportRequest {
   format: ExportFormat
   /** SQL only: write the CREATE statement of each table. */
   structure: boolean
-  /** SQL only: write the rows as INSERT statements. A CSV file always has the rows. */
+  /** SQL only: write the rows as INSERT statements. The other formats always have the rows. */
   data: boolean
   /** The columns to export, in this order. Empty means all. Only for one table. */
   columns: string[]
-  /** The file to write. For CSV it may be a folder: then each table goes to `<table>.csv`. */
+  /**
+   * The file to write. For CSV, JSON and Excel it may be a folder: then each table goes to its
+   * own file, like `<table>.csv`. JSON and Excel need a folder for many tables.
+   */
   path: string
 }
 
-/** Rows the app already shows, to write to a SQL or CSV file. */
+/** Rows the app already shows, to write to a SQL, CSV, JSON or Excel file. */
 export interface RowsExport {
   format: ExportFormat
   /** SQL only: the table that the INSERT statements name. */

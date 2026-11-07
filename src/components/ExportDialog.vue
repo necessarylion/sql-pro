@@ -3,11 +3,12 @@ import { computed, reactive, useTemplateRef } from 'vue'
 import { open as openFolder, save } from '@tauri-apps/plugin-dialog'
 import type { Session } from '../services/Session'
 import { SchemaName } from '../services/SchemaName'
+import { EXPORT_FORMAT_LABELS } from '../constants/export'
 import type { ExportFormat, ExportRequest, TableRef } from '../types'
 
 // The export dialog. Two kinds:
-// - many tables, as one SQL file or as one CSV file per table in a folder
-// - one table with chosen columns, as one SQL or CSV file
+// - many tables, as one SQL file, or as one CSV, JSON or Excel file per table in a folder
+// - one table with chosen columns, as one SQL, CSV, JSON or Excel file
 const props = defineProps<{ session: Session }>()
 const dialog = useTemplateRef<HTMLDialogElement>('dialog')
 
@@ -25,6 +26,12 @@ const form = reactive({
 })
 
 const ready = computed(canExport)
+const kind = computed(formatLabel)
+
+/** The name of the chosen format, like "Excel". */
+function formatLabel(): string {
+  return EXPORT_FORMAT_LABELS[form.format]
+}
 
 /** Shows the schema only when it is not the default one. */
 function label(table: TableRef): string {
@@ -90,7 +97,7 @@ function canExport(): boolean {
   if (form.table) {
     return form.columns.length > 0
   }
-  const something = form.format === 'csv' || form.structure || form.data
+  const something = form.format !== 'sql' || form.structure || form.data
   return form.tables.length > 0 && something
 }
 
@@ -116,16 +123,15 @@ function chosenTables(): TableRef[] {
   return picked
 }
 
-/** CSV of many tables goes into a folder. Everything else is one file. null on cancel. */
+/** Tables as CSV, JSON or Excel go into a folder. Everything else is one file. null on cancel. */
 async function pickPath(tables: TableRef[]): Promise<string | null> {
-  if (!form.table && form.format === 'csv') {
-    return openFolder({ title: 'Export tables as CSV into this folder', directory: true })
+  if (!form.table && form.format !== 'sql') {
+    return openFolder({ title: `Export tables as ${kind.value} into this folder`, directory: true })
   }
-  const kind = form.format.toUpperCase()
   return save({
-    title: `Export as ${kind}`,
+    title: `Export as ${kind.value}`,
     defaultPath: props.session.exportName(tables, form.format),
-    filters: [{ name: kind, extensions: [form.format] }],
+    filters: [{ name: kind.value, extensions: [form.format] }],
   })
 }
 
@@ -181,21 +187,25 @@ defineExpose({ openTables, openColumns })
         </template>
       </div>
       <div class="options">
-        <label class="check"><input v-model="form.format" type="radio" value="sql" /> SQL</label>
-        <label class="check"><input v-model="form.format" type="radio" value="csv" /> CSV</label>
-        <template v-if="form.format === 'sql' && !form.table">
-          <span class="gap" />
-          <label class="check"><input v-model="form.structure" type="checkbox" /> Structure</label>
-          <label class="check"><input v-model="form.data" type="checkbox" /> Data</label>
-        </template>
+        <label v-for="(name, format) in EXPORT_FORMAT_LABELS" :key="format" class="check">
+          <input v-model="form.format" type="radio" :value="format" /> {{ name }}
+        </label>
+      </div>
+      <div v-if="form.format === 'sql' && !form.table" class="options">
+        <label class="check"><input v-model="form.structure" type="checkbox" /> Structure</label>
+        <label class="check"><input v-model="form.data" type="checkbox" /> Data</label>
       </div>
       <p class="note">
         <template v-if="form.table">
           {{
-            form.format === 'sql' ? 'INSERT statements with the checked columns.' : 'One CSV file.'
+            form.format === 'sql'
+              ? 'INSERT statements with the checked columns.'
+              : `One ${kind} file.`
           }}
         </template>
-        <template v-else-if="form.format === 'csv'">One CSV file per table, in a folder.</template>
+        <template v-else-if="form.format !== 'sql'"
+          >One {{ kind }} file per table, in a folder.</template
+        >
         <template v-else>One SQL file.</template>
       </p>
       <p v-if="form.problem" class="error">{{ form.problem }}</p>
@@ -304,12 +314,6 @@ h2 {
   display: flex;
   gap: 12px;
   align-items: center;
-}
-
-.gap {
-  width: 1px;
-  height: 14px;
-  background: var(--border);
 }
 
 .note {
