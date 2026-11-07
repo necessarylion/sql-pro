@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use tauri::State;
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
     ConnectionConfig, CsvImport, CsvPreview, DbObject, DbProcess, Diagram, ExportRequest,
@@ -24,6 +24,12 @@ type Passwords<'state> = State<'state, PasswordRepository>;
 #[tauri::command]
 pub async fn connect(service: Service<'_>, id: String, config: ConnectionConfig) -> AppResult<()> {
     service.connect(id, config).await
+}
+
+/// Stops a `connect` that still runs for tab `id`.
+#[tauri::command]
+pub fn cancel_connect(service: Service<'_>, id: String) {
+    service.cancel_connect(&id);
 }
 
 #[tauri::command]
@@ -105,6 +111,15 @@ pub async fn cancel_query(service: Service<'_>, id: String) -> AppResult<()> {
 #[tauri::command]
 pub async fn read_attachment(path: PathBuf) -> AppResult<Attachment> {
     ConnectionService::read_attachment(&path)
+}
+
+/// The font families installed on the machine, sorted. The scan reads many files,
+/// so it runs on a blocking thread.
+#[tauri::command]
+pub async fn list_fonts() -> AppResult<Vec<String>> {
+    tauri::async_runtime::spawn_blocking(crate::fonts::installed)
+        .await
+        .map_err(|error| AppError::Message(error.to_string()))
 }
 
 /// The rows of CSV text, for the preview of an attached CSV file.

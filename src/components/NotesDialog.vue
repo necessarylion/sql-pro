@@ -79,7 +79,7 @@ defineExpose({ open })
 h2 {
   margin: 0;
   overflow: hidden;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -89,7 +89,7 @@ h2 {
   margin: 2px 0 0;
   overflow: hidden;
   color: var(--text-3);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   text-overflow: ellipsis;
   white-space: nowrap;
   -webkit-user-select: text;
@@ -100,7 +100,7 @@ textarea {
   padding: 6px 8px;
   border-radius: 5px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   resize: vertical;
 }
 

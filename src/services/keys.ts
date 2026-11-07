@@ -6,6 +6,7 @@ import type { FileDrop } from './FileDrop'
 import type { ConnectionTransfer } from './ConnectionTransfer'
 import type { DiagramLayoutStore } from './DiagramLayoutStore'
 import type { FavoriteStore } from './FavoriteStore'
+import type { FontService } from './FontService'
 import type { LayoutService } from './LayoutService'
 import type { PinnedTables } from './PinnedTables'
 import type { QueryHistory } from './QueryHistory'
@@ -20,6 +21,7 @@ export const SESSION_MANAGER: InjectionKey<SessionManager> = Symbol('SessionMana
 export const FAVORITE_STORE: InjectionKey<FavoriteStore> = Symbol('FavoriteStore')
 export const CONNECTION_TRANSFER: InjectionKey<ConnectionTransfer> = Symbol('ConnectionTransfer')
 export const THEME_SERVICE: InjectionKey<ThemeService> = Symbol('ThemeService')
+export const FONT_SERVICE: InjectionKey<FontService> = Symbol('FontService')
 export const LAYOUT_SERVICE: InjectionKey<LayoutService> = Symbol('LayoutService')
 export const ZOOM_SERVICE: InjectionKey<ZoomService> = Symbol('ZoomService')
 export const SHORTCUTS: InjectionKey<Shortcuts> = Symbol('Shortcuts')

@@ -42,7 +42,9 @@ const SELECTION = 'color-mix(in srgb, var(--accent) 35%, transparent)'
 const LOOK = EditorView.theme({
   '&': { height: '100%', background: 'var(--bg)', color: 'var(--text)' },
   '&.cm-focused': { outline: 'none' },
-  '.cm-scroller': { font: '12px/19px var(--font-mono)' },
+  '.cm-scroller': {
+    font: 'calc(12px * var(--font-scale)) / calc(19px * var(--font-scale)) var(--font-mono)',
+  },
   // The body turns text selection off. The editor needs it, or typing fails in WebKit.
   '.cm-content': {
     padding: '8px 0',

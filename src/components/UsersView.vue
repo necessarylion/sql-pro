@@ -466,7 +466,7 @@ async function sendNewUser(): Promise<void> {
 }
 
 .name {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 600;
 }
 
@@ -478,14 +478,14 @@ button.danger:disabled {
 .bar select {
   height: 22px;
   border-radius: 5px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .stats {
   display: flex;
   gap: 4px;
   align-items: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   white-space: nowrap;
 }
 
@@ -526,7 +526,7 @@ p {
 
 h2 {
   overflow: hidden;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 600;
   text-overflow: ellipsis;
 }
@@ -550,7 +550,7 @@ h2 {
 }
 
 .actions {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .new-name {

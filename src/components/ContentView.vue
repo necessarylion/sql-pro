@@ -213,6 +213,10 @@ function selectionRestores(): boolean {
 
 /** Marks the selected rows as deleted, or restores them. Nothing is sent before Save. */
 function deleteSelected(): void {
+  // The Delete key reaches this too, so check the same rule as the button.
+  if (!props.session.editable || selected.value.length === 0) {
+    return
+  }
   props.session.deleteRows(selected.value)
   // The selected new rows are gone. The loaded rows stay selected, so a second click restores.
   const loaded = props.session.page?.rows.length ?? 0
@@ -246,6 +250,7 @@ function deleteSelected(): void {
       @sort="session.run(session.sort($event))"
       @edit="edit"
       @menu="openMenu"
+      @delete="deleteSelected"
     />
     <RowDetail
       v-if="layout.detailOpen"
@@ -280,6 +285,9 @@ function deleteSelected(): void {
       <button role="menuitem" :disabled="!session.editable" @click="duplicateSelected">
         Duplicate
         <span class="hint">{{ shortcuts.hint('D') }}</span>
+      </button>
+      <button role="menuitem" :disabled="!session.editable" @click="deleteSelected">
+        {{ restores ? 'Restore' : 'Delete' }}
       </button>
       <span class="menu-line" />
     </template>

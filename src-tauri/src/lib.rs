@@ -3,6 +3,7 @@
 mod commands;
 pub mod constants;
 pub mod error;
+mod fonts;
 pub mod model;
 mod open_file;
 pub mod repository;
@@ -48,6 +49,7 @@ pub fn run() {
         .manage(open_file::OpenedFiles::default())
         .invoke_handler(tauri::generate_handler![
             commands::connect,
+            commands::cancel_connect,
             commands::test_connection,
             commands::disconnect,
             commands::clone_connection,
@@ -64,6 +66,7 @@ pub fn run() {
             commands::run_ai_read,
             commands::is_read_sql,
             commands::read_attachment,
+            commands::list_fonts,
             commands::attachment_from_base64,
             commands::parse_csv,
             commands::stop_claude,

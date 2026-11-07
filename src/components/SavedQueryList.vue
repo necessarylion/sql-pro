@@ -62,7 +62,7 @@ async function remove(name: string): Promise<void> {
 .empty {
   flex: none;
   height: 28px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .list {
@@ -71,7 +71,7 @@ async function remove(name: string): Promise<void> {
 
 .list li {
   gap: 10px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .list li:hover {

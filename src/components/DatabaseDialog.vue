@@ -119,7 +119,7 @@ defineExpose({ open })
 
 h2 {
   margin: 0;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 600;
 }
 

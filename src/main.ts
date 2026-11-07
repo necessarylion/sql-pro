@@ -8,6 +8,7 @@ import { ConnectionTransfer } from './services/ConnectionTransfer'
 import { DatabaseApi } from './services/DatabaseApi'
 import { DiagramLayoutStore } from './services/DiagramLayoutStore'
 import { FavoriteStore } from './services/FavoriteStore'
+import { FontService } from './services/FontService'
 import { LIGHT_SCHEME_QUERY } from './constants/theme'
 import { DiscardPrompt } from './services/DiscardPrompt'
 import {
@@ -18,6 +19,7 @@ import {
   CONNECTION_TRANSFER,
   DIAGRAM_LAYOUTS,
   FAVORITE_STORE,
+  FONT_SERVICE,
   LAYOUT_SERVICE,
   PINNED_TABLES,
   QUERY_HISTORY,
@@ -55,6 +57,7 @@ const pinnedTables = reactive(new PinnedTables(storage)) as PinnedTables
 const themeService = reactive(
   new ThemeService(storage, new WindowTheme(), matchMedia(LIGHT_SCHEME_QUERY)),
 ) as ThemeService
+const fontService = reactive(new FontService(api, storage, document.documentElement)) as FontService
 // It puts the saved sidebar width on the page at once.
 const layoutService = reactive(
   new LayoutService(storage, document.documentElement),
@@ -69,8 +72,9 @@ void new FileOpener(api, sessionManager).start()
 
 const zoomService = new ZoomService(storage, new WebviewZoom(), document.documentElement)
 
-// Set the theme and the saved zoom before the first paint of the app.
+// Set the theme, the fonts and the saved zoom before the first paint of the app.
 themeService.start()
+fontService.apply()
 void zoomService.apply()
 
 createApp(App)
@@ -86,6 +90,7 @@ createApp(App)
   .provide(FILE_DROP, new FileDrop())
   .provide(AI_STORE, reactive(new AiStore(storage)) as AiStore)
   .provide(THEME_SERVICE, themeService)
+  .provide(FONT_SERVICE, fontService)
   .provide(LAYOUT_SERVICE, layoutService)
   .provide(ZOOM_SERVICE, zoomService)
   .provide(SHORTCUTS, new Shortcuts(navigator.platform))

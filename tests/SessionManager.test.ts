@@ -21,6 +21,7 @@ class FakeApi {
   clones: { id: string; newId: string }[] = []
   disconnected: string[] = []
   failClone = false
+  cancelled: string[] = []
   /** When set, a copy waits for this, like a slow database far away. */
   slowClone: Promise<void> | null = null
 
@@ -34,6 +35,10 @@ class FakeApi {
       throw 'Not connected'
     }
     this.clones.push({ id, newId })
+  }
+
+  async cancelConnect(id: string): Promise<void> {
+    this.cancelled.push(id)
   }
 
   async disconnect(id: string): Promise<void> {
@@ -174,4 +179,23 @@ test('closing a tab with unsaved changes asks first', async function () {
   expect(api.disconnected).toEqual([first.id])
   expect(manager.sessions.length).toBe(1)
   expect(manager.sessions[0]).not.toBe(first)
+})
+
+test('closing a tab that still copies its connection cancels the copy', async function () {
+  const { api, manager, first } = await connected()
+  const gate = Promise.withResolvers<void>()
+  api.slowClone = gate.promise
+  const opened = first.run(manager.openTable(first, ORDERS))
+  const tab = manager.sessions[1]
+
+  await manager.close(tab)
+  expect(api.cancelled).toEqual([tab.id])
+  // The real backend fails the cancelled copy.
+  api.failClone = true
+  gate.resolve()
+
+  expect(await opened).toBe(true)
+  expect(first.error).toBe('')
+  expect(manager.sessions).toEqual([first])
+  expect(manager.activeId).toBe(first.id)
 })

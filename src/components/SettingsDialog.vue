@@ -1,15 +1,38 @@
 <script setup lang="ts">
 import { useTemplateRef } from 'vue'
 import { XIcon } from 'lucide-vue-next'
+import { FONT_SIZE_MAX, FONT_SIZE_MIN } from '../constants/fonts'
 import { THEME_LABELS } from '../constants/theme'
-import { THEME_SERVICE, injectRequired } from '../services/keys'
+import { FONT_SERVICE, THEME_SERVICE, injectRequired } from '../services/keys'
 
 const theme = injectRequired(THEME_SERVICE)
+const fonts = injectRequired(FONT_SERVICE)
 const dialog = useTemplateRef<HTMLDialogElement>('dialog')
 
 /** The native dialog closes on Escape by itself. */
 function open(): void {
   dialog.value?.showModal()
+  // The list is only needed here. Without it, the pickers still show the saved fonts.
+  void fonts.loadFonts().catch(console.error)
+}
+
+function pickedName(event: Event): string {
+  return (event.target as HTMLSelectElement).value
+}
+
+function chooseUiFont(event: Event): void {
+  fonts.chooseUiFont(pickedName(event))
+}
+
+function chooseMonoFont(event: Event): void {
+  fonts.chooseMonoFont(pickedName(event))
+}
+
+/** A size out of range is moved into range. The field then shows the size that is used. */
+function chooseSize(event: Event): void {
+  const input = event.target as HTMLInputElement
+  fonts.chooseSize(input.valueAsNumber)
+  input.value = String(fonts.size)
 }
 
 function close(): void {
@@ -48,6 +71,39 @@ defineExpose({ open })
           </button>
         </div>
       </div>
+      <label class="row">
+        <span>Font</span>
+        <select :value="fonts.uiFont" @change="chooseUiFont">
+          <option value="">Default</option>
+          <option v-if="fonts.uiFont && !fonts.fonts.includes(fonts.uiFont)" :value="fonts.uiFont">
+            {{ fonts.uiFont }}
+          </option>
+          <option v-for="name in fonts.fonts" :key="name" :value="name">{{ name }}</option>
+        </select>
+      </label>
+      <label class="row">
+        <span>Code font</span>
+        <select :value="fonts.monoFont" @change="chooseMonoFont">
+          <option value="">Default</option>
+          <option
+            v-if="fonts.monoFont && !fonts.fonts.includes(fonts.monoFont)"
+            :value="fonts.monoFont"
+          >
+            {{ fonts.monoFont }}
+          </option>
+          <option v-for="name in fonts.fonts" :key="name" :value="name">{{ name }}</option>
+        </select>
+      </label>
+      <label class="row">
+        <span>Font size</span>
+        <input
+          type="number"
+          :min="FONT_SIZE_MIN"
+          :max="FONT_SIZE_MAX"
+          :value="fonts.size"
+          @change="chooseSize"
+        />
+      </label>
     </div>
   </dialog>
 </template>
@@ -83,12 +139,20 @@ header,
 
 h2 {
   margin: 0;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 600;
 }
 
 header button {
   color: var(--text-2);
+}
+
+select {
+  width: 180px;
+}
+
+input[type='number'] {
+  width: 56px;
 }
 
 .segmented button {

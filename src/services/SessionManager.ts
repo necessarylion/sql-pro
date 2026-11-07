@@ -110,6 +110,9 @@ export class SessionManager {
     }
     if (session.config) {
       await session.disconnect()
+    } else if (session.opening) {
+      // The tab still copies its connection. Stop that, so the backend keeps nothing.
+      await session.cancelConnect()
     }
   }
 }

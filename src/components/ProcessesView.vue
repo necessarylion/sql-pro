@@ -184,7 +184,7 @@ button.danger:disabled {
 }
 
 .name {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 600;
 }
 
@@ -192,6 +192,6 @@ label {
   display: flex;
   gap: 4px;
   align-items: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 </style>

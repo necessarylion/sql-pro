@@ -530,6 +530,60 @@ test('connect closes the connection when loading fails', async function () {
   expect(api.disconnects).toBe(1)
 })
 
+/** A backend whose connect waits for `gate`. A cancel makes it fail, like the real one. */
+class SlowConnectApi extends ConnectApi {
+  gate = Promise.withResolvers<void>()
+  cancelled: string[] = []
+  /** False = the connect finished just before the cancel came. */
+  failOnCancel = true
+
+  override async connect(): Promise<void> {
+    await this.gate.promise
+    if (this.failOnCancel && this.cancelled.length > 0) {
+      throw 'Connection cancelled'
+    }
+  }
+
+  async cancelConnect(id: string): Promise<void> {
+    this.cancelled.push(id)
+    this.gate.resolve()
+  }
+}
+
+test('a cancelled connect goes back to the form without an error', async function () {
+  const api = new SlowConnectApi()
+  const session = connectSession(api)
+  const connecting = session.run(session.connect(CONFIG, 'Shop'))
+  await session.cancelConnect()
+
+  expect(await connecting).toBe(true)
+  expect(api.cancelled).toEqual([session.id])
+  expect(session.error).toBe('')
+  expect(session.busy).toBe(false)
+  expect(session.config).toBeNull()
+  expect(api.configSeen).toEqual([])
+
+  // The next connect works again.
+  api.gate = Promise.withResolvers<void>()
+  api.gate.resolve()
+  api.cancelled = []
+  await session.connect(CONFIG, 'Shop')
+  expect(session.config?.database).toBe('shop')
+})
+
+test('a cancel that comes after the backend connected closes the connection', async function () {
+  const api = new SlowConnectApi()
+  api.failOnCancel = false
+  const session = connectSession(api)
+  const connecting = session.run(session.connect(CONFIG, 'Shop'))
+  await session.cancelConnect()
+
+  expect(await connecting).toBe(true)
+  expect(session.error).toBe('')
+  expect(session.config).toBeNull()
+  expect(api.disconnects).toBe(1)
+})
+
 test('the tab stays busy until the last of overlapping runs ends', async function () {
   const session = connectSession(new ConnectApi())
   const slow = Promise.withResolvers<void>()

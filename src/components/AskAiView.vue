@@ -622,7 +622,7 @@ watch(readOnlyQuestion, sendReadOnly, { immediate: true })
   border-radius: 8px;
   background: color-mix(in srgb, var(--bg) 85%, transparent);
   color: var(--accent-text);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 600;
   pointer-events: none;
 }
@@ -664,7 +664,7 @@ watch(readOnlyQuestion, sendReadOnly, { immediate: true })
   border: 1px solid var(--border);
   border-radius: 5px;
   color: var(--text);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 400;
   white-space: nowrap;
 }
@@ -731,14 +731,14 @@ watch(readOnlyQuestion, sendReadOnly, { immediate: true })
 
 .card-title {
   color: var(--text-2);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .card textarea {
   padding: 4px 6px;
   border-radius: 5px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   resize: vertical;
 }
 
@@ -869,7 +869,7 @@ watch(readOnlyQuestion, sendReadOnly, { immediate: true })
 .markdown :deep(h5),
 .markdown :deep(h6) {
   margin: 6px 0 2px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 600;
 }
 
@@ -878,7 +878,7 @@ watch(readOnlyQuestion, sendReadOnly, { immediate: true })
   background: var(--row-alt);
   border-radius: 3px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .markdown :deep(pre) {
@@ -897,7 +897,7 @@ watch(readOnlyQuestion, sendReadOnly, { immediate: true })
 
 .markdown :deep(table) {
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .markdown :deep(th),
@@ -924,7 +924,7 @@ watch(readOnlyQuestion, sendReadOnly, { immediate: true })
   padding: 5px 9px;
   background: var(--row-alt);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -935,7 +935,7 @@ watch(readOnlyQuestion, sendReadOnly, { immediate: true })
   padding: 2px 9px;
   border-top: 1px solid var(--border-soft);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .outcome.error {
@@ -973,7 +973,7 @@ watch(readOnlyQuestion, sendReadOnly, { immediate: true })
   height: 22px;
   padding: 0 4px;
   border-radius: 5px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .custom {

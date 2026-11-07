@@ -20,6 +20,7 @@ import {
   DRIVER_LABELS,
   FORM_TABS,
   SSL_MODE_LABELS,
+  CONNECT_CANCELLED_NOTE,
 } from '../constants'
 import type { FormTab } from '../constants'
 import {
@@ -482,6 +483,16 @@ async function connect(): Promise<void> {
     await props.session.connect(currentConfig(), title(), environment())
   } finally {
     connecting.value = false
+  }
+}
+
+/** Stops the connect. The form keeps its values, so the user can connect again. */
+async function cancelConnect(): Promise<void> {
+  try {
+    await props.session.cancelConnect()
+    showNote(CONNECT_CANCELLED_NOTE)
+  } catch (error) {
+    props.session.error = String(error)
   }
 }
 
@@ -1062,6 +1073,7 @@ async function browseKey(): Promise<void> {
           <template v-if="connecting">
             <LoaderCircleIcon :size="13" class="spin" />
             <span>Connecting…</span>
+            <button type="button" class="cancel" @click="cancelConnect()">Cancel</button>
           </template>
           <template v-else>Working…</template>
         </div>
@@ -1230,7 +1242,7 @@ async function browseKey(): Promise<void> {
 .count {
   flex: none;
   color: var(--text-3);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 400;
 }
 
@@ -1324,7 +1336,7 @@ async function browseKey(): Promise<void> {
   border: 1px dashed var(--border);
   border-radius: 5px;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1374,7 +1386,7 @@ async function browseKey(): Promise<void> {
 
 h1 {
   margin: 0 0 4px;
-  font-size: 17px;
+  font-size: calc(17px * var(--font-scale));
   font-weight: 600;
 }
 
@@ -1592,6 +1604,13 @@ header p {
 
 .banner svg {
   margin-top: 1px;
+}
+
+/* The Cancel button of "Connecting…" sits at the right end and keeps the banner low. */
+.banner .cancel {
+  height: 20px;
+  margin: -2px 0 -2px auto;
+  padding: 0 8px;
 }
 
 .actions {

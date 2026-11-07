@@ -233,7 +233,7 @@ defineExpose({ openTables, openColumns })
 h2 {
   margin: 0;
   overflow: hidden;
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -256,7 +256,7 @@ h2 {
   border: 0;
   background: none;
   color: var(--accent-text);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 /* Many tables scroll inside the dialog. The buttons stay in view. */
@@ -277,7 +277,7 @@ h2 {
   gap: 6px;
   align-items: center;
   min-width: 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 
 .check input {
@@ -297,7 +297,7 @@ h2 {
 
 .kind {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .options {
@@ -315,7 +315,7 @@ h2 {
 .note {
   margin: 0;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .error {

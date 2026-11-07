@@ -15,13 +15,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use futures_util::future::{AbortHandle, Abortable};
 use parking_lot::Mutex;
 
 use crate::constants::{
     AI_IMAGE_MAX_BYTES, ANY_HOST, CANNOT_MANAGE_USERS, CHARSET_ONLY_MYSQL, CLAUDE_READ_ONLY_NOTE,
-    DROP_CURRENT_DATABASE, EXPLAIN_ONE_STATEMENT, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS,
-    MSSQL_NO_USER_ACCOUNTS, NO_EXPLAIN, NO_HOME_FOR_NOTES, NO_USER_ACCOUNTS, NOT_A_READ,
-    NOTES_FOLDER, OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, QUERY_STATS_FIXED,
+    CONNECT_CANCELLED, DROP_CURRENT_DATABASE, EXPLAIN_ONE_STATEMENT, LIKE_ESCAPE, LOCALHOST,
+    MAX_QUERY_ROWS, MSSQL_NO_USER_ACCOUNTS, NO_EXPLAIN, NO_HOME_FOR_NOTES, NO_USER_ACCOUNTS,
+    NOT_A_READ, NOTES_FOLDER, OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, QUERY_STATS_FIXED,
     SQLITE_NO_DATABASES, VIEW,
 };
 use crate::error::{AppError, AppResult};
@@ -57,6 +58,8 @@ struct Connection {
 pub struct ConnectionService {
     factory: RepositoryFactory,
     connections: Mutex<HashMap<String, Connection>>,
+    /// The connects that still run, by tab id. `cancel_connect` stops one.
+    connecting: Mutex<HashMap<String, Arc<AbortHandle>>>,
     claude: ClaudeCli,
     /// Holds the notes of each database for the AI. See `NOTES_FOLDER`.
     notes_folder: Option<PathBuf>,
@@ -67,6 +70,7 @@ impl ConnectionService {
         Self {
             factory,
             connections: Mutex::new(HashMap::new()),
+            connecting: Mutex::new(HashMap::new()),
             claude: ClaudeCli::default(),
             notes_folder: std::env::home_dir().map(|home| home.join(NOTES_FOLDER)),
         }
@@ -98,7 +102,32 @@ impl ConnectionService {
         tunnel: Option<Arc<SshTunnel>>,
         spare: Arc<Spare>,
     ) -> AppResult<()> {
-        let (repository, tunnel) = self.factory.create(&config, tunnel).await?;
+        let (handle, registration) = AbortHandle::new_pair();
+        let handle = Arc::new(handle);
+        self.connecting
+            .lock()
+            .insert(id.clone(), Arc::clone(&handle));
+        // A cancel drops the half open connect. That also kills a new ssh (`kill_on_drop`).
+        let opened = Abortable::new(self.factory.create(&config, tunnel), registration).await;
+        {
+            let mut connecting = self.connecting.lock();
+            // A newer connect for the same id may have its own handle there now.
+            if connecting
+                .get(&id)
+                .is_some_and(|current| Arc::ptr_eq(current, &handle))
+            {
+                connecting.remove(&id);
+            }
+        }
+        // A cancel that comes after the connect finished still wins. Nothing is kept.
+        let (repository, tunnel) = match opened {
+            Ok(opened) if !handle.is_aborted() => opened?,
+            Ok(Ok((repository, _tunnel))) => {
+                repository.close().await;
+                return Err(CONNECT_CANCELLED.into());
+            }
+            _ => return Err(CONNECT_CANCELLED.into()),
+        };
         let connection = Connection {
             config,
             repository,
@@ -131,6 +160,14 @@ impl ConnectionService {
             .any(|other| Arc::ptr_eq(&other.spare, &connection.spare));
         if !used {
             connection.spare.close().await;
+        }
+    }
+
+    /// Stops the connect that runs now for `id`. That connect then fails with
+    /// `CONNECT_CANCELLED` and keeps nothing. Does nothing when no connect runs.
+    pub fn cancel_connect(&self, id: &str) {
+        if let Some(handle) = self.connecting.lock().remove(id) {
+            handle.abort();
         }
     }
 

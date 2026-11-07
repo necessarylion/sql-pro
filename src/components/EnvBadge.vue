@@ -31,7 +31,7 @@ function kindOfName(): string {
   overflow: hidden;
   border-radius: 3px;
   font-family: var(--font-ui);
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
   font-weight: 700;
   line-height: 15px;
   text-overflow: ellipsis;

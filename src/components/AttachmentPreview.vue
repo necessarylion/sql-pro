@@ -156,7 +156,7 @@ img {
   background: var(--toolbar);
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .name {
