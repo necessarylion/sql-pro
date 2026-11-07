@@ -32,6 +32,8 @@ export class LayoutService {
   columnsHeight: number | null = null
   indexesHeight: number | null = null
   foreignKeysHeight: number | null = null
+  /** Goes up by one each time the app menu asks for the Settings dialog. App.vue watches it. */
+  settingsAsked = 0
   private storage: ProfileStorage
   private root: HTMLElement
 
@@ -111,5 +113,10 @@ export class LayoutService {
   reset(name: LayoutSize = 'sidebarWidth'): void {
     this.resize(LAYOUT_SIZES[name].fallback, name)
     this.save(name)
+  }
+
+  /** Asks App.vue to open the Settings dialog. */
+  askSettings(): void {
+    this.settingsAsked += 1
   }
 }

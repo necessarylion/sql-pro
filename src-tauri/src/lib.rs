@@ -37,7 +37,7 @@ pub fn run() {
         open_file::receive(app, files);
     }));
     #[cfg(target_os = "macos")]
-    let builder = builder.menu(app_menu);
+    let builder = builder.menu(app_menu).on_menu_event(on_app_menu);
     let app = builder
         .setup(setup)
         .on_window_event(hide_instead_of_close)
@@ -299,17 +299,28 @@ fn run_under_dev_name() {
     }
 }
 
-/// The default menu, with the app name fixed.
+/// The default menu, with the app name fixed and a "Settings…" item.
 ///
 /// macOS names "About", "Hide" and "Quit" after the program file. Without an app
 /// bundle (`tauri dev`) that is the Cargo package name, with a dash.
 #[cfg(target_os = "macos")]
 fn app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{Menu, MenuItemKind};
+    use constants::{SETTINGS_MENU_ACCELERATOR, SETTINGS_MENU_ID, SETTINGS_MENU_TEXT};
+    use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 
     let menu = Menu::default(handle)?;
     let name = &handle.package_info().name;
     if let Some(MenuItemKind::Submenu(app_items)) = menu.items()?.first() {
+        // The usual macOS place: About, a line, Settings…, a line, then Services.
+        let settings = MenuItem::with_id(
+            handle,
+            SETTINGS_MENU_ID,
+            SETTINGS_MENU_TEXT,
+            true,
+            Some(SETTINGS_MENU_ACCELERATOR),
+        )?;
+        app_items.insert(&settings, 2)?;
+        app_items.insert(&PredefinedMenuItem::separator(handle)?, 3)?;
         for item in app_items.items()? {
             if let MenuItemKind::Predefined(item) = item {
                 let text = item.text()?;
@@ -320,4 +331,17 @@ fn app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri:
         }
     }
     Ok(menu)
+}
+
+/// "Settings…" in the app menu shows the window and opens the Settings dialog.
+#[cfg(target_os = "macos")]
+#[allow(clippy::needless_pass_by_value)] // Tauri hands the event over by value.
+fn on_app_menu(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
+    use tauri::Emitter as _;
+
+    if event.id.as_ref() == constants::SETTINGS_MENU_ID {
+        show_main_window(app);
+        // This only fails when the window is gone. Then there is nothing to open.
+        let _ = app.emit_to(MAIN_WINDOW, constants::OPEN_SETTINGS_EVENT, ());
+    }
 }

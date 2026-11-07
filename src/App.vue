@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, useTemplateRef } from 'vue'
+import { onBeforeUnmount, onMounted, useTemplateRef, watch } from 'vue'
 import { LoaderCircleIcon, PlugIcon, PlusIcon, SettingsIcon, XIcon } from 'lucide-vue-next'
 import ConnectionForm from './components/ConnectionForm.vue'
 import DbBadge from './components/DbBadge.vue'
@@ -56,6 +56,10 @@ function onKey(event: KeyboardEvent): void {
     return
   }
   event.preventDefault()
+  if (action === 'settings') {
+    settings.value?.open()
+    return
+  }
   const session = manager.active
   // The row detail panel can open and close also while a query runs.
   if (action === 'detail') {
@@ -95,8 +99,18 @@ function stopListening(): void {
   window.removeEventListener('keydown', onKey)
 }
 
+/** "Settings…" in the app menu counts this up. */
+function settingsAsked(): number {
+  return layout.settingsAsked
+}
+
+function openSettings(): void {
+  settings.value?.open()
+}
+
 onMounted(listenForKeys)
 onBeforeUnmount(stopListening)
+watch(settingsAsked, openSettings)
 </script>
 
 <template>

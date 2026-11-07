@@ -34,6 +34,7 @@ import type {
   Values,
 } from '../types'
 import { OPEN_FILES_EVENT } from '../constants/files'
+import { OPEN_SETTINGS_EVENT } from '../constants/settings'
 
 /**
  * Thin wrappers around the Tauri backend commands.
@@ -371,5 +372,10 @@ export class DatabaseApi {
   /** Calls `handler` when the OS gives the app more files to open. Call the result to stop. */
   onOpenedFiles(handler: () => void): Promise<UnlistenFn> {
     return listen(OPEN_FILES_EVENT, handler)
+  }
+
+  /** Calls `handler` when "Settings…" in the app menu is clicked. Call the result to stop. */
+  onOpenSettings(handler: () => void): Promise<UnlistenFn> {
+    return listen(OPEN_SETTINGS_EVENT, handler)
   }
 }

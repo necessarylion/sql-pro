@@ -195,6 +195,14 @@ pub const MAIN_WINDOW: &str = "main";
 /// The frontend then takes them with the `take_opened_files` command.
 pub const OPEN_FILES_EVENT: &str = "open-files";
 
+/// The event that tells the frontend to open the Settings dialog.
+pub const OPEN_SETTINGS_EVENT: &str = "open-settings";
+
+/// The "Settings…" item of the app menu. macOS only.
+pub const SETTINGS_MENU_ID: &str = "settings";
+pub const SETTINGS_MENU_TEXT: &str = "Settings…";
+pub const SETTINGS_MENU_ACCELERATOR: &str = "CmdOrCtrl+,";
+
 /// The id of the tray icon. Windows and Linux only: macOS has the Dock.
 pub const TRAY_ID: &str = "main";
 

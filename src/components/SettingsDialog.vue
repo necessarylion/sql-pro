@@ -11,7 +11,11 @@ const dialog = useTemplateRef<HTMLDialogElement>('dialog')
 
 /** The native dialog closes on Escape by itself. */
 function open(): void {
-  dialog.value?.showModal()
+  // The menu and the key can both ask at once. An open dialog stays as it is.
+  if (!dialog.value || dialog.value.open) {
+    return
+  }
+  dialog.value.showModal()
   // The list is only needed here. Without it, the pickers still show the saved fonts.
   void fonts.loadFonts().catch(console.error)
 }

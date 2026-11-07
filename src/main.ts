@@ -70,6 +70,9 @@ const sessionManager = reactive(
 // SQLite files opened from the OS ("Open With" or a double click) get their own tab.
 void new FileOpener(api, sessionManager).start()
 
+// "Settings…" in the macOS app menu opens the Settings dialog.
+void api.onOpenSettings(layoutService.askSettings.bind(layoutService))
+
 const zoomService = new ZoomService(storage, new WebviewZoom(), document.documentElement)
 
 // Set the theme, the fonts and the saved zoom before the first paint of the app.
