@@ -1,0 +1,72 @@
+name: ci
+
+# Runs the checks on every pull request and on every push to `main`.
+# The backend tests run on SQLite only. The other databases need servers (see CONTRIBUTING.md).
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run lint
+
+      - run: bun run typecheck
+
+      - run: bun test
+
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install the Linux packages
+        # All of these are for Tauri. libdbus-1-dev is for the tao crate.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils libdbus-1-dev
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          # Needed because the action is pinned to a commit, not to the `stable` branch.
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: src-tauri
+
+      - name: Make the frontend folder
+        # Tauri checks at build time that `frontendDist` exists. The tests do not use it.
+        run: mkdir -p dist
+
+      - name: Check the format
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      - name: Run clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run the tests
+        working-directory: src-tauri
+        run: cargo test
