@@ -7,6 +7,7 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use futures_util::future::{AbortRegistration, Abortable};
@@ -44,9 +45,7 @@ impl DumpRepository {
         }
         // The tool writes to a side file first. So a dump that fails leaves no
         // half file, and does not harm an older backup that is already at `path`.
-        let mut partial = OsString::from(path);
-        partial.push(PARTIAL_DUMP_SUFFIX);
-        let partial = PathBuf::from(partial);
+        let partial = Self::partial_path(path);
 
         let mut result = Self::run(config, &partial, progress, cancel).await;
         if result.is_ok() {
@@ -57,6 +56,19 @@ impl DumpRepository {
             let _ = std::fs::remove_file(&partial);
         }
         result
+    }
+
+    /// The side file of a dump to `path`, like `shop.sql.4242-7.part`. The name is new for
+    /// each dump. So two tabs that back up to the same file never write into one side file.
+    fn partial_path(path: &Path) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let mut partial = OsString::from(path);
+        partial.push(format!(
+            ".{}-{}{PARTIAL_DUMP_SUFFIX}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        PathBuf::from(partial)
     }
 
     /// Runs the dump tool and waits for it. Its error text becomes our error.
@@ -354,6 +366,9 @@ impl DumpLog {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::path::Path;
+
     use futures_util::future::AbortHandle;
 
     use super::{DumpLog, DumpRepository};
@@ -399,7 +414,14 @@ mod tests {
         };
         let result = DumpRepository::dump(&config, &path, cancel, registration).await;
         let old = std::fs::read_to_string(&path);
-        let partial = folder.join(format!("sqlpro-cancel-{id}.sql.part")).exists();
+        let partial = std::fs::read_dir(&folder)
+            .expect("temp folder")
+            .flatten()
+            .any(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with(&format!("sqlpro-cancel-{id}.sql.")) && name.ends_with(".part")
+            });
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&database);
         assert_eq!(
@@ -409,6 +431,19 @@ mod tests {
         assert_eq!(steps, 1);
         assert_eq!(old.expect("old backup"), "old");
         assert!(!partial, "the side file is still there");
+    }
+
+    #[test]
+    fn each_dump_has_its_own_side_file() {
+        let path = Path::new("/backups/shop.sql");
+        let first = DumpRepository::partial_path(path);
+        let second = DumpRepository::partial_path(path);
+        assert_ne!(first, second);
+        for partial in [first, second] {
+            assert_eq!(partial.extension(), Some(OsStr::new("part")));
+            let name = partial.to_string_lossy().into_owned();
+            assert!(name.starts_with("/backups/shop.sql."), "{name}");
+        }
     }
 
     #[test]

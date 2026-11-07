@@ -419,6 +419,10 @@ function stopEscape(): void {
 /** Escape clears the selection, but not while the table menu is open. */
 function escapeSelection(event: KeyboardEvent): void {
   if (event.key === 'Escape' && !menu.value && !event.defaultPrevented) {
+    if (selection.names.length > 0) {
+      // This Escape had a job. It does not also stop a backup.
+      shortcuts.claim(event)
+    }
     selection.clear()
   }
 }

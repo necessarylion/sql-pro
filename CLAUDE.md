@@ -105,6 +105,7 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
   `MYSQL_PWD` / `PGPASSWORD`. The tools run with `--verbose`. `DumpLog` reads their stderr for the current
   table and keeps only the real error lines. Progress (file size, time, table) goes to the frontend through a
   `Channel` about once per second. `cancel_dump` kills the tool and deletes the `.part` file.
+  Esc stops a backup only when Escape has no other job there (`Shortcuts.cancelsBackup`).
 - **AI notes** (`service/notes.rs`): each database has a `claude.md` file at
   `~/.sql-pro/<database>-<hash>/claude.md` (`~/.sql-pro-dev/` in a debug build). The hash (FNV-1a, 8 hex) is
   of driver, server host, port and database (SQLite: the file path), not the user. The user edits it in Ask AI. The AI adds facts to it (`remember`).

@@ -165,7 +165,11 @@ function useHistory(sql: string): void {
   showHistory.value = false
 }
 
-function closeHistory(): void {
+function closeHistory(event: Event): void {
+  if (showHistory.value) {
+    // This Escape had a job. It does not also stop a backup.
+    shortcuts.claim(event)
+  }
   showHistory.value = false
 }
 

@@ -1023,7 +1023,20 @@ async fn dump(service: &ConnectionService, driver: Driver, database: &str) {
     // The progress came at least once: the first tick is at the start.
     assert_ne!(steps.len(), 0);
     // The side file of the dump is gone.
-    assert!(!folder.join(format!("{}.part", path.display())).exists());
+    let name = path
+        .file_name()
+        .expect("name")
+        .to_string_lossy()
+        .into_owned();
+    let left = std::fs::read_dir(&folder)
+        .expect("temp folder")
+        .flatten()
+        .any(|entry| {
+            let other = entry.file_name();
+            let other = other.to_string_lossy();
+            other.starts_with(&format!("{name}.")) && other.ends_with(".part")
+        });
+    assert!(!left, "the side file of the dump is still there");
 
     // A folder that does not exist: an error, and no file.
     let missing = folder.join("sqlpro-no-such-folder").join("dump.sql");
