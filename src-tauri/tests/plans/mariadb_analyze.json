@@ -1,0 +1,67 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.249085669
+  },
+  "query_block": {
+    "select_id": 1,
+    "cost": 19.9682392,
+    "r_loops": 1,
+    "r_total_time_ms": 18.5585516,
+    "filesort": {
+      "sort_key": "sum(o.total) desc",
+      "r_loops": 1,
+      "r_total_time_ms": 0.029686124,
+      "r_used_priority_queue": false,
+      "r_output_rows": 20,
+      "r_buffer_size": "960",
+      "r_sort_mode": "sort_key,rowid",
+      "temporary_table": {
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "c",
+              "access_type": "ALL",
+              "possible_keys": ["PRIMARY"],
+              "loops": 1,
+              "r_loops": 1,
+              "rows": 2000,
+              "r_rows": 2000,
+              "cost": 0.3411288,
+              "r_table_time_ms": 0.365005245,
+              "r_other_time_ms": 0.121213027,
+              "r_engine_stats": {
+                "pages_accessed": 6
+              },
+              "filtered": 100,
+              "r_filtered": 100
+            }
+          },
+          {
+            "table": {
+              "table_name": "o",
+              "access_type": "ref",
+              "possible_keys": ["orders_customer"],
+              "key": "orders_customer",
+              "key_length": "5",
+              "used_key_parts": ["customer_id"],
+              "ref": ["shop.c.id"],
+              "loops": 2000,
+              "r_loops": 2000,
+              "rows": 9,
+              "r_rows": 10,
+              "cost": 19.6271104,
+              "r_table_time_ms": 14.68571477,
+              "r_other_time_ms": 3.328436906,
+              "r_engine_stats": {
+                "pages_accessed": 44036
+              },
+              "filtered": 100,
+              "r_filtered": 33.33,
+              "attached_condition": "o.`status` = 'paid'"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

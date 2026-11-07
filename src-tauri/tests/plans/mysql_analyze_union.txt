@@ -1,0 +1,10 @@
+-> Table scan on <union temporary>  (cost=1033..1045 rows=726) (actual time=9.26..9.28 rows=202 loops=1)
+    -> Union materialize with deduplication  (cost=1033..1033 rows=726) (actual time=9.26..9.26 rows=202 loops=1)
+        -> Nested loop semijoin  (cost=960 rows=722) (actual time=1.16..9.15 rows=198 loops=1)
+            -> Filter: (c.`name` like 'n1%')  (cost=202 rows=222) (actual time=0.0465..0.485 rows=1111 loops=1)
+                -> Table scan on c  (cost=202 rows=2000) (actual time=0.0447..0.342 rows=2000 loops=1)
+            -> Filter: (orders.total > 400.00)  (cost=7.93 rows=3.25) (actual time=0.0077..0.0077 rows=0.178 loops=1111)
+                -> Index lookup on orders using orders_customer (customer_id=c.id)  (cost=7.93 rows=9.75) (actual time=0.00635..0.00709 rows=8.4 loops=1111)
+        -> Filter: (customers.id < 5)  (cost=1.06 rows=4) (actual time=0.0225..0.0243 rows=4 loops=1)
+            -> Index range scan on customers using PRIMARY over (id < 5)  (cost=1.06 rows=4) (actual time=0.0138..0.0153 rows=4 loops=1)
+

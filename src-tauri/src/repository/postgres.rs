@@ -19,7 +19,8 @@ use crate::constants::{
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, DbUser,
-    ForeignKey, IndexInfo, Relation, ResultSet, SslConfig, SslMode, TableKeys, TableRef, UserList,
+    ForeignKey, IndexInfo, PlanFormat, PlanSql, Relation, ResultSet, SslConfig, SslMode, TableKeys,
+    TableRef, UserList,
 };
 
 const DATABASES_SQL: &str =
@@ -419,6 +420,20 @@ impl Repository for PostgresRepository {
 
     fn explain_prefix(&self) -> Option<&'static str> {
         Some("EXPLAIN")
+    }
+
+    async fn plan_sql(&self, statement: &str, analyze: bool) -> AppResult<Option<PlanSql>> {
+        let options = if analyze {
+            "ANALYZE, FORMAT JSON"
+        } else {
+            "FORMAT JSON"
+        };
+        Ok(Some(PlanSql {
+            before: None,
+            sql: format!("EXPLAIN ({options}) {statement}"),
+            after: None,
+            format: PlanFormat::PostgresJson,
+        }))
     }
 
     // ponytail: identity columns need PostgreSQL 10. Use SERIAL if older servers must work.

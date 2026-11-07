@@ -7,6 +7,7 @@ mod export;
 mod import;
 mod notes;
 mod processes;
+mod query_plan;
 mod query_stats;
 mod schema_compare;
 mod spare;
@@ -22,10 +23,9 @@ use parking_lot::Mutex;
 
 use crate::constants::{
     AI_IMAGE_MAX_BYTES, ANY_HOST, CANNOT_MANAGE_USERS, CHARSET_ONLY_MYSQL, CLAUDE_READ_ONLY_NOTE,
-    CONNECT_CANCELLED, DROP_CURRENT_DATABASE, EXPLAIN_ONE_STATEMENT, LIKE_ESCAPE, LOCALHOST,
-    MAX_QUERY_ROWS, MSSQL_NO_USER_ACCOUNTS, NO_EXPLAIN, NO_HOME_FOR_NOTES, NO_USER_ACCOUNTS,
-    NOT_A_READ, NOTES_FOLDER, OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, QUERY_STATS_FIXED,
-    SQLITE_NO_DATABASES, VIEW,
+    CONNECT_CANCELLED, DROP_CURRENT_DATABASE, LIKE_ESCAPE, LOCALHOST, MAX_QUERY_ROWS,
+    MSSQL_NO_USER_ACCOUNTS, NO_HOME_FOR_NOTES, NO_USER_ACCOUNTS, NOT_A_READ, NOTES_FOLDER,
+    OPEN_TRANSACTION, PRIMARY_KEY_NOT_DROPPED, QUERY_STATS_FIXED, SQLITE_NO_DATABASES, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -295,14 +295,6 @@ impl ConnectionService {
         result
     }
 
-    /// Gives the query plan of one statement. The statement itself never runs.
-    pub async fn explain(&self, id: &str, sql: &str) -> AppResult<Vec<ResultSet>> {
-        let repository = self.repository(id)?;
-        let prefix = repository.explain_prefix().ok_or(NO_EXPLAIN)?;
-        let statement = claude::explainable(sql).ok_or(EXPLAIN_ONE_STATEMENT)?;
-        repository.query(&format!("{prefix} {statement}")).await
-    }
-
     /// True when SQL only reads, by the same check that Ask AI uses.
     pub fn is_read_sql(sql: &str) -> bool {
         claude::is_read_only(sql)
@@ -317,13 +309,18 @@ impl ConnectionService {
             return Err(NOT_A_READ.into());
         }
         let connection = self.connection(id)?;
-        let repository = connection.repository.as_ref();
+        Self::check_no_transaction(&connection).await?;
+        Self::guarded_read(connection.repository.as_ref(), sql).await
+    }
+
+    /// Fails when the tab has an open transaction. The read-only guard would end it.
+    async fn check_no_transaction(connection: &Connection) -> AppResult<()> {
         let typed_begin = connection.config.driver == Driver::Mysql
             && connection.user_transaction.load(Ordering::SeqCst);
-        if typed_begin || Self::transaction_open(repository).await {
+        if typed_begin || Self::transaction_open(connection.repository.as_ref()).await {
             return Err(OPEN_TRANSACTION.into());
         }
-        Self::guarded_read(repository, sql).await
+        Ok(())
     }
 
     /// True when the connection has an open transaction. An error counts as open.
@@ -347,26 +344,31 @@ impl ConnectionService {
     /// other query of the tab can come between them. When `sql` fails, the rest of the
     /// batch may not run, so the end runs once more on its own.
     async fn guarded_read(repository: &dyn Repository, sql: &str) -> AppResult<Vec<ResultSet>> {
+        let mut sets = Self::guarded_batch(repository, sql).await?;
+        // The start and the end give their own empty result sets.
+        if sets.len() >= 2 {
+            sets.pop();
+            sets.remove(0);
+        }
+        Ok(sets)
+    }
+
+    /// Runs `sql` inside the read-only guard. The result sets of the guard stay in the list.
+    /// After an error the end of the guard runs again. Without a transaction it may fail
+    /// too; that is fine. On SQL Server that failure lets the broken connection go.
+    async fn guarded_batch(repository: &dyn Repository, sql: &str) -> AppResult<Vec<ResultSet>> {
+        let guarded = Self::guarded_sql(repository, sql);
+        let end = repository.read_only_guard().1;
+        repository.query_steps(&[&guarded], &[end], &[]).await
+    }
+
+    /// `sql` between the start and the end of the read-only guard, as one batch.
+    fn guarded_sql(repository: &dyn Repository, sql: &str) -> String {
         let (start, end) = repository.read_only_guard();
         let body = sql.trim_end();
         let body = body.strip_suffix(';').unwrap_or(body);
         // The newline ends a `--` comment at the end of the SQL.
-        let batch = format!("{start};\n{body}\n;{end}");
-        match repository.query(&batch).await {
-            Ok(mut sets) => {
-                // The start and the end give their own empty result sets.
-                if sets.len() >= 2 {
-                    sets.pop();
-                    sets.remove(0);
-                }
-                Ok(sets)
-            }
-            Err(error) => {
-                // Without a transaction this may fail too. That is fine.
-                let _ = repository.query(end).await;
-                Err(error)
-            }
-        }
+        format!("{start};\n{body}\n;{end}")
     }
 
     /// Stops the query that runs now in tab `id`.

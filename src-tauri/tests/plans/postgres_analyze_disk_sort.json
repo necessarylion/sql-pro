@@ -1,0 +1,101 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Sort",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Startup Cost": 534.92,
+      "Total Cost": 535.00,
+      "Plan Rows": 33,
+      "Plan Width": 22,
+      "Actual Startup Time": 5.017,
+      "Actual Total Time": 5.537,
+      "Actual Rows": 6666,
+      "Actual Loops": 1,
+      "Sort Key": ["o.total", "o.id"],
+      "Sort Method": "external merge",
+      "Sort Space Used": 256,
+      "Sort Space Type": "Disk",
+      "Plans": [
+        {
+          "Node Type": "Hash Join",
+          "Parent Relationship": "Outer",
+          "Parallel Aware": false,
+          "Async Capable": false,
+          "Join Type": "Inner",
+          "Startup Cost": 56.00,
+          "Total Cost": 534.09,
+          "Plan Rows": 33,
+          "Plan Width": 22,
+          "Actual Startup Time": 0.392,
+          "Actual Total Time": 2.572,
+          "Actual Rows": 6666,
+          "Actual Loops": 1,
+          "Inner Unique": true,
+          "Hash Cond": "(o.customer_id = c.id)",
+          "Plans": [
+            {
+              "Node Type": "Seq Scan",
+              "Parent Relationship": "Outer",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Relation Name": "orders",
+              "Alias": "o",
+              "Startup Cost": 0.00,
+              "Total Cost": 478.00,
+              "Plan Rows": 33,
+              "Plan Width": 17,
+              "Actual Startup Time": 0.008,
+              "Actual Total Time": 1.316,
+              "Actual Rows": 6666,
+              "Actual Loops": 1,
+              "Filter": "(((status)::text = 'paid'::text) AND ((id % 3) = 0))",
+              "Rows Removed by Filter": 13334
+            },
+            {
+              "Node Type": "Hash",
+              "Parent Relationship": "Inner",
+              "Parallel Aware": false,
+              "Async Capable": false,
+              "Startup Cost": 31.00,
+              "Total Cost": 31.00,
+              "Plan Rows": 2000,
+              "Plan Width": 9,
+              "Actual Startup Time": 0.370,
+              "Actual Total Time": 0.371,
+              "Actual Rows": 2000,
+              "Actual Loops": 1,
+              "Hash Buckets": 2048,
+              "Original Hash Buckets": 2048,
+              "Hash Batches": 1,
+              "Original Hash Batches": 1,
+              "Peak Memory Usage": 102,
+              "Plans": [
+                {
+                  "Node Type": "Seq Scan",
+                  "Parent Relationship": "Outer",
+                  "Parallel Aware": false,
+                  "Async Capable": false,
+                  "Relation Name": "customers",
+                  "Alias": "c",
+                  "Startup Cost": 0.00,
+                  "Total Cost": 31.00,
+                  "Plan Rows": 2000,
+                  "Plan Width": 9,
+                  "Actual Startup Time": 0.002,
+                  "Actual Total Time": 0.186,
+                  "Actual Rows": 2000,
+                  "Actual Loops": 1
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Planning Time": 0.509,
+    "Triggers": [
+    ],
+    "Execution Time": 5.893
+  }
+]

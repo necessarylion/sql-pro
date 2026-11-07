@@ -11,8 +11,8 @@ use sql_pro_lib::model::DbObject;
 use sql_pro_lib::model::{
     AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, CsvColumn, CsvImport, DataKinds,
     DbUser, Diagram, Driver, ExportFormat, ExportRequest, FilterOperator, FilterRule, ForeignKey,
-    IndexInfo, NewColumn, NewForeignKey, NewIndex, NewUser, ReferentialAction, Relation, RowUpdate,
-    RowsExport, RowsSql, SaveResult, SshConfig, TableRef, Values,
+    IndexInfo, NewColumn, NewForeignKey, NewIndex, NewUser, PlanMeasure, ReferentialAction,
+    Relation, RowUpdate, RowsExport, RowsSql, SaveResult, SshConfig, TableRef, Values,
 };
 use std::time::{Duration, Instant};
 
@@ -2005,23 +2005,94 @@ async fn custom_sql(service: &ConnectionService) {
     assert!(service.run_query(ID, "SELEC nonsense").await.is_err());
 }
 
-/// Explain gives a plan and never runs the statement. More than one statement,
-/// or `ANALYZE` in front, is refused.
-async fn explain(service: &ConnectionService, table: &TableRef, driver: Driver) {
+/// Explain gives a plan tree and never runs the statement. More than one statement,
+/// or `ANALYZE` in front, is refused. Analyze runs only a read.
+async fn query_plan(service: &ConnectionService, table: &TableRef, driver: Driver) {
+    let before = page(service, table).await.total;
     let delete = format!("DELETE FROM {TABLE} WHERE id > 0;");
-    let plan = service.explain(ID, &delete).await;
-    if driver == Driver::Mssql {
-        assert!(plan.is_err());
+    let plan = service.query_plan(ID, &delete, false).await.expect("plan");
+    assert!(!plan.analyzed);
+    assert_ne!(plan.nodes.len(), 0);
+    assert_ne!(plan.raw.expect("raw").rows.len(), 0);
+    assert_eq!(page(service, table).await.total, before);
+    // SQL Server turned the plan setting off again, so a query runs for real.
+    let sets = service
+        .run_query(ID, "SELECT 1 AS one")
+        .await
+        .expect("query");
+    assert_eq!(sets.last().expect("set").rows, vec![vec![text("1")]]);
+
+    let two = format!("SELECT 1; DELETE FROM {TABLE}");
+    assert!(service.query_plan(ID, &two, false).await.is_err());
+    let analyze = format!("ANALYZE DELETE FROM {TABLE}");
+    assert!(service.query_plan(ID, &analyze, false).await.is_err());
+    let error = service
+        .query_plan(ID, &delete, true)
+        .await
+        .expect_err("not a read");
+    assert_eq!(
+        error.to_string(),
+        sql_pro_lib::constants::ANALYZE_NOT_A_READ
+    );
+    assert_eq!(page(service, table).await.total, before);
+
+    let select = format!("SELECT id FROM {TABLE} WHERE id > 0");
+    let analyzed = service.query_plan(ID, &select, true).await;
+    if driver == Driver::Sqlite {
+        let error = analyzed.expect_err("no analyze");
+        assert_eq!(error.to_string(), sql_pro_lib::constants::SQLITE_NO_ANALYZE);
         return;
     }
-    let before = page(service, table).await.total;
-    assert_ne!(plan.expect("plan")[0].rows.len(), 0);
-    assert_eq!(page(service, table).await.total, before);
-    let two = format!("SELECT 1; DELETE FROM {TABLE}");
-    assert!(service.explain(ID, &two).await.is_err());
-    let analyze = format!("ANALYZE DELETE FROM {TABLE}");
-    assert!(service.explain(ID, &analyze).await.is_err());
-    assert_eq!(page(service, table).await.total, before);
+    let plan = analyzed.expect("analyze");
+    assert!(plan.analyzed);
+    assert_eq!(plan.measure, Some(PlanMeasure::Time));
+    assert!(plan.nodes.iter().any(|node| node.time_ms.is_some()));
+    // SQL Server turned the statistics off again: one result set, no plan.
+    let sets = service
+        .run_query(ID, "SELECT 1 AS one")
+        .await
+        .expect("query");
+    assert_eq!(sets.len(), 1);
+    if driver == Driver::Mssql {
+        plan_setting_stays_private(service).await;
+    }
+    // A plan that fails leaves the tab working, with no plan setting on.
+    let _ = service.query_plan(ID, "SELECT 1/0 AS x", true).await;
+    assert!(
+        service
+            .query_plan(ID, "SELECT * FROM sqlpro_missing", false)
+            .await
+            .is_err()
+    );
+    let sets = service
+        .run_query(ID, "SELECT 1 AS one")
+        .await
+        .expect("query after a failed plan");
+    assert_eq!(sets.len(), 1);
+    assert_eq!(sets[0].rows, vec![vec![text("1")]]);
+}
+
+/// A query of the same tab that comes during an Analyze waits for it. It never runs while
+/// `STATISTICS XML` is on, so it gets its own rows and no plan. It reads a table, because
+/// SQL Server writes no plan for a trivial query like `SELECT 1`.
+async fn plan_setting_stays_private(service: &ConnectionService) {
+    // About 0.3 s. The filter keeps SQL Server from counting the rows without reading them.
+    let slow = "SELECT COUNT(*) FROM sys.all_columns a CROSS JOIN sys.all_columns b \
+        WHERE (a.column_id * b.column_id) % 7 = 3";
+    let other = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        service
+            .run_query(ID, "SELECT COUNT(*) AS one FROM sys.objects")
+            .await
+    };
+    let started = Instant::now();
+    let (plan, sets) = tokio::join!(service.query_plan(ID, slow, true), other);
+    assert!(plan.expect("analyze").analyzed);
+    let sets = sets.expect("query");
+    assert_eq!(sets.len(), 1);
+    assert_eq!(sets[0].columns, vec!["one"]);
+    // The check means something only when the other query came while the analyze ran.
+    assert!(started.elapsed() > Duration::from_millis(100));
 }
 
 /// Every SQL Server type comes back as the text SQL Server itself writes.
@@ -2446,7 +2517,7 @@ async fn exercise(config: ConnectionConfig) {
     save_image();
 
     custom_sql(&service).await;
-    explain(&service, &table, driver).await;
+    query_plan(&service, &table, driver).await;
     if driver == Driver::Mssql {
         mssql_types(&service).await;
     }
@@ -2553,11 +2624,35 @@ async fn ai_read_guard(config: ConnectionConfig) {
         .await
         .expect_err("open transaction");
     assert_eq!(error.to_string(), sql_pro_lib::constants::OPEN_TRANSACTION);
+    // Analyze runs in the same guard, so it waits for the end of the transaction too.
+    let error = service
+        .query_plan(id, "SELECT 1", true)
+        .await
+        .expect_err("open transaction");
+    assert_eq!(error.to_string(), sql_pro_lib::constants::OPEN_TRANSACTION);
+    // A failed Explain keeps the connection, so the transaction is still open.
+    assert!(
+        service
+            .query_plan(id, "SELECT * FROM sqlpro_missing", false)
+            .await
+            .is_err()
+    );
+    assert!(service.run_ai_read(id, "SELECT 1").await.is_err());
     service.run_query(id, "ROLLBACK").await.expect("rollback");
     service
         .run_ai_read(id, "SELECT 1")
         .await
         .expect("read after rollback");
+    // A read that fails inside the guard leaves the tab working.
+    let _ = service.run_ai_read(id, "SELECT 1/0 AS x").await;
+    let sets = service
+        .run_ai_read(id, "SELECT 1 AS one")
+        .await
+        .expect("read after a failed read");
+    assert_eq!(sets[0].rows, vec![vec![Some("1".to_owned())]]);
+    if driver == Driver::Mssql {
+        compile_error_keeps_the_session(&service, id).await;
+    }
 
     if driver == Driver::Mysql {
         service
@@ -2587,6 +2682,16 @@ async fn ai_read_guard(config: ConnectionConfig) {
                 .to_string()
                 .contains("read-only")
         );
+        // Analyze runs the read in the guard too, so the write of `nextval` fails.
+        let error = service
+            .query_plan(id, "SELECT nextval('sqlpro_ai_seq')", true)
+            .await;
+        assert!(
+            error
+                .expect_err("read-only")
+                .to_string()
+                .contains("read-only")
+        );
         // The failed read left no transaction behind.
         service
             .run_ai_read(id, "SELECT 1")
@@ -2598,6 +2703,28 @@ async fn ai_read_guard(config: ConnectionConfig) {
             .expect("drop");
     }
     service.disconnect(id).await;
+}
+
+/// On SQL Server a compile error stops the whole guarded batch before `BEGIN TRAN` runs.
+/// The tab keeps its connection then, so a `#temp` table made before is still there.
+async fn compile_error_keeps_the_session(service: &ConnectionService, id: &str) {
+    service
+        .run_query(id, "CREATE TABLE #sqlpro_kept (a int)")
+        .await
+        .expect("temp table");
+    assert!(service.run_ai_read(id, "SELECT (1").await.is_err());
+    // A table that is there: a missing table is found only at run time.
+    let missing_column = "SELECT sqlpro_missing FROM sys.objects";
+    assert!(service.run_ai_read(id, missing_column).await.is_err());
+    assert!(service.query_plan(id, missing_column, true).await.is_err());
+    service
+        .run_query(id, "SELECT COUNT(*) FROM #sqlpro_kept")
+        .await
+        .expect("the temp table is still there");
+    service
+        .run_query(id, "DROP TABLE #sqlpro_kept")
+        .await
+        .expect("drop temp table");
 }
 
 /// A cancel stops a connect that hangs. Then no connection is kept for the tab.
