@@ -289,10 +289,10 @@ watch(sessionResult, clearSelection)
         <span class="message error" :title="session.error">{{ session.error }}</span>
       </template>
       <template v-else-if="session.busy">
-        <span class="dim">Working…</span>
+        <span class="dim">{{ session.busyText }}</span>
         <button
           v-if="session.cancellable"
-          title="Stop the running query (Esc)"
+          :title="session.backupProgress ? 'Stop the backup (Esc)' : 'Stop the running query (Esc)'"
           :disabled="session.cancelling"
           @click="session.cancel()"
         >

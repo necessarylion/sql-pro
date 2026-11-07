@@ -507,6 +507,20 @@ impl ExportFormat {
     }
 }
 
+/// How far a running backup is. The backend sends it about once per second.
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DumpProgress {
+    /// The size of the dump file so far.
+    pub bytes: u64,
+    /// The time since the backup started.
+    pub seconds: u64,
+    /// The table the dump tool works on now. None before the first table, and for `SQLite`.
+    pub table: Option<String>,
+    /// How many tables the dump tool has started, this one included.
+    pub tables: usize,
+}
+
 /// What to export, and where to write it.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

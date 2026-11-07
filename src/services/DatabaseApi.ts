@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core'
+import { Channel, invoke } from '@tauri-apps/api/core'
 import { emit, listen, type Event, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type {
@@ -17,6 +17,7 @@ import type {
   QueryStat,
   DbUser,
   Diagram,
+  DumpProgress,
   ExportRequest,
   NewColumn,
   NewForeignKey,
@@ -267,9 +268,20 @@ export class DatabaseApi {
     return invoke('truncate_table', { id, table })
   }
 
-  /** Writes a SQL dump of the current database to the file at `path`. */
-  dumpDatabase(id: string, path: string): Promise<void> {
-    return invoke('dump_database', { id, path })
+  /** Writes a SQL dump of the current database to the file at `path`. `onProgress` gets how far it is. */
+  dumpDatabase(
+    id: string,
+    path: string,
+    onProgress: (progress: DumpProgress) => void,
+  ): Promise<void> {
+    const progress = new Channel<DumpProgress>()
+    progress.onmessage = onProgress
+    return invoke('dump_database', { id, path, progress })
+  }
+
+  /** Stops the backup that runs now on tab `id`. It then fails with "Backup cancelled". */
+  cancelDump(id: string): Promise<void> {
+    return invoke('cancel_dump', { id })
   }
 
   /** Writes tables to a SQL or CSV file. It only reads from the database. */

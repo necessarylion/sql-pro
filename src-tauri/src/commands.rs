@@ -6,14 +6,15 @@
 use std::path::PathBuf;
 
 use tauri::State;
+use tauri::ipc::Channel;
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
     ConnectionConfig, CsvImport, CsvPreview, DataDiff, DataKinds, DbObject, DbProcess, Diagram,
-    ExportRequest, NewColumn, NewForeignKey, NewIndex, NewUser, Notes, QueryStat, ResultSet,
-    RowUpdate, RowsExport, RowsSql, SaveResult, SchemaChange, SyncSql, TableKeys, TablePage,
-    TableRef, UserList, Values,
+    DumpProgress, ExportRequest, NewColumn, NewForeignKey, NewIndex, NewUser, Notes, QueryStat,
+    ResultSet, RowUpdate, RowsExport, RowsSql, SaveResult, SchemaChange, SyncSql, TableKeys,
+    TablePage, TableRef, UserList, Values,
 };
 use crate::open_file::OpenedFiles;
 use crate::repository::PasswordRepository;
@@ -363,8 +364,23 @@ pub async fn truncate_table(service: Service<'_>, id: String, table: TableRef) -
 }
 
 #[tauri::command]
-pub async fn dump_database(service: Service<'_>, id: String, path: PathBuf) -> AppResult<()> {
-    service.dump_database(&id, &path).await
+pub async fn dump_database(
+    service: Service<'_>,
+    id: String,
+    path: PathBuf,
+    progress: Channel<DumpProgress>,
+) -> AppResult<()> {
+    service
+        .dump_database(&id, &path, |step| {
+            // The page may be gone. The backup goes on anyway.
+            let _ = progress.send(step);
+        })
+        .await
+}
+
+#[tauri::command]
+pub fn cancel_dump(service: Service<'_>, id: String) {
+    service.cancel_dump(&id);
 }
 
 #[tauri::command]

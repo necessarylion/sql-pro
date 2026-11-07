@@ -817,7 +817,17 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
             <span v-if="session.error" class="error failure">{{ session.error }}</span>
             <template v-else-if="session.busy">
               <LoaderCircleIcon :size="13" class="spin" />
-              Loading…
+              {{ session.backupProgress || 'Loading…' }}
+              <button
+                v-if="session.cancellable"
+                :title="
+                  session.backupProgress ? 'Stop the backup (Esc)' : 'Stop the running query (Esc)'
+                "
+                :disabled="session.cancelling"
+                @click="session.cancel()"
+              >
+                {{ session.cancelling ? 'Cancelling…' : 'Cancel' }}
+              </button>
             </template>
             <template v-else-if="session.status">{{ session.status }}</template>
             <template v-else-if="!session.table">Select a table</template>

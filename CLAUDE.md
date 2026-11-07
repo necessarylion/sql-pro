@@ -95,7 +95,9 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
     changing or dropping a column drops its default first.
   - Backup and the Users view are not there for SQL Server yet. See `TODO.md`.
 - **Backups** (`dump.rs`) run `mysqldump` / `pg_dump` or copy the SQLite file. Passwords go through
-  `MYSQL_PWD` / `PGPASSWORD`.
+  `MYSQL_PWD` / `PGPASSWORD`. The tools run with `--verbose`. `DumpLog` reads their stderr for the current
+  table and keeps only the real error lines. Progress (file size, time, table) goes to the frontend through a
+  `Channel` about once per second. `cancel_dump` kills the tool and deletes the `.part` file.
 - **AI notes** (`service/notes.rs`): each database has a `claude.md` file at
   `~/.sql-pro/<database>-<hash>/claude.md` (`~/.sql-pro-dev/` in a debug build). The hash (FNV-1a, 8 hex) is
   of driver, server host, port and database (SQLite: the file path), not the user. The user edits it in Ask AI. The AI adds facts to it (`remember`).

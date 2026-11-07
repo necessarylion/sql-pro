@@ -79,6 +79,12 @@ pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// What we add to the path of a dump while it is being written.
 pub const PARTIAL_DUMP_SUFFIX: &str = ".part";
 
+/// The error of a backup that the user cancelled.
+pub const BACKUP_CANCELLED: &str = "Backup cancelled";
+
+/// How often a running backup tells the frontend how far it is.
+pub const DUMP_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// The `MySQL` account host that means "from any host".
 pub const ANY_HOST: &str = "%";
 

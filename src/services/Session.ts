@@ -1,5 +1,6 @@
 import { markRaw } from 'vue'
 import {
+  BACKUP_CANCELLED_STATUS,
   DELETE_ROWS_TITLE,
   OBJECT_KIND_LABELS,
   PAGE_SIZE,
@@ -39,6 +40,7 @@ import type {
   QueryStat,
   DbUser,
   Diagram,
+  DumpProgress,
   CopyFormat,
   ExportFormat,
   ExportRequest,
@@ -97,6 +99,10 @@ export class Session {
   cancellable = false
   /** True after the user asked to cancel. The run then ends with a short status, not an error. */
   cancelling = false
+  /** The status after a cancel. It depends on what was cancelled. */
+  private cancelledStatus = QUERY_CANCELLED_STATUS
+  /** How far the running backup is, like `Backing up… 48 MB, 0:32`. '' = no backup runs. */
+  backupProgress = ''
   error = ''
   databases: string[] = []
   tables: TableRef[] = []
@@ -357,8 +363,10 @@ export class Session {
       return
     }
     this.cancelling = true
+    const backup = this.backupProgress !== ''
+    this.cancelledStatus = backup ? BACKUP_CANCELLED_STATUS : QUERY_CANCELLED_STATUS
     try {
-      await this.api.cancelQuery(this.id)
+      await (backup ? this.api.cancelDump(this.id) : this.api.cancelQuery(this.id))
     } catch (error) {
       this.cancelling = false
       this.error = String(error)
@@ -371,7 +379,7 @@ export class Session {
    */
   private endCancelled(): boolean {
     if (this.cancelling) {
-      this.status = QUERY_CANCELLED_STATUS
+      this.status = this.cancelledStatus
     }
     return this.cancelling
   }
@@ -1418,8 +1426,48 @@ export class Session {
 
   /** Writes a SQL dump of the current database to the file at `path`. */
   async backup(path: string): Promise<void> {
-    await this.api.dumpDatabase(this.id, path)
+    this.backupProgress = 'Backing up…'
+    this.cancellable = true
+    try {
+      await this.api.dumpDatabase(this.id, path, this.showBackupProgress.bind(this))
+    } finally {
+      this.backupProgress = ''
+      this.cancellable = false
+    }
+    // A cancel that came after the end did nothing. The file is saved.
+    this.cancelling = false
     this.status = `Backup saved to ${path}`
+  }
+
+  /** The busy text of the tab. A backup shows how far it is. */
+  get busyText(): string {
+    return this.backupProgress || 'Working…'
+  }
+
+  /** Shows the progress like `Backing up… 48 MB, 0:32 · Dumping table orders (12 of 40)`. */
+  showBackupProgress(progress: DumpProgress): void {
+    const minutes = Math.floor(progress.seconds / 60)
+    let text = `Backing up… ${this.sizeText(progress.bytes)}, ${minutes}:${this.two(progress.seconds % 60)}`
+    if (progress.table) {
+      // The tool may dump more tables than the list has, like the other schemas of PostgreSQL.
+      const total = this.tables.length
+      const count =
+        progress.tables <= total ? `${progress.tables} of ${total}` : `${progress.tables}`
+      text += ` · Dumping table ${progress.table} (${count})`
+    }
+    this.backupProgress = text
+  }
+
+  /** A file size like `512 KB`, `48 MB` or `1.2 GB`. */
+  private sizeText(bytes: number): string {
+    const mb = 1024 * 1024
+    if (bytes < mb) {
+      return `${Math.round(bytes / 1024)} KB`
+    }
+    if (bytes < 1024 * mb) {
+      return `${Math.round(bytes / mb)} MB`
+    }
+    return `${(bytes / (1024 * mb)).toFixed(1)} GB`
   }
 
   /** The columns of any table or view of the current database. */
