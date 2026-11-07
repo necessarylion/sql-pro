@@ -3294,7 +3294,53 @@ async fn mssql_key_types(service: &ConnectionService) {
     // `British` reads `2024-01-13` as year, day, month: day 2024-01, month 13 fails.
     run_all(service, DATA_TARGET, &["SET LANGUAGE British"]).await;
     sync_table(service, "data_time").await;
+
+    // Values too: British reads `2024-01-05` as the 1st of May, with no error.
+    data_table(
+        service,
+        "CREATE TABLE data_when (id INTEGER PRIMARY KEY, at DATETIME, s SMALLDATETIME)",
+        "INSERT INTO data_when VALUES (1, '2024-01-05T10:00:00', '2024-02-03T08:00:00'), \
+            (2, '2024-03-04T00:00:00.007', NULL)",
+        "INSERT INTO data_when VALUES (1, '2024-12-31T00:00:00', NULL)",
+    )
+    .await;
+    sync_table(service, "data_when").await;
+    let stored = target_cell(
+        service,
+        "SELECT STRING_AGG(CONCAT(id, '|', CONVERT(VARCHAR(23), at, 121), '|', \
+            ISNULL(CONVERT(VARCHAR(16), s, 121), 'null')), ',') WITHIN GROUP (ORDER BY id) \
+            FROM data_when",
+    )
+    .await;
+    assert_eq!(
+        stored.as_deref(),
+        Some("1|2024-01-05 10:00:00.000|2024-02-03 08:00,2|2024-03-04 00:00:00.007|null")
+    );
     run_all(service, DATA_TARGET, &["SET LANGUAGE us_english"]).await;
+
+    // An alias type over `varchar` is read as text of its code page: `€` and curly quotes.
+    for id in [DATA_SOURCE, DATA_TARGET] {
+        run_all(service, id, &["CREATE TYPE dbo.NameT FROM VARCHAR(20)"]).await;
+    }
+    data_table(
+        service,
+        "CREATE TABLE data_name (k dbo.NameT PRIMARY KEY, v dbo.NameT)",
+        "INSERT INTO data_name VALUES (N'€ key', N'price 5 €'), (N'“q”', N'‘x’')",
+        "INSERT INTO data_name VALUES (N'€ key', N'old'), (N'gone €', N'x')",
+    )
+    .await;
+    let diff = sync_table(service, "data_name").await;
+    assert_eq!(
+        (diff.delete_rows, diff.update_rows, diff.insert_rows),
+        (1, 1, 1)
+    );
+    let names = target_cell(
+        service,
+        "SELECT STRING_AGG(CONCAT(CAST(k AS NVARCHAR(20)), '=', CAST(v AS NVARCHAR(20))), ',') \
+            WITHIN GROUP (ORDER BY v) FROM data_name",
+    )
+    .await;
+    assert_eq!(names.as_deref(), Some("“q”=‘x’,€ key=price 5 €"));
 }
 
 /// Values that only some databases have trouble with: binary bytes that are not UTF-8,

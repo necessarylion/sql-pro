@@ -10,8 +10,8 @@ use sqlx::sqlite::{
 use sqlx::{AssertSqlSafe, Row as _, Sqlite, TypeInfo as _, ValueRef as _};
 
 use super::{
-    Repository, Statement, bytes_to_text, cell, collect, definition, double_quote, execute,
-    execute_all, foreign_keys, indexes, kind, literal, objects, pool_options, relations,
+    ColumnCast, Repository, Statement, bytes_to_text, cell, collect, definition, double_quote,
+    execute, execute_all, foreign_keys, indexes, kind, literal, objects, pool_options, relations,
     run_script, single, standard_columns,
 };
 use crate::constants::{SQLITE_CANCEL_CHECK_STEPS, SQLITE_FOREIGN_KEYS_FIXED};
@@ -121,7 +121,7 @@ impl Repository for SqliteRepository {
     /// `quote()` gives each value as a SQL literal of its own storage class. A quoted
     /// text would stay text in a column with no declared type, and a blob would break.
     /// No `AS` name, so `ORDER BY` and `WHERE` still mean the column, not the quoted text.
-    fn compare_column(&self, column: &ColumnInfo) -> (String, bool) {
+    fn compare_column(&self, column: &ColumnInfo, _cast: Option<&ColumnCast>) -> (String, bool) {
         (format!("quote({})", self.quote(&column.name)), true)
     }
 

@@ -365,19 +365,26 @@ pub trait Repository: Send + Sync {
 
     /// How data compare reads `column`: the select expression, and true when the value it
     /// gives is a SQL literal already, to write as it is. NULL stays NULL.
-    fn compare_column(&self, column: &ColumnInfo) -> (String, bool) {
+    /// `cast` is the entry of `column_casts` for the column.
+    fn compare_column(&self, column: &ColumnInfo, _cast: Option<&ColumnCast>) -> (String, bool) {
         (self.select_column(column), false)
     }
 
-    /// Per key column name of `table`, what `key_literal` needs to write a value that
-    /// compares like the column. Empty when a plain literal does that.
-    async fn key_casts(&self, _table: &TableRef) -> AppResult<HashMap<String, KeyCast>> {
+    /// Per column name of `table`, the system type and collation that `compare_column`,
+    /// `value_literal` and `key_literal` need. Empty when they need none.
+    async fn column_casts(&self, _table: &TableRef) -> AppResult<HashMap<String, ColumnCast>> {
         Ok(HashMap::new())
     }
 
     /// A key value as SQL that compares the way its column sorts in `ORDER BY`.
-    /// `cast` is the entry of `key_casts` for the column.
-    fn key_literal(&self, _cast: Option<&KeyCast>, value: &str) -> String {
+    /// `cast` is the entry of `column_casts` for the column.
+    fn key_literal(&self, _cast: Option<&ColumnCast>, value: &str) -> String {
+        self.literal(value)
+    }
+
+    /// A value as SQL for a column, in `INSERT` and `UPDATE`. `cast` is the entry of
+    /// `column_casts` for the column.
+    fn value_literal(&self, _cast: Option<&ColumnCast>, value: &str) -> String {
         self.literal(value)
     }
 
@@ -436,9 +443,9 @@ pub trait Repository: Send + Sync {
     }
 }
 
-/// The system type and the collation of a key column, from `Repository::key_casts`.
+/// The system type and the collation of a column, from `Repository::column_casts`.
 #[derive(Clone, Debug)]
-pub struct KeyCast {
+pub struct ColumnCast {
     /// The system type with its length, like `varchar(10)`. An alias type gives its base.
     pub data_type: String,
     /// The collation of a text column.

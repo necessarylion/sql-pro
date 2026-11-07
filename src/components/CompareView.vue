@@ -285,8 +285,8 @@ function isTableLevel(table: TableChanges): boolean {
         primary key. The target rows are changed to match the source rows.
       </p>
       <p v-else-if="data.diff.unsorted" class="empty error">
-        The two databases sort the key of this table in a different order (another collation). Rows
-        cannot be matched page by page, so this table cannot be compared.
+        Too many rows found no match. The two databases may sort the key of this table in a
+        different order (another collation), or more than 10 000 rows differ. No SQL is made.
       </p>
       <p v-else-if="data.diff.limited" class="empty error">
         There are more than 10 000 different rows, so no SQL is made. Copy this table another way,

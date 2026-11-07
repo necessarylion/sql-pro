@@ -16,7 +16,7 @@ use sqlx_sqlserver::{
 };
 
 use super::{
-    KeyCast, Repository, ServerId, Statement, cell, collect, definition, execute, execute_all,
+    ColumnCast, Repository, ServerId, Statement, cell, collect, definition, execute, execute_all,
     first_column, foreign_keys, hex, indexes, kind, objects, pool_options, relations,
     run_on_new_connection, run_script, single, standard_columns, swap_create,
 };
@@ -393,6 +393,13 @@ impl MssqlRepository {
     }
 
     /// The type name without its size, in lower case: `nvarchar(50)` gives `nvarchar`.
+    fn is_datetime(data_type: &str) -> bool {
+        matches!(
+            Self::base_type(data_type).as_str(),
+            "datetime" | "smalldatetime"
+        )
+    }
+
     fn base_type(data_type: &str) -> String {
         let end = data_type.find('(').unwrap_or(data_type.len());
         data_type[..end].trim().to_ascii_lowercase()
@@ -570,14 +577,31 @@ impl Repository for MssqlRepository {
     /// A `varchar` is read as `nvarchar`, so letters of any code page come out right
     /// (`single_byte_text` reads one byte as Latin-1). No `AS` name, so `ORDER BY`
     /// still sorts by the column.
-    fn compare_column(&self, column: &ColumnInfo) -> (String, bool) {
+    /// It decides on the base type, so an alias type over `varchar` is read right too.
+    fn compare_column(&self, column: &ColumnInfo, cast: Option<&ColumnCast>) -> (String, bool) {
+        let mut column = column.clone();
+        if let Some(cast) = cast {
+            cast.data_type.clone_into(&mut column.data_type);
+        }
         let base = Self::base_type(&column.data_type);
         if base == "varchar" || base == "char" {
             let name = self.quote(&column.name);
             return (format!("CAST({name} AS NVARCHAR(MAX))"), false);
         }
         let binary = BINARY_TYPES.contains(&base.as_str());
-        (self.select_column(column), binary)
+        (self.select_column(&column), binary)
+    }
+
+    /// `datetime` reads a text by the language of the session (British reads
+    /// `2024-01-05` as the 1st of May). Style 121 always reads it as year, month, day.
+    fn value_literal(&self, cast: Option<&ColumnCast>, value: &str) -> String {
+        let text = self.literal(value);
+        match cast {
+            Some(cast) if Self::is_datetime(&cast.data_type) => {
+                format!("CONVERT({}, {text}, 121)", cast.data_type)
+            }
+            _ => text,
+        }
     }
 
     /// An `N'…'` text would make a `varchar` key compare as `nvarchar`, which sorts
@@ -585,29 +609,27 @@ impl Repository for MssqlRepository {
     /// The text also takes the collation of the column. Without it, a `varchar` with
     /// another code page than the database turns the letters into `?`.
     /// `datetime` reads the text by the language of the session, so style 121 fixes it.
-    fn key_literal(&self, cast: Option<&KeyCast>, value: &str) -> String {
+    fn key_literal(&self, cast: Option<&ColumnCast>, value: &str) -> String {
         let text = self.literal(value);
         let Some(cast) = cast else {
             return text;
         };
         let kind = &cast.data_type;
-        match (Self::base_type(kind).as_str(), &cast.collation) {
-            ("datetime" | "smalldatetime", _) => format!("CONVERT({kind}, {text}, 121)"),
-            (_, Some(collation)) => format!("CAST({text} COLLATE {collation} AS {kind})"),
-            _ => format!("CAST({text} AS {kind})"),
+        match &cast.collation {
+            _ if Self::is_datetime(kind) => self.value_literal(Some(cast), value),
+            Some(collation) => format!("CAST({text} COLLATE {collation} AS {kind})"),
+            None => format!("CAST({text} AS {kind})"),
         }
     }
 
     /// The base system type (an alias type gives the type it is made from) and the
-    /// collation of each primary key column.
-    async fn key_casts(&self, table: &TableRef) -> AppResult<HashMap<String, KeyCast>> {
+    /// collation of each column.
+    async fn column_casts(&self, table: &TableRef) -> AppResult<HashMap<String, ColumnCast>> {
         let sql = format!(
             "SELECT c.name, TYPE_NAME(c.system_type_id), c.max_length, c.precision, c.scale, \
                 c.collation_name \
             FROM sys.columns c \
-            JOIN sys.index_columns ic ON ic.object_id = c.object_id AND ic.column_id = c.column_id \
-            JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id \
-            WHERE c.object_id = {} AND i.is_primary_key = 1",
+            WHERE c.object_id = {}",
             self.object_id(table)
         );
         let mut casts = HashMap::new();
@@ -636,7 +658,7 @@ impl Repository for MssqlRepository {
             });
             casts.insert(
                 cell(&row, 0),
-                KeyCast {
+                ColumnCast {
                     data_type,
                     collation,
                 },

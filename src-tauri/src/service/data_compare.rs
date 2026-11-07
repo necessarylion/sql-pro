@@ -15,7 +15,7 @@ use crate::constants::{
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{ColumnInfo, DataDiff, DataKinds, TableRef};
-use crate::repository::{KeyCast, Repository, Statement};
+use crate::repository::{ColumnCast, Repository, Statement};
 
 /// One row as the app reads it: every value as text, NULL as `None`.
 type Cells = Vec<Option<String>>;
@@ -239,12 +239,12 @@ struct Columns {
     /// Per side, how each column of `shared` is read, and true when the value read is
     /// already a SQL literal (`Repository::compare_column`).
     read: [Vec<(String, bool)>; 2],
-    /// Per side, how a key value is written (`Repository::key_casts`).
-    casts: [HashMap<String, KeyCast>; 2],
+    /// Per side, the system type and collation of each column (`Repository::column_casts`).
+    casts: [HashMap<String, ColumnCast>; 2],
 }
 
 impl Columns {
-    /// The value of column `index` of a row of `side` as SQL for the target.
+    /// The value of column `index` of a row of `side` as SQL for the target column.
     fn value(
         &self,
         target: &dyn Repository,
@@ -255,7 +255,10 @@ impl Columns {
         match cell {
             None => "NULL".to_owned(),
             Some(text) if self.read[side][index].1 => text.to_owned(),
-            Some(text) => target.literal(text),
+            Some(text) => {
+                let cast = self.casts[TARGET].get(&self.shared[index].1.name);
+                target.value_literal(cast, text)
+            }
         }
     }
 
@@ -317,15 +320,15 @@ impl ConnectionService {
             database: Self::current_database(to).await?,
             ..DataDiff::default()
         };
-        let mut columns = Self::shared_columns(
+        let (source_casts, target_casts) =
+            tokio::try_join!(from.column_casts(table), to.column_casts(table))?;
+        let columns = Self::shared_columns(
             &label,
             [from, to],
             [&source_columns, &target_columns],
+            [source_casts, target_casts],
             &mut diff,
         )?;
-        let (source_casts, target_casts) =
-            tokio::try_join!(from.key_casts(table), to.key_casts(table))?;
-        columns.casts = [source_casts, target_casts];
         let rows = Self::merge_rows([from, to], table, &label, &columns).await?;
         if rows.limited {
             diff.limited = true;
@@ -395,6 +398,7 @@ impl ConnectionService {
         label: &str,
         repositories: [&dyn Repository; 2],
         [source, target]: [&[ColumnInfo]; 2],
+        casts: [HashMap<String, ColumnCast>; 2],
         diff: &mut DataDiff,
     ) -> AppResult<Columns> {
         let source_key = Self::key_names(source);
@@ -422,7 +426,7 @@ impl ConnectionService {
             shared: Vec::new(),
             key: Vec::new(),
             read: [Vec::new(), Vec::new()],
-            casts: [HashMap::new(), HashMap::new()],
+            casts,
         };
         for wanted in source {
             let Some(found) = target.iter().find(|found| found.name == wanted.name) else {
@@ -440,8 +444,10 @@ impl ConnectionService {
                 diff.key.push(wanted.name.clone());
             }
             diff.columns.push(wanted.name.clone());
-            columns.read[SOURCE].push(repositories[SOURCE].compare_column(wanted));
-            columns.read[TARGET].push(repositories[TARGET].compare_column(found));
+            let cast = columns.casts[SOURCE].get(&wanted.name);
+            columns.read[SOURCE].push(repositories[SOURCE].compare_column(wanted, cast));
+            let cast = columns.casts[TARGET].get(&found.name);
+            columns.read[TARGET].push(repositories[TARGET].compare_column(found, cast));
             columns.shared.push((wanted.clone(), found.clone()));
         }
         for found in target {
