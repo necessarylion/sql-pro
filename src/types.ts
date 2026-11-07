@@ -57,7 +57,10 @@ export interface DbObject {
 
 /** The SQL definition that is shown in the place of a table. */
 export interface ObjectDefinition {
-  object: DbObject
+  /** null for a new object that is not saved yet. */
+  object: DbObject | null
+  kind: DbObjectKind
+  /** The SQL as it was last loaded or saved. The editor text is `Session.definitionText`. */
   sql: string
 }
 

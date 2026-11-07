@@ -32,7 +32,7 @@ pub use tunnel::SshTunnel;
 use crate::constants::{
     CANCEL_NOT_REACHED, CONNECT_TIMEOUT_SECONDS, DEAD_CONNECTION_SECONDS, LOCALHOST,
     MAX_QUERY_ROWS, NO_PROCESSES, NO_QUERY_STATS, NO_USER_ACCOUNTS, PASSWORD_ERROR_HIDDEN,
-    PROCEDURE, TRIGGER,
+    PROCEDURE, TRIGGER, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -153,6 +153,18 @@ pub trait Repository: Send + Sync {
     /// The statement that drops a trigger or routine from `objects`.
     fn drop_object_sql(&self, object: &DbObject) -> String {
         format!("DROP {} {}", keyword(object), self.object_name(object))
+    }
+
+    /// The statements that put `sql`, a full `CREATE` statement, in the place of `object`.
+    /// The default drops the old object and runs `sql`. The service runs them in one
+    /// transaction when `ddl_in_transaction` is true, so a failed `CREATE` keeps the old one.
+    fn replace_object_sql(&self, object: &DbObject, sql: &str) -> AppResult<Vec<String>> {
+        Ok(vec![self.drop_object_sql(object), sql.to_owned()])
+    }
+
+    /// True when `CREATE` and `DROP` can be rolled back inside a transaction.
+    fn ddl_in_transaction(&self) -> bool {
+        true
     }
 
     /// The full, quoted name of a trigger or routine.
@@ -799,10 +811,44 @@ fn objects(set: &ResultSet) -> Vec<DbObject> {
 /// The SQL word for the kind of a trigger or routine.
 fn keyword(object: &DbObject) -> &'static str {
     match object.kind.as_str() {
+        VIEW => "VIEW",
         TRIGGER => "TRIGGER",
         PROCEDURE => "PROCEDURE",
         _ => "FUNCTION",
     }
+}
+
+/// Where the first word of `sql` starts. Comments and spaces in front are skipped.
+/// Fails when that word is not `CREATE`.
+pub fn create_start(sql: &str) -> AppResult<usize> {
+    let mut rest = sql;
+    loop {
+        rest = rest.trim_start();
+        if let Some(comment) = rest.strip_prefix("--") {
+            rest = comment.split_once('\n').map_or("", |(_, after)| after);
+        } else if let Some(comment) = rest.strip_prefix("/*") {
+            rest = comment.split_once("*/").map_or("", |(_, after)| after);
+        } else {
+            break;
+        }
+    }
+    let word = rest.split(|c: char| !c.is_ascii_alphabetic()).next();
+    if word.is_some_and(|word| word.eq_ignore_ascii_case("CREATE")) {
+        return Ok(sql.len() - rest.len());
+    }
+    Err("The SQL must start with CREATE".into())
+}
+
+/// Puts `words` in the place of the first `CREATE` of `sql`, like `CREATE OR REPLACE`
+/// or `ALTER`. When it says `CREATE OR ...` already, `sql` stays as it is.
+pub fn swap_create(sql: &str, words: &str) -> AppResult<String> {
+    let start = create_start(sql)?;
+    let after = &sql[start + "CREATE".len()..];
+    let next = after.split_whitespace().next();
+    if next.is_some_and(|word| word.eq_ignore_ascii_case("OR")) {
+        return Ok(sql.to_owned());
+    }
+    Ok(format!("{}{words}{after}", &sql[..start]))
 }
 
 /// The first cell of the first row. Fails when it is missing or NULL.
@@ -901,8 +947,26 @@ mod tests {
 
     use sqlx::sqlite::SqlitePoolOptions;
 
-    use super::close_pool;
+    use super::{close_pool, create_start, swap_create};
     use crate::constants::DEAD_CONNECTION_SECONDS;
+
+    #[test]
+    fn swap_create_keeps_comments_and_or() {
+        let sql = "-- note\n/* x */ create view v AS SELECT 1";
+        assert_eq!(
+            swap_create(sql, "CREATE OR REPLACE").expect("swap"),
+            "-- note\n/* x */ CREATE OR REPLACE view v AS SELECT 1"
+        );
+        assert_eq!(
+            swap_create("CREATE PROC p AS SELECT 1", "ALTER").expect("swap"),
+            "ALTER PROC p AS SELECT 1"
+        );
+        let done = "CREATE OR REPLACE FUNCTION f() RETURNS int AS 'SELECT 1'";
+        assert_eq!(swap_create(done, "ALTER").expect("swap"), done);
+        assert!(swap_create("DROP VIEW v", "ALTER").is_err());
+        assert!(create_start("CREATED").is_err());
+        assert!(create_start("-- only a comment").is_err());
+    }
 
     /// A connection that never comes back (a hung read) must not make the close hang.
     #[tokio::test]

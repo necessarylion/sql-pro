@@ -3,6 +3,8 @@ import { expect, test } from 'bun:test'
 import type { DatabaseApi } from '../src/services/DatabaseApi'
 import { Session } from '../src/services/Session'
 import { FakePrompt } from './FakePrompt'
+import { DEFAULT_CONFIGS } from '../src/constants'
+import { OBJECT_TEMPLATES } from '../src/constants/objects'
 import type { DbObject, TablePage, TableRef } from '../src/types'
 
 const USERS: TableRef = { schema: null, name: 'users', kind: 'table' }
@@ -22,10 +24,20 @@ const FUNCTION: DbObject = {
   args: 'a integer',
 }
 
+const NEW_TRIGGER: DbObject = {
+  kind: 'trigger',
+  schema: null,
+  name: 'new_trigger',
+  table: 'users',
+  args: null,
+}
+
 class FakeApi {
   objects = [TRIGGER, FUNCTION]
   failObjects = false
   dropped: DbObject[] = []
+  saved: { object: DbObject | null; sql: string }[] = []
+  saveError = ''
 
   async listTables(): Promise<TableRef[]> {
     return [USERS, ACTIVE]
@@ -47,6 +59,16 @@ class FakeApi {
     this.objects = this.objects.filter(function (known) {
       return known.name !== object.name
     })
+  }
+
+  async saveObject(_id: string, object: DbObject | null, sql: string): Promise<void> {
+    if (this.saveError) {
+      throw this.saveError
+    }
+    this.saved.push({ object, sql })
+    if (!object) {
+      this.objects.push(NEW_TRIGGER)
+    }
   }
 
   async dropTable(): Promise<void> {}
@@ -129,4 +151,66 @@ test('dropping a view hides its definition', async function () {
   expect(session.definition?.sql).toBe('CREATE VIEW active_users')
   await session.dropTables([ACTIVE])
   expect(session.definition).toBeNull()
+})
+
+test('a changed definition is saved in place and the text stays on an error', async function () {
+  const { api, session } = await connected()
+  await session.showDefinition(TRIGGER)
+  expect(session.definitionChanged).toBe(false)
+  session.definitionText = 'CREATE TRIGGER audit AFTER UPDATE'
+  expect(session.definitionChanged).toBe(true)
+
+  api.saveError = 'syntax error'
+  expect(await session.run(session.saveDefinition())).toBe(false)
+  expect(session.error).toContain('syntax error')
+  expect(session.definitionText).toBe('CREATE TRIGGER audit AFTER UPDATE')
+  expect(session.definitionChanged).toBe(true)
+
+  api.saveError = ''
+  await session.saveDefinition()
+  expect(api.saved).toEqual([{ object: TRIGGER, sql: 'CREATE TRIGGER audit AFTER UPDATE' }])
+  expect(session.definitionChanged).toBe(false)
+  expect(session.status).toBe('Trigger saved')
+})
+
+test('a new object starts from the template of the driver and shows itself after the save', async function () {
+  const { api, session } = await connected()
+  session.config = { ...DEFAULT_CONFIGS.sqlite }
+  await session.newObject('trigger')
+  const template = OBJECT_TEMPLATES.sqlite.trigger ?? ''
+  expect(template).toContain('CREATE TRIGGER')
+  expect(session.definition?.object).toBeNull()
+  expect(session.definitionText).toBe(template)
+
+  await session.saveDefinition()
+  expect(api.saved).toEqual([{ object: null, sql: template }])
+  expect(session.objects).toContainEqual(NEW_TRIGGER)
+  expect(session.definition?.object).toEqual(NEW_TRIGGER)
+  expect(session.shows(NEW_TRIGGER)).toBe(true)
+})
+
+test('unsaved SQL asks before it is lost', async function () {
+  const { session, prompt } = await connected()
+  await session.showDefinition(TRIGGER)
+  session.definitionText = 'CREATE TRIGGER audit AFTER UPDATE'
+
+  prompt.answer = false
+  await session.showDefinition(FUNCTION)
+  expect(prompt.questions).toEqual(['You have unsaved SQL in "audit". Discard it?'])
+  expect(session.shows(TRIGGER)).toBe(true)
+  expect(session.definitionText).toBe('CREATE TRIGGER audit AFTER UPDATE')
+
+  prompt.answer = true
+  await session.selectTable(USERS)
+  expect(prompt.questions.length).toBe(2)
+  expect(session.definition).toBeNull()
+  expect(session.table).toEqual(USERS)
+})
+
+test('unchanged SQL goes without a question', async function () {
+  const { session, prompt } = await connected()
+  await session.newObject('view')
+  await session.showDefinition(TRIGGER)
+  expect(prompt.questions).toEqual([])
+  expect(session.shows(TRIGGER)).toBe(true)
 })

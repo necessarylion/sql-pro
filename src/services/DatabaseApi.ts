@@ -246,6 +246,14 @@ export class DatabaseApi {
     return invoke('object_definition', { id, object })
   }
 
+  /**
+   * Runs `sql`, the CREATE statement of a view, trigger or routine. With `object` it replaces
+   * that object. The backend picks the right way for each database. On an error the old one stays.
+   */
+  saveObject(id: string, object: DbObject | null, sql: string): Promise<void> {
+    return invoke('save_object', { id, object, sql })
+  }
+
   /** Drops a trigger or routine. A view is dropped with `dropTable`. */
   dropObject(id: string, object: DbObject): Promise<void> {
     return invoke('drop_object', { id, object })
