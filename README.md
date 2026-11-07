@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <a href="https://scorecard.dev/viewer/?uri=github.com/necessarylion/sql-pro"><img src="https://api.scorecard.dev/projects/github.com/necessarylion/sql-pro/badge" alt="OpenSSF Scorecard"></a>
+</p>
+
+<p align="center">
   <img src="docs/screenshot.png" width="900" alt="SQL Pro showing the rows of a table">
 </p>
 
