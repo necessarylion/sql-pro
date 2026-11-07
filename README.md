@@ -28,6 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/necessarylion/sql-pro/main/install.
 ```
 
 - macOS (Apple silicon and Intel): it puts `SQL Pro.app` in your Applications folder.
+- macOS with [Homebrew](https://brew.sh): you can also run `brew install --cask necessarylion/tap/sql-pro`.
 - Linux (64-bit Intel, AMD and ARM): it installs the `.deb` or the `.rpm` with the package manager of your system, and asks for your password. A system without `apt`, `dnf`, `yum` or `zypper` gets the AppImage in `~/.local/bin`.
 
 **Windows** (64-bit Intel, AMD and ARM), in PowerShell:
