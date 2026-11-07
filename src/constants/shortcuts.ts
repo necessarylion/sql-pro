@@ -8,7 +8,7 @@ export const SHORTCUT_KEYS: Record<string, ShortcutAction> = {
   i: 'detail',
   // Duplicates the selected rows of the Content view as new rows.
   d: 'duplicate',
-  // Opens the Settings dialog. On macOS the app menu has the same key.
+  // Opens the Settings window. On macOS the app menu has the same key.
   ',': 'settings',
 }
 

@@ -1106,8 +1106,8 @@ tbody tr.deleted td {
 }
 
 tbody tr.selected {
-  background: var(--accent);
-  color: var(--on-accent);
+  background: var(--selected);
+  color: var(--on-selected);
 }
 
 /* A selected row keeps a thin line on its left edge that tells what it is. */

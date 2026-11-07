@@ -8,6 +8,7 @@ pub mod model;
 mod open_file;
 pub mod repository;
 pub mod service;
+mod settings_window;
 mod updater;
 
 use std::sync::Arc;
@@ -115,6 +116,8 @@ pub fn run() {
             commands::load_password,
             commands::delete_password,
             commands::take_opened_files,
+            commands::open_settings_window,
+            commands::fit_settings_window,
         ])
         .build(tauri::generate_context!())
         .expect("error while running SQL Pro");
@@ -333,15 +336,11 @@ fn app_menu(handle: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri:
     Ok(menu)
 }
 
-/// "Settings…" in the app menu shows the window and opens the Settings dialog.
+/// "Settings…" in the app menu opens the Settings window.
 #[cfg(target_os = "macos")]
 #[allow(clippy::needless_pass_by_value)] // Tauri hands the event over by value.
 fn on_app_menu(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
-    use tauri::Emitter as _;
-
     if event.id.as_ref() == constants::SETTINGS_MENU_ID {
-        show_main_window(app);
-        // This only fails when the window is gone. Then there is nothing to open.
-        let _ = app.emit_to(MAIN_WINDOW, constants::OPEN_SETTINGS_EVENT, ());
+        settings_window::open(app);
     }
 }

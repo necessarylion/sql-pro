@@ -8,6 +8,12 @@ const host = process.env.TAURI_DEV_HOST
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue()],
+  // Two pages: the app, and the Settings window (a window of its own).
+  build: {
+    rollupOptions: {
+      input: { main: 'index.html', settings: 'settings.html' },
+    },
+  },
   // Do not hide Rust errors.
   clearScreen: false,
   // Tauri expects a fixed port.

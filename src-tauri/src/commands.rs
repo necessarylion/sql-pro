@@ -523,3 +523,21 @@ pub async fn delete_password(passwords: Passwords<'_>, id: String) -> AppResult<
 pub fn take_opened_files(files: State<'_, OpenedFiles>) -> Vec<PathBuf> {
     files.take()
 }
+
+/// Opens the Settings window, or brings it to the front when it is open.
+/// It is async, because Windows can hang when a sync command makes a window.
+#[tauri::command]
+pub async fn open_settings_window(app: tauri::AppHandle) {
+    crate::settings_window::open(&app);
+}
+
+/// The Settings page sends the height of its content. The window takes it and shows.
+#[tauri::command]
+pub async fn fit_settings_window(
+    window: tauri::WebviewWindow,
+    content_height: f64,
+    viewport_height: f64,
+) -> AppResult<()> {
+    crate::settings_window::fit(&window, content_height, viewport_height)
+        .map_err(|error| AppError::Message(error.to_string()))
+}

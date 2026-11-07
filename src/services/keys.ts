@@ -12,6 +12,7 @@ import type { PinnedTables } from './PinnedTables'
 import type { QueryHistory } from './QueryHistory'
 import type { SavedQueries } from './SavedQueries'
 import type { SessionManager } from './SessionManager'
+import type { SettingsWindow } from './SettingsWindow'
 import type { Shortcuts } from './Shortcuts'
 import type { ThemeService } from './ThemeService'
 import type { ZoomService } from './ZoomService'
@@ -24,6 +25,7 @@ export const THEME_SERVICE: InjectionKey<ThemeService> = Symbol('ThemeService')
 export const FONT_SERVICE: InjectionKey<FontService> = Symbol('FontService')
 export const LAYOUT_SERVICE: InjectionKey<LayoutService> = Symbol('LayoutService')
 export const ZOOM_SERVICE: InjectionKey<ZoomService> = Symbol('ZoomService')
+export const SETTINGS_WINDOW: InjectionKey<SettingsWindow> = Symbol('SettingsWindow')
 export const SHORTCUTS: InjectionKey<Shortcuts> = Symbol('Shortcuts')
 export const QUERY_HISTORY: InjectionKey<QueryHistory> = Symbol('QueryHistory')
 export const SAVED_QUERIES: InjectionKey<SavedQueries> = Symbol('SavedQueries')
