@@ -17,7 +17,7 @@ use sqlx_sqlserver::{
 use super::{
     Repository, ServerId, Statement, cell, collect, definition, execute, execute_all, first_column,
     foreign_keys, hex, indexes, kind, objects, pool_options, relations, run_on_new_connection,
-    run_script, single, standard_columns,
+    run_script, single, standard_columns, swap_create,
 };
 use crate::constants::{MSSQL_NO_QUERY_STATS, QUERY_CANCELLED, QUERY_STATS_LIMIT};
 use crate::error::{AppError, AppResult};
@@ -669,6 +669,12 @@ impl Repository for MssqlRepository {
             self.literal(&self.object_name(object))
         );
         definition(&single(self.query(&sql).await?), 0, &object.name)
+    }
+
+    /// `ALTER` keeps the rights on the object. It works on every version.
+    /// (`CREATE OR ALTER` needs SQL Server 2016 SP1.)
+    fn replace_object_sql(&self, _object: &DbObject, sql: &str) -> AppResult<Vec<String>> {
+        Ok(vec![swap_create(sql, "ALTER")?])
     }
 
     /// `ALTER COLUMN` needs the full type and null rule. A default is its own

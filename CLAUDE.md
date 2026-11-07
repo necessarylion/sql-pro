@@ -67,6 +67,10 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
   (`service/spare.rs`) that opens in the background. A new tab takes it, so it opens at once.
 - **`save_changes`** applies pending deletes, then updates, then inserts in one transaction
   (`Repository::execute_all`). This is the only write path for row data.
+- **`save_object`** creates a view, trigger or routine from the editor, or replaces one. How it replaces is in
+  `Repository::replace_object_sql`: `CREATE OR REPLACE` (PostgreSQL views/routines, MySQL views), `ALTER`
+  (SQL Server), else drop + create in one transaction. MySQL DDL commits by itself, so there the old statement
+  runs again when the new one fails.
 - Identifiers are quoted with the repository helpers. Column types and defaults in `add_column` / `create_table`
   are raw SQL from the user by design; only names are quoted.
 - **SSH tunnels** (`tunnel.rs`) run the system `ssh -N -L`. A password travels only in the environment of the

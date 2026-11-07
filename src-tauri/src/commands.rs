@@ -340,6 +340,17 @@ pub async fn object_definition(
     service.object_definition(&id, &object).await
 }
 
+/// `object` is `None` for a new object. Then `sql` creates it.
+#[tauri::command]
+pub async fn save_object(
+    service: Service<'_>,
+    id: String,
+    object: Option<DbObject>,
+    sql: String,
+) -> AppResult<()> {
+    service.save_object(&id, object.as_ref(), &sql).await
+}
+
 #[tauri::command]
 pub async fn drop_object(service: Service<'_>, id: String, object: DbObject) -> AppResult<()> {
     service.drop_object(&id, &object).await

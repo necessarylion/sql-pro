@@ -86,6 +86,9 @@ function onKey(event: KeyboardEvent): void {
     }
   } else if (action === 'refresh') {
     session.run(session.refresh())
+  } else if (session.definition && session.view !== 'query' && session.view !== 'ask') {
+    // The definition editor shows in the place of the Content view.
+    session.run(session.saveDefinition())
   } else if (session.view === 'content') {
     session.run(session.saveChanges())
   }

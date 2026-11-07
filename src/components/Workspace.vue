@@ -263,6 +263,21 @@ function closeObjectMenu(): void {
   objectMenu.value = null
 }
 
+/** The kinds of object this database can make. SQLite has no procedures or functions. */
+function newKinds(): DbObjectKind[] {
+  if (props.session.config?.driver === 'sqlite') {
+    return ['view', 'trigger']
+  }
+  return ['view', 'trigger', 'procedure', 'function']
+}
+
+/** Opens the definition editor with the starter SQL of a new object. */
+function newObject(kind: DbObjectKind): void {
+  closeMenu()
+  selection.clear()
+  props.session.run(props.session.newObject(kind))
+}
+
 /** Opens the SQL of the object in the Query view. */
 async function editObject(object: DbObject): Promise<void> {
   await props.session.showDefinition(object)
@@ -826,6 +841,14 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
       >
         <template v-if="!menu.table">
           <button role="menuitem" @click.stop="openDialog(null)">New table…</button>
+          <button
+            v-for="kind in newKinds()"
+            :key="kind"
+            role="menuitem"
+            @click.stop="newObject(kind)"
+          >
+            New {{ OBJECT_KIND_LABELS[kind].toLowerCase() }}
+          </button>
           <span class="menu-line" />
           <div class="has-submenu" @mouseenter="showSubmenu('import')" @mouseleave="hideSubmenu">
             <button
