@@ -89,6 +89,28 @@ const UNSUPPORTED_TYPE: &str = "unsupported TDS data type ";
 /// The first three groups are stored little-endian, the rest as it is.
 const GUID_ORDER: [usize; 16] = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
 
+/// The full `CREATE INDEX` of index `i` of `sys.indexes`. It keeps `UNIQUE`, `CLUSTERED`,
+/// `DESC`, the `INCLUDE` columns and the `WHERE` part. NULL for a kind other than a plain
+/// clustered or nonclustered index (like columnstore). Then the compare gives a warning.
+// ponytail: STRING_AGG needs SQL Server 2017. Use FOR XML PATH if older servers matter.
+const INDEX_DEFINITION_SQL: &str = "CASE WHEN i.type IN (1, 2) THEN CONVERT(nvarchar(max), \
+        'CREATE ' + CASE WHEN i.is_unique = 1 THEN 'UNIQUE ' ELSE '' END + i.type_desc \
+        + ' INDEX ' + QUOTENAME(i.name) + ' ON ' + QUOTENAME(OBJECT_SCHEMA_NAME(i.object_id)) \
+        + '.' + QUOTENAME(OBJECT_NAME(i.object_id)) + ' (' \
+        + (SELECT STRING_AGG(QUOTENAME(kc.name) + CASE WHEN k.is_descending_key = 1 \
+            THEN ' DESC' ELSE '' END, ', ') WITHIN GROUP (ORDER BY k.key_ordinal) \
+            FROM sys.index_columns k JOIN sys.columns kc ON kc.object_id = k.object_id \
+                AND kc.column_id = k.column_id \
+            WHERE k.object_id = i.object_id AND k.index_id = i.index_id \
+                AND k.is_included_column = 0) + ')' \
+        + COALESCE(' INCLUDE (' + (SELECT STRING_AGG(QUOTENAME(nc.name), ', ') \
+            WITHIN GROUP (ORDER BY n.index_column_id) \
+            FROM sys.index_columns n JOIN sys.columns nc ON nc.object_id = n.object_id \
+                AND nc.column_id = n.column_id \
+            WHERE n.object_id = i.object_id AND n.index_id = i.index_id \
+                AND n.is_included_column = 1) + ')', '') \
+        + COALESCE(' WHERE ' + i.filter_definition, '')) END";
+
 pub struct MssqlRepository {
     pool: MssqlPool,
     /// The settings of the pool. Cancel opens its own connection with them.
@@ -374,10 +396,12 @@ impl MssqlRepository {
     fn indexes_sql(&self, table: &TableRef) -> String {
         format!(
             "SELECT i.name, c.name, CASE WHEN i.is_unique = 1 THEN 'YES' ELSE 'NO' END, \
-                CASE WHEN i.is_primary_key = 1 THEN 'YES' ELSE 'NO' END, 'NO', \
+                CASE WHEN i.is_primary_key = 1 THEN 'YES' ELSE 'NO' END, \
+                CASE WHEN i.type IN (1, 2) THEN 'NO' ELSE 'YES' END, \
                 CASE WHEN i.has_filter = 1 THEN 'YES' ELSE 'NO' END, \
                 CASE WHEN i.is_unique_constraint = 1 OR i.is_primary_key = 1 \
-                    THEN 'YES' ELSE 'NO' END \
+                    THEN 'YES' ELSE 'NO' END, \
+                {INDEX_DEFINITION_SQL} \
             FROM sys.indexes i \
             JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
             JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
@@ -461,6 +485,10 @@ impl Repository for MssqlRepository {
 
     fn open_transaction_sql(&self) -> Option<&'static str> {
         Some("SELECT @@TRANCOUNT")
+    }
+
+    fn current_database_sql(&self) -> Option<&'static str> {
+        Some("SELECT DB_NAME()")
     }
 
     fn auto_increment(&self) -> &'static str {

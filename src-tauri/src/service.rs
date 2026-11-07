@@ -911,6 +911,7 @@ impl ConnectionService {
             expression: false,
             partial: false,
             constraint: false,
+            definition: None,
         };
         repository
             .query(&Self::index_sql(repository.as_ref(), table, &index))

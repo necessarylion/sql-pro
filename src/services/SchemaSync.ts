@@ -208,7 +208,13 @@ export class SchemaSync {
       return false
     }
     // The backend builds the SQL again and runs it only when it is still this SQL.
-    await this.api.runSchemaSync(source.id, target.id, this.picked, statements)
+    await this.api.runSchemaSync(
+      source.id,
+      target.id,
+      this.picked,
+      statements,
+      this.sql?.database ?? null,
+    )
     await target.loadTables()
     await this.compare(source, target)
     return true

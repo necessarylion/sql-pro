@@ -375,15 +375,17 @@ export class DatabaseApi {
 
   /**
    * Builds the sync SQL again on the backend and runs it on tab `target`, in one transaction
-   * where the database can. It refuses when the new SQL is not `reviewed`, the SQL the user saw.
+   * where the database can. It refuses when the new SQL is not `reviewed`, the SQL the user saw,
+   * or when the target tab works on another database than `database` now.
    */
   runSchemaSync(
     source: string,
     target: string,
     picked: string[],
     reviewed: string[],
+    database: string | null,
   ): Promise<void> {
-    return invoke('run_schema_sync', { source, target, picked, reviewed })
+    return invoke('run_schema_sync', { source, target, picked, reviewed, database })
   }
 
   savePassword(id: string, password: string): Promise<void> {

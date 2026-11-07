@@ -201,6 +201,14 @@ pub const COLUMN_RULE_CHANGED: &str =
 pub const COLUMN_RULE_NOT_COPIED: &str =
     "It is a generated column or has a rule the app cannot copy. Add it by hand.";
 
+/// The warning for a new table that has a generated column. The app cannot build it.
+pub const TABLE_NOT_COPIED: &str = "It has a generated column, which the app cannot copy. \
+    Create the table by hand. Its indexes and foreign keys are left out too.";
+
+/// The error when the target tab works on another database than when the SQL was made.
+pub const OTHER_DATABASE: &str = "The target tab works on another database than when the SQL \
+    was made. Nothing ran. Compare again.";
+
 /// The warning for a foreign key without a name. It cannot be dropped by name.
 pub const UNNAMED_FOREIGN_KEY: &str = "The foreign key has no name, so it cannot be changed here";
 

@@ -63,7 +63,7 @@ class FakeApi {
     for (const id of picked) {
       statements.push(`-- ${id}`)
     }
-    return { statements, warnings: [] }
+    return { statements, warnings: [], database: null }
   }
 
   async runSchemaSync(

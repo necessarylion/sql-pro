@@ -330,7 +330,8 @@ impl PostgresRepository {
                 CASE WHEN i.indpred IS NOT NULL THEN 'YES' ELSE 'NO' END, \
                 CASE WHEN EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid \
                     AND c.conrelid = i.indrelid AND c.contype IN ('p', 'u', 'x')) \
-                    THEN 'YES' ELSE 'NO' END \
+                    THEN 'YES' ELSE 'NO' END, \
+                pg_get_indexdef(i.indexrelid) \
             FROM pg_index i \
             JOIN pg_class ic ON ic.oid = i.indexrelid \
             CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(col, position) \
@@ -433,6 +434,10 @@ impl Repository for PostgresRepository {
             "bigint" => Some("bigserial"),
             _ => None,
         }
+    }
+
+    fn current_database_sql(&self) -> Option<&'static str> {
+        Some("SELECT current_database()")
     }
 
     fn auto_increment(&self) -> &'static str {

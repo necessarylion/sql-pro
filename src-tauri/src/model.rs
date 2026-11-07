@@ -158,6 +158,10 @@ pub struct IndexInfo {
     /// dropped with `DROP CONSTRAINT`, not with `DROP INDEX`.
     #[serde(skip)]
     pub constraint: bool,
+    /// The full `CREATE INDEX` statement, when the database can give it. It keeps the
+    /// index kind, the column order, `INCLUDE` columns, prefixes and the `WHERE` part.
+    #[serde(skip)]
+    pub definition: Option<String>,
 }
 
 /// One foreign key of a table: `columns` point at `ref_columns` of `ref_table`.
@@ -664,4 +668,7 @@ pub struct SyncSql {
     pub statements: Vec<String>,
     /// The picked differences that cannot be done in SQL here, with the reason.
     pub warnings: Vec<String>,
+    /// The database the target tab worked on when the SQL was made. `None` on `SQLite`.
+    /// The run sends it back, so SQL made for one database never runs on another.
+    pub database: Option<String>,
 }

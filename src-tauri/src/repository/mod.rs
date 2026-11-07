@@ -336,10 +336,20 @@ pub trait Repository: Send + Sync {
         )
     }
 
-    /// The default of `column` as a SQL expression, the way `ADD COLUMN` and
-    /// `SET DEFAULT` take it. Most databases list it like that already.
-    fn default_expression(&self, column: &ColumnInfo) -> Option<String> {
-        column.default.clone()
+    /// Makes the default of each column of `table` a SQL expression, the way `ADD COLUMN`
+    /// and `SET DEFAULT` take it. Most databases list it like that already.
+    async fn default_expressions(
+        &self,
+        _table: &TableRef,
+        _columns: &mut [ColumnInfo],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    /// SQL that gives the database the connection works on now. A typed `USE` changes it.
+    /// `None` when that cannot change (`SQLite`).
+    fn current_database_sql(&self) -> Option<&'static str> {
+        None
     }
 
     /// The type that makes its own number sequence, like `serial`, when `column` takes
@@ -765,7 +775,8 @@ fn relations(keys: &ResultSet, unique: &ResultSet) -> Vec<Relation> {
 }
 
 /// Builds indexes from rows shaped as: name, column, unique (YES/NO), primary (YES/NO),
-/// and when the database can tell: expression, partial, constraint (all YES/NO).
+/// and when the database can tell: expression, partial, constraint (all YES/NO) and
+/// the full `CREATE INDEX` statement.
 /// An empty column also counts as an expression.
 /// The rows of one index must follow each other, in column order.
 fn indexes(set: &ResultSet) -> Vec<IndexInfo> {
@@ -782,6 +793,7 @@ fn indexes(set: &ResultSet) -> Vec<IndexInfo> {
                 expression: false,
                 partial: cell(row, 5) == "YES",
                 constraint: cell(row, 6) == "YES",
+                definition: row.get(7).cloned().flatten(),
             });
         }
         if let Some(index) = indexes.last_mut() {

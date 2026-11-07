@@ -11,8 +11,8 @@ use super::ConnectionService;
 use super::claude::dialect;
 use super::export::Exporter;
 use crate::constants::{
-    COLUMN_RULE_CHANGED, COLUMN_RULE_NOT_COPIED, EXPRESSION_INDEX, PARTIAL_INDEX,
-    SQLITE_AUTO_INDEX, SYNC_SQL_CHANGED, UNNAMED_FOREIGN_KEY, VIEW,
+    COLUMN_RULE_CHANGED, COLUMN_RULE_NOT_COPIED, EXPRESSION_INDEX, OTHER_DATABASE, PARTIAL_INDEX,
+    SQLITE_AUTO_INDEX, SYNC_SQL_CHANGED, TABLE_NOT_COPIED, UNNAMED_FOREIGN_KEY, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -234,6 +234,7 @@ impl SchemaCompare {
         for change in changes {
             let table = &change.info.table;
             match &change.diff {
+                Diff::CreateTable(schema) if !Self::can_create(schema, rules) => {}
                 Diff::CreateTable(schema) => created.push(schema),
                 Diff::DropTable(schema) => {
                     // Its foreign keys go first. Two dropped tables may point at each other.
@@ -258,7 +259,7 @@ impl SchemaCompare {
                 Diff::AlterIndex { old, new } => {
                     // The new one cannot be made in SQL here. So the old one stays too,
                     // and only the warning of the new one shows.
-                    if !new.expression && !new.partial {
+                    if Self::can_make(new) {
                         steps.push(Step::DropIndex(table.clone(), old.clone()));
                     }
                     steps.push(Step::AddIndex(table.clone(), new.clone()));
@@ -287,6 +288,41 @@ impl SchemaCompare {
         // A stable sort, so the new tables keep the order of `creation_order`.
         steps.sort_by_key(Step::phase);
         steps
+    }
+
+    /// The warnings of the picked changes that `plan` leaves out, because no SQL can do them.
+    /// A new table that cannot be made also takes its indexes and foreign keys with it.
+    pub fn skipped(changes: &[&Change], rules: SyncRules) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for change in changes {
+            if let Diff::CreateTable(schema) = &change.diff
+                && !Self::can_create(schema, rules)
+            {
+                warnings.push(format!(
+                    "Create table {}: {TABLE_NOT_COPIED}",
+                    Self::label(&schema.table)
+                ));
+            }
+        }
+        warnings
+    }
+
+    /// False when the app would build the `CREATE TABLE` and the table has a generated
+    /// column. The build would write its expression as a default, which is wrong.
+    /// The app builds it exactly where the database's own `CREATE TABLE` (with the
+    /// foreign keys inside) is not there: `PostgreSQL` and SQL Server.
+    fn can_create(schema: &TableSchema, rules: SyncRules) -> bool {
+        rules.create_has_foreign_keys
+            || !schema
+                .columns
+                .iter()
+                .any(|column| column.extra == "generated")
+    }
+
+    /// True when SQL can make the index: the database gave its full `CREATE INDEX`, or it
+    /// has only plain columns and no `WHERE` part.
+    fn can_make(index: &IndexInfo) -> bool {
+        index.definition.is_some() || (!index.expression && !index.partial)
     }
 
     /// The new tables, with a table before the new tables whose foreign keys point at it.
@@ -375,7 +411,11 @@ impl SchemaCompare {
                     Self::index_text(wanted),
                     Diff::AddIndex((*wanted).clone()),
                 )),
-                Some(found) if found.columns != wanted.columns || found.unique != wanted.unique => {
+                Some(found)
+                    if found.columns != wanted.columns
+                        || found.unique != wanted.unique
+                        || found.definition != wanted.definition =>
+                {
                     changes.push(Self::change(
                         table,
                         &wanted.name,
@@ -534,7 +574,11 @@ impl SchemaCompare {
     }
 
     /// Like `UNIQUE (a, b)`.
+    /// The full `CREATE INDEX` when the database gives one.
     fn index_text(index: &IndexInfo) -> String {
+        if let Some(definition) = &index.definition {
+            return definition.clone();
+        }
         let unique = if index.unique { "UNIQUE " } else { "" };
         format!("{unique}({})", index.columns.join(", "))
     }
@@ -588,8 +632,13 @@ impl ConnectionService {
             .collect();
         let from = self.repository(source)?;
         let to = self.repository(target)?;
-        let mut sql = SyncSql::default();
-        for step in SchemaCompare::plan(&chosen, SyncRules::of(driver)) {
+        let rules = SyncRules::of(driver);
+        let mut sql = SyncSql {
+            statements: Vec::new(),
+            warnings: SchemaCompare::skipped(&chosen, rules),
+            database: Self::current_database(to.as_ref()).await?,
+        };
+        for step in SchemaCompare::plan(&chosen, rules) {
             match Self::step_sql(from.as_ref(), to.as_ref(), &step).await {
                 Ok(statements) => sql.statements.extend(statements),
                 Err(error) => sql.warnings.push(format!("{}: {error}", step.label())),
@@ -602,6 +651,8 @@ impl ConnectionService {
     /// `target` in one transaction, so a failure keeps nothing. No SQL text comes from
     /// the frontend. `reviewed` is the SQL the user saw. When the new SQL is not the same
     /// (a tab changed its database, or someone changed a schema), nothing runs.
+    /// `database` is the target database of the reviewed SQL. When the target tab works on
+    /// another one now (a typed `USE`), nothing runs either.
     /// `MySQL` commits each `CREATE`, `ALTER` and `DROP` by itself. There a failure keeps
     /// the statements before it.
     pub async fn run_schema_sync(
@@ -610,8 +661,12 @@ impl ConnectionService {
         target: &str,
         picked: &[String],
         reviewed: &[String],
+        database: Option<&str>,
     ) -> AppResult<()> {
         let sql = self.schema_sync_sql(source, target, picked).await?;
+        if sql.database.as_deref() != database {
+            return Err(OTHER_DATABASE.into());
+        }
         if sql.statements != reviewed {
             return Err(SYNC_SQL_CHANGED.into());
         }
@@ -627,6 +682,20 @@ impl ConnectionService {
             });
         }
         self.repository(target)?.run_script(script).await
+    }
+
+    /// The database the connection works on now. `None` when that cannot change (`SQLite`).
+    async fn current_database(repository: &dyn Repository) -> AppResult<Option<String>> {
+        let Some(sql) = repository.current_database_sql() else {
+            return Ok(None);
+        };
+        let sets = repository.query(sql).await?;
+        Ok(sets
+            .into_iter()
+            .next()
+            .and_then(|set| set.rows.into_iter().next())
+            .and_then(|row| row.into_iter().next())
+            .flatten())
     }
 
     /// The differences of the two tabs, and the kind of database they both use.
@@ -660,9 +729,7 @@ impl ConnectionService {
                 continue;
             }
             let mut columns = repository.columns(&table).await?;
-            for column in &mut columns {
-                column.default = repository.default_expression(column);
-            }
+            repository.default_expressions(&table, &mut columns).await?;
             let keys = repository.table_keys(&table).await?;
             tables.push(TableSchema {
                 table,
@@ -722,6 +789,10 @@ impl ConnectionService {
                     .await?
             }
             Step::AddIndex(table, index) => {
+                // The database's own statement keeps the kind, order, `INCLUDE` and `WHERE`.
+                if let Some(definition) = &index.definition {
+                    return Ok(vec![definition.clone()]);
+                }
                 if index.expression {
                     return Err(EXPRESSION_INDEX.into());
                 }
@@ -783,6 +854,7 @@ mod tests {
             expression: false,
             partial: false,
             constraint: false,
+            definition: None,
         }
     }
 
@@ -814,6 +886,7 @@ mod tests {
                 expression: false,
                 partial: false,
                 constraint: true,
+                definition: None,
             }],
             foreign_keys: Vec::new(),
         }
@@ -1069,5 +1142,30 @@ mod tests {
             phases(&steps),
             vec!["Create table z_parent", "Create table a_child"]
         );
+    }
+
+    #[test]
+    fn a_new_table_with_a_generated_column_is_only_a_warning_on_postgres() {
+        let mut total = column("total", "int", true);
+        total.extra = "generated".to_owned();
+        let mut source = schema("orders", vec![total]);
+        source
+            .indexes
+            .push(index("orders_total", &["total"], false));
+        let changes = SchemaCompare::diff(&[source], &[]);
+        let all: Vec<&Change> = changes.iter().collect();
+        let postgres = SyncRules::of(Driver::Postgres);
+        assert!(SchemaCompare::plan(&all, postgres).is_empty());
+        assert_eq!(
+            SchemaCompare::skipped(&all, postgres),
+            vec![format!("Create table orders: {TABLE_NOT_COPIED}")]
+        );
+        // MySQL copies its own `CREATE TABLE`, which keeps the generated column.
+        let mysql = SyncRules::of(Driver::Mysql);
+        assert_eq!(
+            phases(&SchemaCompare::plan(&all, mysql)),
+            vec!["Create table orders"]
+        );
+        assert_eq!(SchemaCompare::skipped(&all, mysql), Vec::<String>::new());
     }
 }

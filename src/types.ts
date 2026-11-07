@@ -533,4 +533,6 @@ export interface SyncSql {
   statements: string[]
   /** The picked differences that cannot be done in SQL here, with the reason. */
   warnings: string[]
+  /** The database of the target tab when the SQL was made. Null on SQLite. */
+  database: string | null
 }

@@ -2607,12 +2607,13 @@ async fn run_all(service: &ConnectionService, id: &str, statements: &[&str]) {
 /// Makes the target like the source with schema compare, in two rounds: first only the
 /// new table, then all the rest. In the end the compare finds no difference.
 /// `SQLite` cannot change a column, so there the shared column is the same on both sides.
-/// `PostgreSQL` also copies a `serial` table with a `UNIQUE` column. Its index on an
-/// expression cannot be copied, so it stays as the one difference with a warning.
+/// `PostgreSQL` also copies a `serial` table with a `UNIQUE` column and an index on an
+/// expression. That index is copied from the statement `pg_get_indexdef` gives.
 #[allow(clippy::too_many_lines, reason = "one end-to-end flow")]
 async fn schema_sync(service: &ConnectionService, driver: Driver) {
     let sqlite = driver == Driver::Sqlite;
     let postgres = driver == Driver::Postgres;
+    let mysql = driver == Driver::Mysql;
     let mut source = vec![
         "CREATE TABLE sync_parent (id INTEGER PRIMARY KEY, name VARCHAR(40) NOT NULL, \
             note VARCHAR(10) DEFAULT 'it''s')",
@@ -2624,7 +2625,25 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
         source.push("CREATE TABLE sync_serial (id SERIAL PRIMARY KEY, email VARCHAR(40) UNIQUE)");
         source.push("CREATE INDEX sync_serial_lower ON sync_serial (lower(email))");
     }
+    // MySQL and MariaDB: an expression default, a text default that looks like a number
+    // word, and indexes with a prefix, DESC and FULLTEXT.
+    if mysql {
+        source.push(
+            "CREATE TABLE sync_extra (id INTEGER PRIMARY KEY, body TEXT, \
+                code VARCHAR(36) DEFAULT (concat('a', 'b')), label VARCHAR(10) DEFAULT 'inf')",
+        );
+        source.push("CREATE INDEX sync_extra_body ON sync_extra (body(20), label DESC)");
+        source.push("CREATE FULLTEXT INDEX sync_extra_text ON sync_extra (body)");
+    }
     run_all(service, SYNC_SOURCE, &source).await;
+    if mysql {
+        run_all(
+            service,
+            SYNC_TARGET,
+            &["CREATE TABLE sync_extra (id INTEGER PRIMARY KEY, body TEXT)"],
+        )
+        .await;
+    }
     // SQLite cannot drop a column with a UNIQUE constraint. The others drop the
     // constraint first. It owns an index, which `DROP INDEX` cannot drop.
     let parent = if sqlite {
@@ -2671,6 +2690,15 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
     if postgres {
         expected.push("CreateTable sync_serial ");
     }
+    if mysql {
+        let extra = [
+            "AddColumn sync_extra code",
+            "AddColumn sync_extra label",
+            "AddIndex sync_extra sync_extra_body",
+            "AddIndex sync_extra sync_extra_text",
+        ];
+        expected.splice(1..1, extra);
+    }
     assert_eq!(found, expected);
 
     // Round one: only the new table. The SQL is only made here, so nothing changed yet.
@@ -2691,7 +2719,13 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
     // SQL that is not what the backend builds now never runs.
     let other = ["DROP TABLE sync_parent".to_owned()];
     let refused = service
-        .run_schema_sync(SYNC_SOURCE, SYNC_TARGET, &create, &other)
+        .run_schema_sync(
+            SYNC_SOURCE,
+            SYNC_TARGET,
+            &create,
+            &other,
+            sql.database.as_deref(),
+        )
         .await;
     assert_eq!(
         refused.expect_err("other sql").to_string(),
@@ -2701,7 +2735,13 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
     assert!(tables.iter().any(|table| table.name == "sync_parent"));
 
     service
-        .run_schema_sync(SYNC_SOURCE, SYNC_TARGET, &create, &sql.statements)
+        .run_schema_sync(
+            SYNC_SOURCE,
+            SYNC_TARGET,
+            &create,
+            &sql.statements,
+            sql.database.as_deref(),
+        )
         .await
         .expect("run round one");
     let rest = service
@@ -2717,17 +2757,15 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
         .schema_sync_sql(SYNC_SOURCE, SYNC_TARGET, &ids)
         .await
         .expect("sync sql");
-    let warned: Vec<&str> = if postgres {
-        vec![
-            "Add index sync_serial_lower to sync_serial: \
-            It is built on an expression. Copy it by hand.",
-        ]
-    } else {
-        Vec::new()
-    };
-    assert_eq!(sql.warnings, warned);
+    assert!(sql.warnings.is_empty(), "{:?}", sql.warnings);
     service
-        .run_schema_sync(SYNC_SOURCE, SYNC_TARGET, &ids, &sql.statements)
+        .run_schema_sync(
+            SYNC_SOURCE,
+            SYNC_TARGET,
+            &ids,
+            &sql.statements,
+            sql.database.as_deref(),
+        )
         .await
         .expect("run round two");
     let left = service
@@ -2738,12 +2776,7 @@ async fn schema_sync(service: &ConnectionService, driver: Driver) {
     for change in &left {
         found.push(format!("{:?} {}", change.action, change.name));
     }
-    let wanted: Vec<&str> = if postgres {
-        vec!["AddIndex sync_serial_lower"]
-    } else {
-        Vec::new()
-    };
-    assert_eq!(found, wanted);
+    assert_eq!(found, Vec::<String>::new());
     if postgres {
         // The serial column works: a new row gets its number.
         run_all(
