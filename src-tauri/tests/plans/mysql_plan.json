@@ -1,0 +1,72 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "2656.75"
+    },
+    "ordering_operation": {
+      "using_filesort": true,
+      "grouping_operation": {
+        "using_temporary_table": true,
+        "using_filesort": false,
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "o",
+              "access_type": "ALL",
+              "possible_keys": [
+                "orders_customer"
+              ],
+              "rows_examined_per_scan": 19500,
+              "rows_produced_per_join": 1950,
+              "filtered": "10.00",
+              "cost_info": {
+                "read_cost": "1779.25",
+                "eval_cost": "195.00",
+                "prefix_cost": "1974.25",
+                "data_read_per_join": "106K"
+              },
+              "used_columns": [
+                "id",
+                "customer_id",
+                "total",
+                "status"
+              ],
+              "attached_condition": "((`shop`.`o`.`status` = 'paid') and (`shop`.`o`.`customer_id` is not null))"
+            }
+          },
+          {
+            "table": {
+              "table_name": "c",
+              "access_type": "eq_ref",
+              "possible_keys": [
+                "PRIMARY"
+              ],
+              "key": "PRIMARY",
+              "used_key_parts": [
+                "id"
+              ],
+              "key_length": "4",
+              "ref": [
+                "shop.o.customer_id"
+              ],
+              "rows_examined_per_scan": 1,
+              "rows_produced_per_join": 1950,
+              "filtered": "100.00",
+              "cost_info": {
+                "read_cost": "487.50",
+                "eval_cost": "195.00",
+                "prefix_cost": "2656.75",
+                "data_read_per_join": "624K"
+              },
+              "used_columns": [
+                "id",
+                "city"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

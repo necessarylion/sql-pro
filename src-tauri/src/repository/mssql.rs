@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike as _};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sqlx::error::BoxDynError;
+use sqlx::pool::PoolConnection;
 use sqlx::{AssertSqlSafe, Decode, Row as _, ValueRef as _};
 use sqlx_sqlserver::{
     Mssql, MssqlConnectOptions, MssqlConnection, MssqlPool, MssqlQueryResult, MssqlRow, MssqlType,
@@ -24,7 +25,7 @@ use crate::constants::{MSSQL_NO_QUERY_STATS, QUERY_CANCELLED, QUERY_STATS_LIMIT}
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, ForeignKey, IndexInfo,
-    Relation, ResultSet, SslMode, TableKeys, TableRef,
+    PlanFormat, PlanSql, Relation, ResultSet, SslMode, TableKeys, TableRef,
 };
 
 /// The schema a name without a schema lands in.
@@ -235,6 +236,12 @@ impl MssqlRepository {
             return Ok(None);
         }
         Self::text(value).map(Some).map_err(sqlx::Error::Decode)
+    }
+
+    /// Runs one batch on `connection`.
+    async fn batch(connection: &mut PoolConnection<Mssql>, sql: &str) -> AppResult<Vec<ResultSet>> {
+        let stream = sqlx::raw_sql(AssertSqlSafe(sql.to_owned())).fetch_many(&mut **connection);
+        collect::<Mssql>(stream, Self::read, MssqlQueryResult::rows_affected).await
     }
 
     /// The driver cannot read some column types, like `xml`. Its error then says
@@ -494,13 +501,31 @@ impl Repository for MssqlRepository {
     }
 
     /// SQL Server has no read-only transaction. The transaction is always rolled back,
-    /// so a write inside it does not stay.
+    /// so a write inside it does not stay. A compile error stops the whole batch before
+    /// `BEGIN TRAN` runs. The `IF` lets the end run again after that without an error,
+    /// so a healthy connection is kept (see `query_steps`).
     fn read_only_guard(&self) -> (&'static str, &'static str) {
-        ("BEGIN TRAN", "ROLLBACK")
+        ("BEGIN TRAN", "IF @@TRANCOUNT > 0 ROLLBACK")
     }
 
     fn open_transaction_sql(&self) -> Option<&'static str> {
         Some("SELECT @@TRANCOUNT")
+    }
+
+    /// `SET SHOWPLAN_XML` must be alone in its batch. Both settings stay on for the
+    /// connection, so `after` turns them off again, also when the statement failed.
+    async fn plan_sql(&self, statement: &str, analyze: bool) -> AppResult<Option<PlanSql>> {
+        let (before, after) = if analyze {
+            ("SET STATISTICS XML ON", "SET STATISTICS XML OFF")
+        } else {
+            ("SET SHOWPLAN_XML ON", "SET SHOWPLAN_XML OFF")
+        };
+        Ok(Some(PlanSql {
+            before: Some(before),
+            sql: statement.to_owned(),
+            after: Some(after),
+            format: PlanFormat::MssqlXml,
+        }))
     }
 
     fn current_database_sql(&self) -> Option<&'static str> {
@@ -700,17 +725,59 @@ impl Repository for MssqlRepository {
     /// Runs on the one connection of the pool. When a cancel ended its session,
     /// that connection is let go, so the next query opens a new one.
     async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>> {
+        self.query_steps(&[sql], &[], &[]).await
+    }
+
+    /// All steps run on one connection of the pool. `SET SHOWPLAN_XML` must be alone in its
+    /// batch and stays on for the connection, so this keeps other queries of the tab out
+    /// while it is on. A failed step alone keeps the connection: it may hold a transaction of
+    /// the user. When a cleanup step fails too, or a cancel ended the session, the connection
+    /// is let go, and the next query opens a new one. So no setting stays on. An error inside
+    /// the `BEGIN TRAN` guard can leave the connection unusable (error 3971): then the
+    /// `ROLLBACK` fails, and the connection is let go.
+    async fn query_steps(
+        &self,
+        steps: &[&str],
+        on_error: &[&str],
+        always: &[&str],
+    ) -> AppResult<Vec<ResultSet>> {
         let mut connection = self.pool.acquire().await?;
         self.cancelled.store(false, Ordering::SeqCst);
         self.running.store(true, Ordering::SeqCst);
-        let stream = sqlx::raw_sql(AssertSqlSafe(sql.to_owned())).fetch_many(&mut *connection);
-        let result = collect::<Mssql>(stream, Self::read, MssqlQueryResult::rows_affected).await;
-        self.running.store(false, Ordering::SeqCst);
-        if self.cancelled.swap(false, Ordering::SeqCst) && result.is_err() {
-            drop(connection.detach());
-            return Err(QUERY_CANCELLED.into());
+        let mut sets = Vec::new();
+        let mut result = Ok(());
+        for step in steps {
+            match Self::batch(&mut connection, step).await {
+                Ok(mut more) => sets.append(&mut more),
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
         }
-        result.map_err(Self::readable)
+        self.running.store(false, Ordering::SeqCst);
+        if self.cancelled.swap(false, Ordering::SeqCst) {
+            // The `KILL` ends the session, also when it comes after the last step.
+            drop(connection.detach());
+            if result.is_err() || !always.is_empty() {
+                return Err(QUERY_CANCELLED.into());
+            }
+            return Ok(sets);
+        }
+        let cleanup = if result.is_ok() {
+            always.to_vec()
+        } else {
+            [on_error, always].concat()
+        };
+        for step in cleanup {
+            if let Err(error) = Self::batch(&mut connection, step).await {
+                // The first error is the one the user needs to see.
+                result = result.and(Err(error));
+                drop(connection.detach());
+                break;
+            }
+        }
+        result.map(|()| sets).map_err(Self::readable)
     }
 
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64> {

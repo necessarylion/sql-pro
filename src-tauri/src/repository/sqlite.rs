@@ -14,11 +14,11 @@ use super::{
     execute, execute_all, foreign_keys, indexes, kind, literal, objects, pool_options, relations,
     run_script, single, standard_columns,
 };
-use crate::constants::{SQLITE_CANCEL_CHECK_STEPS, SQLITE_FOREIGN_KEYS_FIXED};
+use crate::constants::{SQLITE_CANCEL_CHECK_STEPS, SQLITE_FOREIGN_KEYS_FIXED, SQLITE_NO_ANALYZE};
 use crate::error::AppResult;
 use crate::model::{
-    ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, ForeignKey, IndexInfo, Relation, ResultSet,
-    TableRef,
+    ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, ForeignKey, IndexInfo, PlanFormat, PlanSql,
+    Relation, ResultSet, TableRef,
 };
 
 const TABLES_SQL: &str = "SELECT name, type FROM sqlite_master \
@@ -131,6 +131,19 @@ impl Repository for SqliteRepository {
 
     fn explain_prefix(&self) -> Option<&'static str> {
         Some("EXPLAIN QUERY PLAN")
+    }
+
+    /// `SQLite` has no real times, so there is no analyze.
+    async fn plan_sql(&self, statement: &str, analyze: bool) -> AppResult<Option<PlanSql>> {
+        if analyze {
+            return Err(SQLITE_NO_ANALYZE.into());
+        }
+        Ok(Some(PlanSql {
+            before: None,
+            sql: format!("EXPLAIN QUERY PLAN {statement}"),
+            after: None,
+            format: PlanFormat::SqliteRows,
+        }))
     }
 
     /// `SQLite` has no TRUNCATE. A DELETE without WHERE does the same.

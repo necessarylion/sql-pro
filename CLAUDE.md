@@ -73,6 +73,13 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
   runs again when the new one fails.
 - Identifiers are quoted with the repository helpers. Column types and defaults in `add_column` / `create_table`
   are raw SQL from the user by design; only names are quoted.
+- **Query plan** (`service/query_plan.rs`): Explain and Analyze show one shared `PlanNode` tree
+  (`model.rs`). `Repository::plan_sql` gives the plan SQL of each database: PostgreSQL
+  `EXPLAIN (FORMAT JSON)`, MySQL / MariaDB `EXPLAIN FORMAT=JSON`, SQLite `EXPLAIN QUERY PLAN`, SQL Server
+  `SET SHOWPLAN_XML` (alone in its batch, turned off again after). Analyze runs the statement: MySQL
+  `EXPLAIN ANALYZE` (a text tree), MariaDB `ANALYZE FORMAT=JSON`, SQL Server `SET STATISTICS XML`. It takes
+  only a read (`is_read_only`) and runs inside the read-only guard, like an AI read. The parsers are
+  tested on real plans in `src-tauri/tests/plans/`. The Raw tab shows the plain `EXPLAIN` grid.
 - **SSH tunnels** (`tunnel.rs`) run the system `ssh -N -L`. A password travels only in the environment of the
   ssh process (askpass helper), never on a command line. Unix only for passwords.
 - **SQL Server** (`mssql.rs`) uses our own fork of the driver: `https://github.com/necessarylion/sqlx-sqlserver`,

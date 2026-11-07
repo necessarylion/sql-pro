@@ -37,7 +37,7 @@ use crate::constants::{
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, ColumnDetail, ColumnInfo, ColumnSpec, ConnectionConfig, DbObject, Driver,
-    ForeignKey, IndexInfo, Relation, ResultSet, Row, TableKeys, TableRef, UserList,
+    ForeignKey, IndexInfo, PlanSql, Relation, ResultSet, Row, TableKeys, TableRef, UserList,
 };
 
 /// Stops the console window that Windows opens for every tool a window app starts.
@@ -425,6 +425,51 @@ pub trait Repository: Send + Sync {
     /// `None` when this database has no such words in the app.
     fn explain_prefix(&self) -> Option<&'static str> {
         None
+    }
+
+    /// The SQL that gives the plan of `statement` in a form the service can read as a tree.
+    /// With `analyze` it runs the statement, so the plan has real times and rows. The
+    /// service asks for that only for a read, inside the read-only guard.
+    /// `None` when the app cannot read plans of this database.
+    async fn plan_sql(&self, _statement: &str, _analyze: bool) -> AppResult<Option<PlanSql>> {
+        Ok(None)
+    }
+
+    /// Runs `steps` one after the other, each as a batch of its own. When a step fails, the
+    /// rest is skipped and `on_error` runs. `always` runs at the end in any case. The first
+    /// error is the one given back. Gives the result sets of `steps`.
+    ///
+    /// The default runs each one with `query`, so a query of another part of the tab can
+    /// come between them. That is fine where no step turns on a setting. SQL Server runs
+    /// them all on one connection, because its plan settings stay on for the connection.
+    async fn query_steps(
+        &self,
+        steps: &[&str],
+        on_error: &[&str],
+        always: &[&str],
+    ) -> AppResult<Vec<ResultSet>> {
+        let mut sets = Vec::new();
+        let mut result = Ok(());
+        for step in steps {
+            match self.query(step).await {
+                Ok(mut more) => sets.append(&mut more),
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+        }
+        let cleanup = if result.is_ok() {
+            always.to_vec()
+        } else {
+            [on_error, always].concat()
+        };
+        for step in cleanup {
+            if let Err(error) = self.query(step).await {
+                result = result.and(Err(error));
+            }
+        }
+        result.map(|()| sets)
     }
 
     /// The words between the column list and `VALUES` of an `INSERT` that sets an
