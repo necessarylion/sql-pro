@@ -5,13 +5,13 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, PgQueryResult, PgRow, PgSslMode};
-use sqlx::{AssertSqlSafe, Postgres, Row as _};
+use sqlx::{AssertSqlSafe, Connection as _, Postgres, Row as _};
 
 use super::{
     Repository, ServerId, Statement, cell, collect, default_sql, definition, double_quote, execute,
-    execute_all, first_column, foreign_keys, indexes, keyword, kind, literal, objects,
-    password_safe, pool_options, relations, run_on_new_connection, run_script, single,
-    standard_columns, swap_create,
+    execute_all, first_column, foreign_keys, indexes, keyword, kind, literal, live, objects,
+    password_safe, pool_options, relations, run_on_new_connection, single, standard_columns,
+    swap_create,
 };
 use crate::constants::{
     POSTGRES_NO_QUERY_STATS, POSTGRES_ROLE_NAME_MAX, QUERY_STATS_LIMIT, TRIGGER,
@@ -153,6 +153,13 @@ pub struct PostgresRepository {
 }
 
 impl PostgresRepository {
+    /// Runs a `COPY … FROM stdin` statement and sends its rows.
+    async fn copy_in(connection: &mut PgConnection, sql: &str, data: String) -> sqlx::Result<()> {
+        let mut copy = connection.copy_in_raw(sql).await?;
+        copy.send(data.into_bytes()).await?;
+        copy.finish().await.map(drop)
+    }
+
     pub async fn connect(config: &ConnectionConfig) -> AppResult<Self> {
         let mut options = PgConnectOptions::new()
             .host(&config.host)
@@ -462,8 +469,28 @@ impl Repository for PostgresRepository {
         execute_all(&self.pool, statements, PgQueryResult::rows_affected).await
     }
 
+    /// Like the shared `run_script`, but a statement with `data` is a `COPY … FROM stdin`,
+    /// and its rows go through the COPY protocol.
     async fn run_script(&self, statements: Vec<Statement>) -> AppResult<()> {
-        run_script(&self.pool, statements).await
+        let mut connection = live(&self.pool).await?;
+        let mut transaction = connection.begin().await?;
+        for statement in statements {
+            let run = match statement.data {
+                Some(data) => Self::copy_in(&mut transaction, &statement.sql, data).await,
+                None => sqlx::raw_sql(AssertSqlSafe(statement.sql))
+                    .execute(&mut *transaction)
+                    .await
+                    .map(drop),
+            };
+            if let Err(error) = run {
+                // A failed rollback closes the connection, and that rolls back too.
+                let _ = transaction.rollback().await;
+                let error = AppError::from(error);
+                return Err(AppError::Message(format!("{}: {error}", statement.label)));
+            }
+        }
+        transaction.commit().await?;
+        Ok(())
     }
 
     async fn databases(&self) -> AppResult<Vec<String>> {

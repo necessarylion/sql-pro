@@ -72,6 +72,11 @@ impl ConnectionService {
         }
         let count = statements.len();
         connection.repository.run_script(statements).await?;
+        if connection.config.driver == Driver::Postgres {
+            // A pg_dump file sets an empty search path for the session. Without this reset,
+            // plain table names in the query editor of the tab would not be found any more.
+            connection.repository.query("RESET ALL").await?;
+        }
         Ok(count)
     }
 }
@@ -168,8 +173,10 @@ impl CsvParser {
 /// change the delimiter with a `DELIMITER //` line, like the mysql client reads them.
 /// `PostgreSQL` files may hold `$$ … $$` texts, like function bodies.
 /// `BEGIN` and `COMMIT` lines are left out, because the whole file runs in one transaction.
-// ponytail: PostgreSQL `E'…'` texts with a backslash before a quote, and
-// `COPY … FROM stdin` blocks of pg_dump, are not understood. Add them if such files must import.
+///
+/// For `PostgreSQL` files, as `pg_dump` writes them: a backslash escapes inside `E'…'` texts.
+/// psql commands like `\connect` or `\restrict` are left out. The rows after a
+/// `COPY … FROM stdin;`, up to the `\.` line, go into the `data` of that statement.
 pub struct SqlSplitter<'sql> {
     sql: &'sql str,
     bytes: &'sql [u8],
@@ -198,9 +205,17 @@ impl<'sql> SqlSplitter<'sql> {
         let mut begin = 0;
         // The line where the code of the current statement starts. None while there is no code.
         let mut code_line = None;
+        // Where the code of the current statement starts, after its comments.
+        let mut code_start = 0;
         while self.position < self.bytes.len() {
             let bytes = self.bytes;
             let rest = &bytes[self.position..];
+            if code_line.is_none() && !self.mysql && rest[0] == b'\\' {
+                // A psql command. It ends at the end of its line.
+                self.position = self.line_end();
+                begin = self.position;
+                continue;
+            }
             if code_line.is_none() && self.mysql && self.at_delimiter_command() {
                 let end = self.line_end();
                 let new = self.sql[self.position + "DELIMITER".len()..end].trim();
@@ -212,13 +227,17 @@ impl<'sql> SqlSplitter<'sql> {
                 continue;
             }
             if rest.starts_with(delimiter.as_bytes()) {
-                if let Some(line) = code_line.take() {
-                    Self::keep(&mut statements, &self.sql[begin..self.position], line);
-                }
+                let end = self.position;
                 self.position += delimiter.len();
+                if let Some(line) = code_line.take() {
+                    let data = Self::copies_from_stdin(&self.sql[code_start..end])
+                        .then(|| self.copy_data());
+                    Self::keep(&mut statements, &self.sql[begin..end], line, data);
+                }
                 begin = self.position;
                 continue;
             }
+            let start = self.position;
             let byte = rest[0];
             let next = rest.get(1).copied();
             let is_code = match (byte, next) {
@@ -255,16 +274,49 @@ impl<'sql> SqlSplitter<'sql> {
             };
             if is_code && code_line.is_none() {
                 code_line = Some(self.line);
+                code_start = start;
             }
         }
         if let Some(line) = code_line {
-            Self::keep(&mut statements, &self.sql[begin..], line);
+            Self::keep(&mut statements, &self.sql[begin..], line, None);
         }
         statements
     }
 
+    /// True for a `COPY … FROM stdin` statement. Its rows follow it in the file.
+    fn copies_from_stdin(code: &str) -> bool {
+        let words = code.split_whitespace().collect::<Vec<_>>();
+        words
+            .first()
+            .is_some_and(|word| word.eq_ignore_ascii_case("COPY"))
+            && words.windows(2).any(|pair| {
+                pair[0].eq_ignore_ascii_case("FROM") && pair[1].eq_ignore_ascii_case("stdin")
+            })
+    }
+
+    /// Reads the rows of a `COPY … FROM stdin` block, from the next line up to a `\.` line.
+    /// The position moves past the `\.` line. Each row keeps its line break.
+    fn copy_data(&mut self) -> String {
+        // The rows start on the line after the statement.
+        self.position = (self.line_end() + 1).min(self.bytes.len());
+        self.line += 1;
+        let start = self.position;
+        while self.position < self.bytes.len() {
+            let end = self.line_end();
+            let row = &self.sql[self.position..end];
+            if row.trim_end_matches('\r') == "\\." {
+                let data = self.sql[start..self.position].to_owned();
+                self.position = end;
+                return data;
+            }
+            self.position = (end + 1).min(self.bytes.len());
+            self.line += 1;
+        }
+        self.sql[start..].to_owned()
+    }
+
     /// Adds a statement, unless it only starts or ends a transaction.
-    fn keep(statements: &mut Vec<Statement>, sql: &str, line: usize) {
+    fn keep(statements: &mut Vec<Statement>, sql: &str, line: usize, data: Option<String>) {
         let words = sql.split_whitespace().collect::<Vec<_>>().join(" ");
         let control = [
             "BEGIN",
@@ -282,6 +334,7 @@ impl<'sql> SqlSplitter<'sql> {
             label: format!("Statement at line {line}"),
             sql: sql.trim().to_owned(),
             params: Vec::new(),
+            data,
         });
     }
 
@@ -304,9 +357,14 @@ impl<'sql> SqlSplitter<'sql> {
     }
 
     /// Moves past a quoted text or name that starts at the current position.
-    /// A doubled quote stays inside. In `MySQL` texts a backslash escapes the next character.
+    /// A doubled quote stays inside. In `MySQL` texts and `PostgreSQL` `E'…'` texts a
+    /// backslash escapes the next character.
     fn skip_quoted(&mut self, quote: u8) {
-        let escapes = self.mysql && quote != b'`';
+        let escapes = if self.mysql {
+            quote != b'`'
+        } else {
+            quote == b'\'' && self.after_escape_prefix()
+        };
         self.position += 1;
         while self.position < self.bytes.len() {
             let byte = self.bytes[self.position];
@@ -322,6 +380,17 @@ impl<'sql> SqlSplitter<'sql> {
                 return;
             }
         }
+    }
+
+    /// True when the text that starts here has an `E` in front, like `E'a\'b'`.
+    fn after_escape_prefix(&self) -> bool {
+        let before = |back: usize| {
+            self.position
+                .checked_sub(back)
+                .map(|index| self.bytes[index])
+        };
+        before(1).is_some_and(|byte| byte.eq_ignore_ascii_case(&b'e'))
+            && !before(2).is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
     }
 
     /// Moves past `open` bytes, then past the next `close`, or to the end of the file.
@@ -451,6 +520,50 @@ mod tests {
                     "CREATE FUNCTION f() RETURNS int AS $body$ SELECT 1; $body$ LANGUAGE sql"
                 ),
                 part(2, "SELECT $$a;b$$, 'c\\'"),
+            ]
+        );
+    }
+
+    #[test]
+    fn sql_skips_psql_commands_and_reads_copy_rows() {
+        let sql = "\\restrict abc123\nSET x = 1;\n\\connect db\n\
+            --\n-- Data for Name: t; Type: TABLE DATA\n--\n\n\
+            COPY public.t (id, note) FROM stdin;\n\
+            1\ta;b 'q' \"d\"\n2\t\\N\n3\ttab\\there\n\\.\n\n\
+            SELECT 2;\n\\unrestrict abc123\n";
+        let statements = SqlSplitter::new(sql, false).split();
+        let mut parts = Vec::new();
+        for statement in &statements {
+            parts.push((statement.label.clone(), statement.sql.clone()));
+        }
+        assert_eq!(
+            parts,
+            vec![
+                part(2, "SET x = 1"),
+                part(
+                    8,
+                    "--\n-- Data for Name: t; Type: TABLE DATA\n--\n\n\
+                    COPY public.t (id, note) FROM stdin"
+                ),
+                part(14, "SELECT 2"),
+            ]
+        );
+        assert_eq!(statements[0].data, None);
+        assert_eq!(
+            statements[1].data.as_deref(),
+            Some("1\ta;b 'q' \"d\"\n2\t\\N\n3\ttab\\there\n")
+        );
+        assert_eq!(statements[2].data, None);
+    }
+
+    #[test]
+    fn sql_knows_postgres_escape_texts() {
+        let sql = "SELECT E'it\\'s; fine', e'\\\\';\nSELECT 'c\\';";
+        assert_eq!(
+            split(sql, false),
+            vec![
+                part(1, "SELECT E'it\\'s; fine', e'\\\\'"),
+                part(2, "SELECT 'c\\'"),
             ]
         );
     }

@@ -1098,6 +1098,7 @@ impl ConnectionService {
                     label: format!("Save {}", object.kind),
                     sql,
                     params: Vec::new(),
+                    data: None,
                 });
             }
             return repository.run_script(script).await;
@@ -1549,7 +1550,12 @@ impl ConnectionService {
     /// Turns built SQL into one statement of a batch. An error gets the label in front.
     fn statement(label: String, built: AppResult<(String, Params)>) -> AppResult<Statement> {
         match built {
-            Ok((sql, params)) => Ok(Statement { label, sql, params }),
+            Ok((sql, params)) => Ok(Statement {
+                label,
+                sql,
+                params,
+                data: None,
+            }),
             Err(error) => Err(not_saved(&label, &error)),
         }
     }
