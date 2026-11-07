@@ -32,5 +32,11 @@ export const PLAN_STEP_MIN = 240
 /** The plan tree: the width of each number column, in px. */
 export const PLAN_NUMBER_WIDTH = 76
 
-/** The plan tree: the gap between the columns, in px. Same as `gap` in PlanView.vue. */
+/** The plan tree: the gap between the columns, in px. */
 export const PLAN_COLUMN_GAP = 8
+
+/** The plan tree: the width of the heat colour bar on the left of a row, in px. */
+export const PLAN_HEAT_BAR = 3
+
+/** The plan tree: the room on the right of a row, in px. */
+export const PLAN_ROW_PADDING = 10

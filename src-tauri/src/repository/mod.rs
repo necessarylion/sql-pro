@@ -31,8 +31,8 @@ pub use tunnel::SshTunnel;
 
 use crate::constants::{
     CANCEL_NOT_REACHED, CONNECT_TIMEOUT_SECONDS, DEAD_CONNECTION_SECONDS, LOCALHOST,
-    MAX_QUERY_ROWS, NO_EXPLAIN, NO_PROCESSES, NO_QUERY_STATS, NO_USER_ACCOUNTS,
-    PASSWORD_ERROR_HIDDEN, PROCEDURE, TRIGGER, VIEW,
+    MAX_QUERY_ROWS, NO_PROCESSES, NO_QUERY_STATS, NO_USER_ACCOUNTS, PASSWORD_ERROR_HIDDEN,
+    PROCEDURE, TRIGGER, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -435,19 +435,41 @@ pub trait Repository: Send + Sync {
         Ok(None)
     }
 
-    /// Runs `steps` one after the other, each as a batch of its own, all on one connection.
-    /// So no other query of the tab can come between them. When a step fails, the rest is
-    /// skipped and `on_error` runs. `always` runs at the end in any case. When a step of
-    /// `on_error` or `always` fails, the connection is closed: the next query opens a new
-    /// one, so no setting stays on. Gives the result sets of `steps`.
-    /// Only a database whose `plan_sql` has `before` or `after` needs it: SQL Server.
+    /// Runs `steps` one after the other, each as a batch of its own. When a step fails, the
+    /// rest is skipped and `on_error` runs. `always` runs at the end in any case. The first
+    /// error is the one given back. Gives the result sets of `steps`.
+    ///
+    /// The default runs each one with `query`, so a query of another part of the tab can
+    /// come between them. That is fine where no step turns on a setting. SQL Server runs
+    /// them all on one connection, because its plan settings stay on for the connection.
     async fn query_steps(
         &self,
-        _steps: &[&str],
-        _on_error: &[&str],
-        _always: &[&str],
+        steps: &[&str],
+        on_error: &[&str],
+        always: &[&str],
     ) -> AppResult<Vec<ResultSet>> {
-        Err(NO_EXPLAIN.into())
+        let mut sets = Vec::new();
+        let mut result = Ok(());
+        for step in steps {
+            match self.query(step).await {
+                Ok(mut more) => sets.append(&mut more),
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+        }
+        let cleanup = if result.is_ok() {
+            always.to_vec()
+        } else {
+            [on_error, always].concat()
+        };
+        for step in cleanup {
+            if let Err(error) = self.query(step).await {
+                result = result.and(Err(error));
+            }
+        }
+        result.map(|()| sets)
     }
 
     /// The words between the column list and `VALUES` of an `INSERT` that sets an

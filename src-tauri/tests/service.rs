@@ -2605,6 +2605,13 @@ async fn ai_read_guard(config: ConnectionConfig) {
         .run_ai_read(id, "SELECT 1")
         .await
         .expect("read after rollback");
+    // A read that fails inside the guard leaves the tab working.
+    let _ = service.run_ai_read(id, "SELECT 1/0 AS x").await;
+    let sets = service
+        .run_ai_read(id, "SELECT 1 AS one")
+        .await
+        .expect("read after a failed read");
+    assert_eq!(sets[0].rows, vec![vec![Some("1".to_owned())]]);
 
     if driver == Driver::Mysql {
         service

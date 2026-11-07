@@ -36,41 +36,33 @@ impl ConnectionService {
         if analyze {
             Self::check_no_transaction(&connection).await?;
         }
-        let sets = if plan_sql.before.is_none() && plan_sql.after.is_none() {
-            if analyze {
-                Self::guarded_batch(repository, &plan_sql.sql).await?
-            } else {
-                repository.query(&plan_sql.sql).await?
-            }
+        // SQL Server settings stay on for the connection. So they run on the same connection
+        // as the statement, with nothing between, and `after` turns them off again.
+        // A failed Analyze ends its guard. A failed Explain keeps the user's transaction.
+        let body = if analyze {
+            Self::guarded_sql(repository, &plan_sql.sql)
         } else {
-            // The settings stay on for the connection. So they run on the same connection
-            // as the statement, with nothing between, and `after` turns them off again.
-            // A failed Analyze ends its guard. A failed Explain keeps the user's transaction.
-            let body = if analyze {
-                Self::guarded_sql(repository, &plan_sql.sql)
-            } else {
-                plan_sql.sql.clone()
-            };
-            let mut steps: Vec<&str> = plan_sql.before.into_iter().collect();
-            steps.push(&body);
-            let end = repository.read_only_guard().1;
-            let on_error: &[&str] = if analyze { &[end] } else { &[] };
-            let always: Vec<&str> = plan_sql.after.into_iter().collect();
-            repository.query_steps(&steps, on_error, &always).await?
+            plan_sql.sql.clone()
         };
+        let mut steps: Vec<&str> = plan_sql.before.into_iter().collect();
+        steps.push(&body);
+        let end = repository.read_only_guard().1;
+        let on_error: &[&str] = if analyze { &[end] } else { &[] };
+        let always: Vec<&str> = plan_sql.after.into_iter().collect();
+        let sets = repository.query_steps(&steps, on_error, &always).await?;
         let output = last_with_columns(sets);
-        let raw = match repository.explain_prefix() {
-            // `SQLite` explains with the same words. Its plan is the plain output already.
-            Some(prefix) if format!("{prefix} {statement}") == plan_sql.sql => output.clone(),
-            Some(prefix) => {
-                last_with_columns(repository.query(&format!("{prefix} {statement}")).await?)
-            }
-            None => output.clone(),
-        };
         let nodes = output
             .as_ref()
             .and_then(|set| parse(plan_sql.format, set))
             .unwrap_or_default();
+        let raw = match repository.explain_prefix() {
+            // `SQLite` explains with the same words. Its plan is the plain output already.
+            Some(prefix) if format!("{prefix} {statement}") == plan_sql.sql => output,
+            Some(prefix) => {
+                last_with_columns(repository.query(&format!("{prefix} {statement}")).await?)
+            }
+            None => output,
+        };
         Ok(plan(nodes, analyze, raw))
     }
 }
@@ -278,10 +270,12 @@ const POSTGRES_DETAILS: [(&str, &str); 14] = [
 fn postgres(text: &str) -> Option<Vec<PlanNode>> {
     let value: Value = serde_json::from_str(text).ok()?;
     let plan = value.get(0)?.get("Plan")?;
-    Some(vec![postgres_node(plan)])
+    Some(vec![postgres_node(plan, 1.0)])
 }
 
-fn postgres_node(plan: &Value) -> PlanNode {
+/// `processes` is how many processes run the step at the same time: 1, or under a
+/// `Gather` its workers and the leader.
+fn postgres_node(plan: &Value, processes: f64) -> PlanNode {
     let field = |name: &str| plan.get(name);
     let operation = text(field("Node Type"));
     let mut node = PlanNode {
@@ -292,9 +286,16 @@ fn postgres_node(plan: &Value) -> PlanNode {
         cost: number(field("Total Cost")),
         ..PlanNode::default()
     };
-    // The time is for one loop. A step that never ran has no time.
+    // The time is for one loop. A step that never ran has no time. Under a `Gather`
+    // each process counts its own loops, and the processes run side by side. So the loops
+    // that ran one after the other are the loops of one process.
     if let Some(loops) = node.loops {
-        node.time_ms = Some(number(field("Actual Total Time")).unwrap_or(0.0) * loops);
+        let serial = if loops > 0.0 {
+            (loops / processes).max(1.0)
+        } else {
+            0.0
+        };
+        node.time_ms = Some(number(field("Actual Total Time")).unwrap_or(0.0) * serial);
     }
     for (name, label) in POSTGRES_DETAILS {
         detail(&mut node.details, label, text(field(name)));
@@ -312,7 +313,17 @@ fn postgres_node(plan: &Value) -> PlanNode {
         add(&mut node.problems, PlanProblem::TempTable);
     }
     if let Some(Value::Array(plans)) = field("Plans") {
-        node.children = plans.iter().map(postgres_node).collect();
+        let processes = if operation.starts_with("Gather") {
+            // The leader takes part too. Without an analyze the planned number counts.
+            let workers = number(field("Workers Launched")).or(number(field("Workers Planned")));
+            workers.unwrap_or(0.0) + 1.0
+        } else {
+            processes
+        };
+        node.children = plans
+            .iter()
+            .map(|child| postgres_node(child, processes))
+            .collect();
     }
     node.operation = operation;
     node
@@ -707,9 +718,16 @@ const MSSQL_SPOOLS: [&str; 3] = ["Table Spool", "Index Spool", "Row Count Spool"
 
 fn mssql(text: &str) -> Option<Vec<PlanNode>> {
     let document = roxmltree::Document::parse(text).ok()?;
+    // A function with statements of its own has its plans in a `UDF` element next to the
+    // plan of the query. Its cost is part of a step there, so its plans are no top steps.
     let nodes = document
         .descendants()
         .filter(|element| element.has_tag_name("QueryPlan"))
+        .filter(|plan| {
+            !plan
+                .ancestors()
+                .any(|up| up.has_tag_name("UDF") || up.has_tag_name("StoredProc"))
+        })
         .filter_map(|plan| plan.children().find(|child| child.has_tag_name("RelOp")))
         .map(mssql_node)
         .collect();
@@ -995,6 +1013,28 @@ mod tests {
         assert_eq!(inner.problems, []);
         let join = find(&plan, "Nested Loop");
         assert!(join.share.unwrap_or_default() < 0.3);
+    }
+
+    #[test]
+    fn postgres_parallel_steps_count_the_time_of_one_process() {
+        let plan = read(
+            PlanFormat::PostgresJson,
+            include_str!("../../tests/plans/postgres_analyze_parallel.json"),
+            true,
+        );
+        // Two workers and the leader: 3 loops of 3.036 ms that ran side by side.
+        let sort = find(&plan, "Sort");
+        assert_eq!(sort.loops, Some(3.0));
+        assert!(close(sort.time_ms.unwrap_or_default(), 3.036));
+        let gather = find(&plan, "Gather Merge");
+        assert!(gather.time_ms.unwrap_or_default() >= sort.time_ms.unwrap_or_default());
+        // No step under the Gather takes more time than the Gather itself.
+        let total = plan.total.unwrap_or_default();
+        assert!(
+            flat(&plan.nodes)
+                .iter()
+                .all(|node| node.time_ms.unwrap_or_default() <= total)
+        );
     }
 
     #[test]
@@ -1404,6 +1444,24 @@ mod tests {
         assert_eq!(plan.nodes[0].actual_rows, Some(20.0));
         assert_eq!(plan.nodes[0].time_ms, None);
         assert_eq!(plan.measure, Some(PlanMeasure::Cost));
+    }
+
+    #[test]
+    fn mssql_real_plan_of_a_function() {
+        let plan = read(
+            PlanFormat::MssqlXml,
+            include_str!("../../tests/plans/mssql_plan_function.xml"),
+            false,
+        );
+        // The plan of `top_total` is inside the Compute Scalar, not a second top step.
+        assert_eq!(plan.nodes.len(), 1);
+        let root_cost = plan.nodes[0].cost.unwrap_or_default();
+        assert!(close(plan.total.unwrap_or_default(), root_cost));
+        assert!(
+            flat(&plan.nodes)
+                .iter()
+                .all(|node| node.share.unwrap_or_default() <= 1.0)
+        );
     }
 
     #[test]

@@ -354,13 +354,12 @@ impl ConnectionService {
     }
 
     /// Runs `sql` inside the read-only guard. The result sets of the guard stay in the list.
+    /// After an error the end of the guard runs again. Without a transaction it may fail
+    /// too; that is fine. On SQL Server that failure lets the broken connection go.
     async fn guarded_batch(repository: &dyn Repository, sql: &str) -> AppResult<Vec<ResultSet>> {
-        let result = repository.query(&Self::guarded_sql(repository, sql)).await;
-        if result.is_err() {
-            // Without a transaction this may fail too. That is fine.
-            let _ = repository.query(repository.read_only_guard().1).await;
-        }
-        result
+        let guarded = Self::guarded_sql(repository, sql);
+        let end = repository.read_only_guard().1;
+        repository.query_steps(&[&guarded], &[end], &[]).await
     }
 
     /// `sql` between the start and the end of the read-only guard, as one batch.

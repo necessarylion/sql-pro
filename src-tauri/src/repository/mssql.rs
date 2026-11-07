@@ -244,52 +244,6 @@ impl MssqlRepository {
         collect::<Mssql>(stream, Self::read, MssqlQueryResult::rows_affected).await
     }
 
-    /// Runs `steps` on one connection of the pool, then `always`. After a failed step,
-    /// `on_error` runs before `always`. When a cancel ended the session, or a step of
-    /// `on_error` or `always` fails, that connection is let go. Then the next query opens
-    /// a new one, so no setting stays on. A failed step alone keeps the connection: it may
-    /// hold a transaction of the user.
-    async fn run_steps(
-        &self,
-        steps: &[&str],
-        on_error: &[&str],
-        always: &[&str],
-    ) -> AppResult<Vec<ResultSet>> {
-        let mut connection = self.pool.acquire().await?;
-        self.cancelled.store(false, Ordering::SeqCst);
-        self.running.store(true, Ordering::SeqCst);
-        let mut sets = Vec::new();
-        let mut result = Ok(());
-        for step in steps {
-            match Self::batch(&mut connection, step).await {
-                Ok(mut more) => sets.append(&mut more),
-                Err(error) => {
-                    result = Err(error);
-                    break;
-                }
-            }
-        }
-        self.running.store(false, Ordering::SeqCst);
-        if self.cancelled.swap(false, Ordering::SeqCst) && result.is_err() {
-            drop(connection.detach());
-            return Err(QUERY_CANCELLED.into());
-        }
-        let cleanup = if result.is_ok() {
-            always.to_vec()
-        } else {
-            [on_error, always].concat()
-        };
-        for step in cleanup {
-            if let Err(error) = Self::batch(&mut connection, step).await {
-                // The first error is the one the user needs to see.
-                result = result.and(Err(error));
-                drop(connection.detach());
-                break;
-            }
-        }
-        result.map(|()| sets).map_err(Self::readable)
-    }
-
     /// The driver cannot read some column types, like `xml`. Its error then says
     /// what to do instead. Browsing a table casts such columns by itself.
     fn readable(error: AppError) -> AppError {
@@ -769,20 +723,59 @@ impl Repository for MssqlRepository {
     /// Runs on the one connection of the pool. When a cancel ended its session,
     /// that connection is let go, so the next query opens a new one.
     async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>> {
-        self.run_steps(&[sql], &[], &[]).await
+        self.query_steps(&[sql], &[], &[]).await
     }
 
-    /// `SET SHOWPLAN_XML` must be alone in its batch, and it stays on for the connection.
-    /// One connection for all steps keeps other queries of the tab out while it is on.
-    /// An error inside the `BEGIN TRAN` guard of Analyze can leave the connection unusable
-    /// (error 3971). Then the cleanup fails too, and the connection is let go.
+    /// All steps run on one connection of the pool. `SET SHOWPLAN_XML` must be alone in its
+    /// batch and stays on for the connection, so this keeps other queries of the tab out
+    /// while it is on. A failed step alone keeps the connection: it may hold a transaction of
+    /// the user. When a cleanup step fails too, or a cancel ended the session, the connection
+    /// is let go, and the next query opens a new one. So no setting stays on. An error inside
+    /// the `BEGIN TRAN` guard can leave the connection unusable (error 3971): then the
+    /// `ROLLBACK` fails, and the connection is let go.
     async fn query_steps(
         &self,
         steps: &[&str],
         on_error: &[&str],
         always: &[&str],
     ) -> AppResult<Vec<ResultSet>> {
-        self.run_steps(steps, on_error, always).await
+        let mut connection = self.pool.acquire().await?;
+        self.cancelled.store(false, Ordering::SeqCst);
+        self.running.store(true, Ordering::SeqCst);
+        let mut sets = Vec::new();
+        let mut result = Ok(());
+        for step in steps {
+            match Self::batch(&mut connection, step).await {
+                Ok(mut more) => sets.append(&mut more),
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+        }
+        self.running.store(false, Ordering::SeqCst);
+        if self.cancelled.swap(false, Ordering::SeqCst) {
+            // The `KILL` ends the session, also when it comes after the last step.
+            drop(connection.detach());
+            if result.is_err() || !always.is_empty() {
+                return Err(QUERY_CANCELLED.into());
+            }
+            return Ok(sets);
+        }
+        let cleanup = if result.is_ok() {
+            always.to_vec()
+        } else {
+            [on_error, always].concat()
+        };
+        for step in cleanup {
+            if let Err(error) = Self::batch(&mut connection, step).await {
+                // The first error is the one the user needs to see.
+                result = result.and(Err(error));
+                drop(connection.detach());
+                break;
+            }
+        }
+        result.map(|()| sets).map_err(Self::readable)
     }
 
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64> {

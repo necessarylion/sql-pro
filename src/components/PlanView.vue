@@ -3,6 +3,8 @@ import { computed, reactive, ref, watch } from 'vue'
 import { ChevronDownIcon, ChevronRightIcon } from 'lucide-vue-next'
 import {
   PLAN_COLUMN_GAP,
+  PLAN_HEAT_BAR,
+  PLAN_ROW_PADDING,
   PLAN_NUMBER_WIDTH,
   PLAN_PROBLEM_HINTS,
   PLAN_PROBLEM_LABELS,
@@ -48,7 +50,7 @@ function clearPick(): void {
  * Only the columns this plan has numbers for. Analyze adds the real rows, loops and time.
  * All rows use the same widths, so the columns line up. A long name is cut, not the numbers.
  */
-function gridColumns(): { '--plan-columns': string; '--plan-min': string } {
+function gridColumns(): Record<string, string> {
   const widths = [PLAN_STEP_MIN, PLAN_NUMBER_WIDTH]
   if (props.plan.analyzed) {
     widths.push(PLAN_NUMBER_WIDTH, PLAN_NUMBER_WIDTH)
@@ -64,11 +66,14 @@ function gridColumns(): { '--plan-columns': string; '--plan-min': string } {
   }
   const tracks = widths.map(toPixels)
   tracks[0] = `minmax(${tracks[0]}, 1fr)`
-  // The gaps between the columns, the heat bar and the right padding.
-  const room = PLAN_COLUMN_GAP * (widths.length - 1) + 3 + 10
+  // The gaps between the columns, the heat bar and the right padding. The CSS uses the same.
+  const room = PLAN_COLUMN_GAP * (widths.length - 1) + PLAN_HEAT_BAR + PLAN_ROW_PADDING
   return {
     '--plan-columns': tracks.join(' '),
     '--plan-min': toPixels(sum(widths) + room),
+    '--plan-gap': toPixels(PLAN_COLUMN_GAP),
+    '--plan-heat-bar': toPixels(PLAN_HEAT_BAR),
+    '--plan-padding': toPixels(PLAN_ROW_PADDING),
   }
 }
 
@@ -183,14 +188,14 @@ function shareTitle(): string {
 .row {
   display: grid;
   grid-template-columns: var(--plan-columns);
-  gap: 8px;
+  gap: var(--plan-gap);
   align-items: center;
   min-width: var(--plan-min);
   height: 24px;
-  padding-right: 10px;
+  padding-right: var(--plan-padding);
   border-bottom: 1px solid var(--border-soft);
   /* The heat colour shows as a bar on the left edge. */
-  border-left: 3px solid transparent;
+  border-left: var(--plan-heat-bar) solid transparent;
   white-space: nowrap;
 }
 
