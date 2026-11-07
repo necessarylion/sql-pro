@@ -9,8 +9,8 @@
 
 use sql_pro_lib::model::DbObject;
 use sql_pro_lib::model::{
-    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, CsvColumn, CsvImport, DbUser,
-    Diagram, Driver, ExportFormat, ExportRequest, FilterOperator, FilterRule, ForeignKey,
+    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, CsvColumn, CsvImport, DataKinds,
+    DbUser, Diagram, Driver, ExportFormat, ExportRequest, FilterOperator, FilterRule, ForeignKey,
     IndexInfo, NewColumn, NewForeignKey, NewIndex, NewUser, ReferentialAction, Relation, RowUpdate,
     RowsExport, RowsSql, SaveResult, SshConfig, TableRef, Values,
 };
@@ -2863,20 +2863,23 @@ async fn sqlite_schema_sync() {
     }
 }
 
-/// Schema compare on a server: the source and the target are two new databases, so the
-/// other tests that run at the same time do not get in the way.
-async fn server_schema_sync(config: ConnectionConfig) {
-    const MAIN: &str = "sync-main";
-    const DATABASES: [&str; 2] = ["sqlpro_sync_source", "sqlpro_sync_target"];
+/// Opens tab `main` on the server and two tabs `ids` on two new databases, so the other
+/// tests that run at the same time do not get in the way.
+async fn server_pair(
+    config: &ConnectionConfig,
+    main: &str,
+    ids: [&str; 2],
+    databases: [&str; 2],
+) -> ConnectionService {
     let service = ConnectionService::new(RepositoryFactory);
     service
-        .connect(MAIN.to_owned(), config.clone())
+        .connect(main.to_owned(), config.clone())
         .await
         .expect("connect");
-    for (id, database) in [SYNC_SOURCE, SYNC_TARGET].iter().zip(DATABASES) {
+    for (id, database) in ids.iter().zip(databases) {
         // A leftover of an earlier failed run is removed first.
-        let _ = service.drop_database(MAIN, database).await;
-        let created = service.create_database(MAIN, database, "", "").await;
+        let _ = service.drop_database(main, database).await;
+        let created = service.create_database(main, database, "", "").await;
         created.expect("create database");
         let mut tab = config.clone();
         database.clone_into(&mut tab.database);
@@ -2885,6 +2888,28 @@ async fn server_schema_sync(config: ConnectionConfig) {
             .await
             .expect("connect");
     }
+    service
+}
+
+/// Closes the tabs of `server_pair` and drops its two databases.
+async fn drop_pair(service: &ConnectionService, main: &str, ids: [&str; 2], databases: [&str; 2]) {
+    for id in ids {
+        service.disconnect(id).await;
+    }
+    for database in databases {
+        service
+            .drop_database(main, database)
+            .await
+            .expect("drop database");
+    }
+    service.disconnect(main).await;
+}
+
+/// Schema compare on a server: the source and the target are two new databases.
+async fn server_schema_sync(config: ConnectionConfig) {
+    const MAIN: &str = "sync-main";
+    const DATABASES: [&str; 2] = ["sqlpro_sync_source", "sqlpro_sync_target"];
+    let service = server_pair(&config, MAIN, [SYNC_SOURCE, SYNC_TARGET], DATABASES).await;
 
     // Two kinds of database cannot be compared.
     let path = temp_path("sync-other", "sqlite");
@@ -2914,16 +2939,7 @@ async fn server_schema_sync(config: ConnectionConfig) {
     std::fs::remove_file(&path).ok();
 
     schema_sync(&service, config.driver).await;
-    for id in [SYNC_SOURCE, SYNC_TARGET] {
-        service.disconnect(id).await;
-    }
-    for database in DATABASES {
-        service
-            .drop_database(MAIN, database)
-            .await
-            .expect("drop database");
-    }
-    service.disconnect(MAIN).await;
+    drop_pair(&service, MAIN, [SYNC_SOURCE, SYNC_TARGET], DATABASES).await;
 }
 
 #[tokio::test]
@@ -2953,5 +2969,285 @@ async fn mssql_schema_sync() {
     if let Some(mut config) = config_from_env("SQLPRO_TEST_MSSQL", Driver::Mssql) {
         "master".clone_into(&mut config.database);
         server_schema_sync(config).await;
+    }
+}
+
+/// The two tabs of the data compare test.
+const DATA_SOURCE: &str = "data-source";
+const DATA_TARGET: &str = "data-target";
+
+/// The table `name` of tab `id`, with the schema the database gives it.
+async fn find_table(service: &ConnectionService, id: &str, name: &str) -> TableRef {
+    let tables = service.tables(id).await.expect("tables");
+    tables
+        .into_iter()
+        .find(|table| table.name == name)
+        .expect("table is there")
+}
+
+/// Rows `ids` of `table` as one `INSERT` each 500 rows. SQL Server takes at most 1000.
+fn bulk_rows(table: &str, ids: std::ops::Range<u32>, changed: u32) -> Vec<String> {
+    let mut statements = Vec::new();
+    let all: Vec<u32> = ids.collect();
+    for chunk in all.chunks(500) {
+        let mut rows = Vec::new();
+        for id in chunk {
+            let name = if *id == changed { "changed" } else { "same" };
+            rows.push(format!("({id}, '{name}', NULL)"));
+        }
+        statements.push(format!(
+            "INSERT INTO {table} (id, name, note) VALUES {}",
+            rows.join(", ")
+        ));
+    }
+    statements
+}
+
+/// Makes the target rows like the source rows with data compare. Then a compare finds
+/// no difference. The rows cross the page edge, a key has two columns, and an identity
+/// column gets the value of the source.
+#[allow(clippy::too_many_lines, reason = "one end-to-end flow")]
+async fn data_sync(service: &ConnectionService, driver: Driver) {
+    let sqlite = driver == Driver::Sqlite;
+    let identity = match driver {
+        Driver::Postgres => "INTEGER GENERATED ALWAYS AS IDENTITY",
+        Driver::Mssql => "INTEGER IDENTITY(1,1)",
+        Driver::Mysql => "INTEGER AUTO_INCREMENT",
+        Driver::Sqlite => "INTEGER",
+    };
+    let auto = format!("CREATE TABLE data_auto (id {identity} PRIMARY KEY, name VARCHAR(10))");
+    for (id, extra) in [(DATA_SOURCE, "only_source"), (DATA_TARGET, "only_target")] {
+        let item = format!(
+            "CREATE TABLE data_item (id INTEGER PRIMARY KEY, name VARCHAR(40), \
+                note VARCHAR(40), {extra} INTEGER)"
+        );
+        run_all(
+            service,
+            id,
+            &[
+                &item,
+                "CREATE TABLE data_pair (a INTEGER NOT NULL, b VARCHAR(10) NOT NULL, \
+                    v VARCHAR(10), PRIMARY KEY (a, b))",
+                "CREATE TABLE data_loose (x INTEGER)",
+                &auto,
+            ],
+        )
+        .await;
+    }
+    let mut source = vec![
+        "INSERT INTO data_item (id, name, note) VALUES (1, 'a', NULL), (2, 'b', ''), \
+            (3, 'it''s', 'x'), (4, 'new', NULL)"
+            .to_owned(),
+        "INSERT INTO data_pair (a, b, v) VALUES (1, 'x', 'one'), (1, 'y', 'two')".to_owned(),
+        "INSERT INTO data_auto (name) VALUES ('a')".to_owned(),
+        "INSERT INTO data_auto (name) VALUES ('b')".to_owned(),
+    ];
+    source.extend(bulk_rows("data_item", 1000..3100, 0));
+    let mut target = vec![
+        "INSERT INTO data_item (id, name, note) VALUES (1, 'a', NULL), (2, 'b', NULL), \
+            (3, 'old', 'x'), (5, 'gone', NULL)"
+            .to_owned(),
+        "INSERT INTO data_pair (a, b, v) VALUES (1, 'x', 'ONE'), (2, 'y', 'two')".to_owned(),
+        "INSERT INTO data_auto (name) VALUES ('a')".to_owned(),
+    ];
+    // One changed row on the second page.
+    target.extend(bulk_rows("data_item", 1000..3100, 2999));
+    let source: Vec<&str> = source.iter().map(String::as_str).collect();
+    let target: Vec<&str> = target.iter().map(String::as_str).collect();
+    run_all(service, DATA_SOURCE, &source).await;
+    run_all(service, DATA_TARGET, &target).await;
+
+    // A table without a primary key cannot be compared.
+    let loose = find_table(service, DATA_SOURCE, "data_loose").await;
+    let refused = service.compare_data(DATA_SOURCE, DATA_TARGET, &loose).await;
+    assert!(
+        refused
+            .expect_err("no key")
+            .to_string()
+            .contains("no primary key")
+    );
+
+    let all = DataKinds {
+        insert: true,
+        update: true,
+        delete: true,
+    };
+    let item = find_table(service, DATA_SOURCE, "data_item").await;
+    let diff = service
+        .compare_data(DATA_SOURCE, DATA_TARGET, &item)
+        .await
+        .expect("compare");
+    assert_eq!(diff.key, ["id"]);
+    assert_eq!(diff.columns, ["id", "name", "note"]);
+    assert_eq!(diff.source_only, ["only_source"]);
+    assert_eq!(diff.target_only, ["only_target"]);
+    assert!(!diff.limited);
+    assert_eq!(
+        (diff.delete_rows, diff.update_rows, diff.insert_rows),
+        (1, 3, 1)
+    );
+    if sqlite {
+        assert_eq!(
+            diff.deletes,
+            [r#"DELETE FROM "data_item" WHERE "id" = '5'"#]
+        );
+        assert_eq!(
+            diff.updates,
+            [
+                r#"UPDATE "data_item" SET "note" = '' WHERE "id" = '2'"#,
+                r#"UPDATE "data_item" SET "name" = 'it''s' WHERE "id" = '3'"#,
+                r#"UPDATE "data_item" SET "name" = 'same' WHERE "id" = '2999'"#,
+            ]
+        );
+        assert_eq!(
+            diff.inserts,
+            [r#"INSERT INTO "data_item" ("id", "name", "note") VALUES ('4', 'new', NULL)"#]
+        );
+    }
+
+    // SQL that is not what the backend builds now never runs.
+    let other = ["DELETE FROM data_item".to_owned()];
+    let refused = service
+        .run_data_sync(
+            DATA_SOURCE,
+            DATA_TARGET,
+            &item,
+            all,
+            &other,
+            diff.database.as_deref(),
+        )
+        .await;
+    assert_eq!(
+        refused.expect_err("other sql").to_string(),
+        sql_pro_lib::constants::SYNC_SQL_CHANGED
+    );
+
+    // Round one: only the updates.
+    let updates = DataKinds {
+        insert: false,
+        delete: false,
+        ..all
+    };
+    service
+        .run_data_sync(
+            DATA_SOURCE,
+            DATA_TARGET,
+            &item,
+            updates,
+            &diff.updates,
+            diff.database.as_deref(),
+        )
+        .await
+        .expect("run updates");
+    let diff = service
+        .compare_data(DATA_SOURCE, DATA_TARGET, &item)
+        .await
+        .expect("compare");
+    assert_eq!(
+        (diff.delete_rows, diff.update_rows, diff.insert_rows),
+        (1, 0, 1)
+    );
+
+    // Round two: the rest, for every table.
+    for name in ["data_item", "data_pair", "data_auto"] {
+        let table = find_table(service, DATA_SOURCE, name).await;
+        let diff = service
+            .compare_data(DATA_SOURCE, DATA_TARGET, &table)
+            .await
+            .expect("compare");
+        let mut reviewed = diff.deletes.clone();
+        reviewed.extend(diff.updates.clone());
+        reviewed.extend(diff.inserts.clone());
+        assert_ne!(reviewed.len(), 0, "{name}");
+        service
+            .run_data_sync(
+                DATA_SOURCE,
+                DATA_TARGET,
+                &table,
+                all,
+                &reviewed,
+                diff.database.as_deref(),
+            )
+            .await
+            .expect(name);
+        let left = service
+            .compare_data(DATA_SOURCE, DATA_TARGET, &table)
+            .await
+            .expect("compare");
+        assert_eq!(
+            (left.delete_rows, left.update_rows, left.insert_rows),
+            (0, 0, 0),
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sqlite_data_sync() {
+    let service = ConnectionService::new(RepositoryFactory);
+    let mut paths = Vec::new();
+    for id in [DATA_SOURCE, DATA_TARGET] {
+        let path = temp_path(id, "sqlite");
+        std::fs::File::create(&path).expect("temp file");
+        let config = ConnectionConfig {
+            driver: Driver::Sqlite,
+            host: String::new(),
+            port: 0,
+            user: String::new(),
+            password: String::new(),
+            database: path.to_string_lossy().into_owned(),
+            ssh: None,
+            ssl: sql_pro_lib::model::SslConfig::default(),
+        };
+        service
+            .connect(id.to_owned(), config)
+            .await
+            .expect("connect");
+        paths.push(path);
+    }
+    data_sync(&service, Driver::Sqlite).await;
+    for (id, path) in [DATA_SOURCE, DATA_TARGET].iter().zip(&paths) {
+        service.disconnect(id).await;
+        std::fs::remove_file(path).expect("remove temp file");
+    }
+}
+
+/// Data compare on a server, on two new databases.
+async fn server_data_sync(config: ConnectionConfig) {
+    const MAIN: &str = "data-main";
+    const DATABASES: [&str; 2] = ["sqlpro_data_source", "sqlpro_data_target"];
+    let ids = [DATA_SOURCE, DATA_TARGET];
+    let service = server_pair(&config, MAIN, ids, DATABASES).await;
+    data_sync(&service, config.driver).await;
+    drop_pair(&service, MAIN, ids, DATABASES).await;
+}
+
+#[tokio::test]
+async fn mysql_data_sync() {
+    if let Some(config) = config_from_env("SQLPRO_TEST_MYSQL", Driver::Mysql) {
+        server_data_sync(config).await;
+    }
+}
+
+#[tokio::test]
+async fn mariadb_data_sync() {
+    if let Some(config) = config_from_env("SQLPRO_TEST_MARIADB", Driver::Mysql) {
+        server_data_sync(config).await;
+    }
+}
+
+#[tokio::test]
+async fn postgres_data_sync() {
+    if let Some(config) = config_from_env("SQLPRO_TEST_POSTGRES", Driver::Postgres) {
+        server_data_sync(config).await;
+    }
+}
+
+#[tokio::test]
+async fn mssql_data_sync() {
+    // The test database may not be there yet. `master` always is.
+    if let Some(mut config) = config_from_env("SQLPRO_TEST_MSSQL", Driver::Mssql) {
+        "master".clone_into(&mut config.database);
+        server_data_sync(config).await;
     }
 }

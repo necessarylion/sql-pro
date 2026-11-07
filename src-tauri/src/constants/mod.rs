@@ -205,6 +205,13 @@ pub const COLUMN_RULE_NOT_COPIED: &str =
 pub const TABLE_NOT_COPIED: &str = "It has a generated column, which the app cannot copy. \
     Create the table by hand. Its indexes and foreign keys are left out too.";
 
+/// The most row differences data compare keeps. With more it gives no SQL.
+pub const MAX_DATA_DIFFS: usize = 10_000;
+
+/// The error of a data compare with more than `MAX_DATA_DIFFS` differences.
+pub const TOO_MANY_DATA_DIFFS: &str = "There are more than 10 000 different rows, so \
+    no SQL is made. Copy this table another way, like export and import.";
+
 /// The error when the target tab works on another database than when the SQL was made.
 pub const OTHER_DATABASE: &str = "The target tab works on another database than when the SQL \
     was made. Nothing ran. Compare again.";

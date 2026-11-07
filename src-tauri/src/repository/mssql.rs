@@ -502,6 +502,14 @@ impl Repository for MssqlRepository {
         "IDENTITY(1,1)"
     }
 
+    fn identity_insert_sql(&self, table: &TableRef, on: bool) -> Option<String> {
+        let state = if on { "ON" } else { "OFF" };
+        Some(format!(
+            "SET IDENTITY_INSERT {} {state}",
+            self.table_name(table)
+        ))
+    }
+
     fn drop_index_sql(&self, table: &TableRef, name: &str) -> String {
         format!(
             "DROP INDEX {} ON {}",

@@ -388,6 +388,18 @@ pub trait Repository: Send + Sync {
         None
     }
 
+    /// The words between the column list and `VALUES` of an `INSERT` that sets an
+    /// identity column by hand. Empty when the database needs none.
+    fn identity_override(&self) -> &'static str {
+        ""
+    }
+
+    /// The statement that lets `INSERT`s set the identity column of `table` by hand
+    /// (`on`), or stops that again. `None` when the database needs none.
+    fn identity_insert_sql(&self, _table: &TableRef, _on: bool) -> Option<String> {
+        None
+    }
+
     /// The words that make a primary key column number its rows itself.
     /// They go right after `PRIMARY KEY` in a `CREATE TABLE`.
     fn auto_increment(&self) -> &'static str;

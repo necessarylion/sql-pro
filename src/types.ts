@@ -536,3 +536,33 @@ export interface SyncSql {
   /** The database of the target tab when the SQL was made. Null on SQLite. */
   database: string | null
 }
+
+/** The kinds of row changes that go into the data sync SQL. */
+export interface DataKinds {
+  insert: boolean
+  update: boolean
+  delete: boolean
+}
+
+/** How the rows of one table differ, and the SQL that makes the target rows like the source. */
+export interface DataDiff {
+  /** The primary key columns. The rows are matched by them. */
+  key: string[]
+  /** The columns both sides have. Only these are compared and written. */
+  columns: string[]
+  sourceOnly: string[]
+  targetOnly: string[]
+  /** Generated columns. The database makes their values, so they are left out. */
+  generated: string[]
+  /** True when there are too many differences. Then there is no SQL. */
+  limited: boolean
+  deleteRows: number
+  updateRows: number
+  insertRows: number
+  deletes: string[]
+  updates: string[]
+  /** Can also hold the statements around the inserts (SQL Server identity). */
+  inserts: string[]
+  /** The database of the target tab at the compare. Null on SQLite. */
+  database: string | null
+}

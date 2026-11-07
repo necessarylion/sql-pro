@@ -113,6 +113,8 @@ pub fn run() {
             commands::compare_schemas,
             commands::schema_sync_sql,
             commands::run_schema_sync,
+            commands::compare_data,
+            commands::run_data_sync,
             commands::list_processes,
             commands::kill_process,
             commands::query_stats,

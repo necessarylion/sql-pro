@@ -10,10 +10,10 @@ use tauri::State;
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
-    ConnectionConfig, CsvImport, CsvPreview, DbObject, DbProcess, Diagram, ExportRequest,
-    NewColumn, NewForeignKey, NewIndex, NewUser, Notes, QueryStat, ResultSet, RowUpdate,
-    RowsExport, RowsSql, SaveResult, SchemaChange, SyncSql, TableKeys, TablePage, TableRef,
-    UserList, Values,
+    ConnectionConfig, CsvImport, CsvPreview, DataDiff, DataKinds, DbObject, DbProcess, Diagram,
+    ExportRequest, NewColumn, NewForeignKey, NewIndex, NewUser, Notes, QueryStat, ResultSet,
+    RowUpdate, RowsExport, RowsSql, SaveResult, SchemaChange, SyncSql, TableKeys, TablePage,
+    TableRef, UserList, Values,
 };
 use crate::open_file::OpenedFiles;
 use crate::repository::PasswordRepository;
@@ -470,6 +470,42 @@ pub async fn run_schema_sync(
 ) -> AppResult<()> {
     service
         .run_schema_sync(&source, &target, &picked, &reviewed, database.as_deref())
+        .await
+}
+
+/// Compares the rows of `table` in tab `source` and tab `target`, and makes the SQL
+/// that changes the target rows. Nothing runs.
+#[tauri::command]
+pub async fn compare_data(
+    service: Service<'_>,
+    source: String,
+    target: String,
+    table: TableRef,
+) -> AppResult<DataDiff> {
+    service.compare_data(&source, &target, &table).await
+}
+
+/// Compares the rows again and runs the SQL of `kinds` on tab `target`, only when it is
+/// still the `reviewed` SQL for `database`. The frontend asks the user first.
+#[tauri::command]
+pub async fn run_data_sync(
+    service: Service<'_>,
+    source: String,
+    target: String,
+    table: TableRef,
+    kinds: DataKinds,
+    reviewed: Vec<String>,
+    database: Option<String>,
+) -> AppResult<()> {
+    service
+        .run_data_sync(
+            &source,
+            &target,
+            &table,
+            kinds,
+            &reviewed,
+            database.as_deref(),
+        )
         .await
 }
 

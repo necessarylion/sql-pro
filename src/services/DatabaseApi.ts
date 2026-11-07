@@ -29,6 +29,8 @@ import type {
   RowsSql,
   SaveResult,
   SchemaChange,
+  DataDiff,
+  DataKinds,
   SyncSql,
   TableKeys,
   TablePage,
@@ -386,6 +388,27 @@ export class DatabaseApi {
     database: string | null,
   ): Promise<void> {
     return invoke('run_schema_sync', { source, target, picked, reviewed, database })
+  }
+
+  /** Compares the rows of `table` in two tabs and makes the SQL for the target. Nothing runs. */
+  compareData(source: string, target: string, table: TableRef): Promise<DataDiff> {
+    return invoke('compare_data', { source, target, table })
+  }
+
+  /**
+   * Compares the rows again on the backend and runs the SQL of `kinds` on tab `target` in one
+   * transaction. It refuses when the new SQL is not `reviewed`, the SQL the user saw, or when
+   * the target tab works on another database than `database` now.
+   */
+  runDataSync(
+    source: string,
+    target: string,
+    table: TableRef,
+    kinds: DataKinds,
+    reviewed: string[],
+    database: string | null,
+  ): Promise<void> {
+    return invoke('run_data_sync', { source, target, table, kinds, reviewed, database })
   }
 
   savePassword(id: string, password: string): Promise<void> {

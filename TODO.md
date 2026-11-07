@@ -2,15 +2,14 @@
 
 Features that paid SQL clients have. Do them in this order. Remove an item when it is done.
 
-1. **Data compare.** Compare the rows of one table in two databases. Make the `INSERT` / `UPDATE` / `DELETE` SQL that fixes the differences.
-2. **Visual query plan.** Show EXPLAIN as a tree. Mark the slow steps.
-3. **Charts from a query result.** Show a result as a bar, line or pie chart.
-4. **JSON cell viewer.** Show a JSON value as a tree you can fold, and edit it there.
-5. **Test data generator.** Fill a table with fake rows (names, emails, dates). Respect the column types and foreign keys.
-6. **Scheduled backups.** Run a backup every day or week. Keep the last N files.
-7. **Excel import.** Import an `.xlsx` file into a table, like CSV import.
-8. **More databases.** Redis and MongoDB.
-9. **Sync saved connections** across machines. Passwords must stay in the OS keychain.
+1. **Visual query plan.** Show EXPLAIN as a tree. Mark the slow steps.
+2. **Charts from a query result.** Show a result as a bar, line or pie chart.
+3. **JSON cell viewer.** Show a JSON value as a tree you can fold, and edit it there.
+4. **Test data generator.** Fill a table with fake rows (names, emails, dates). Respect the column types and foreign keys.
+5. **Scheduled backups.** Run a backup every day or week. Keep the last N files.
+6. **Excel import.** Import an `.xlsx` file into a table, like CSV import.
+7. **More databases.** Redis and MongoDB.
+8. **Sync saved connections** across machines. Passwords must stay in the OS keychain.
 
 ## Schema compare: left out for now
 
@@ -24,3 +23,14 @@ The Compare view compares tables, columns, indexes and foreign keys. These parts
 - A new PostgreSQL or SQL Server table is built from its columns. Checks and comments are not copied. A `serial` column becomes `serial` again.
 - An index on an expression, or with a `WHERE` part, is found but not copied. The SQL shows a warning.
 - A changed auto increment, identity or generated rule is found but not changed. The SQL shows a warning.
+
+## Data compare: left out for now
+
+The Compare view in Data mode compares the rows of one table. These parts are not done yet:
+
+- Only one table at a time.
+- With more than 10 000 different rows there is no SQL.
+- The compare reads keys in the order of the database. It guesses that order: numbers as numbers, text without case. A key that sorts another way (like a SQL Server GUID) makes it hold more rows, so a big table can hit the limit.
+- Generated columns are left out.
+- PostgreSQL does not move the sequence of an identity or serial column after the inserts. Set it by hand.
+- Binary values are written as their `0x…` text. On SQL Server such a statement fails.
