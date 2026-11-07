@@ -31,8 +31,8 @@ pub use tunnel::SshTunnel;
 
 use crate::constants::{
     CANCEL_NOT_REACHED, CONNECT_TIMEOUT_SECONDS, DEAD_CONNECTION_SECONDS, LOCALHOST,
-    MAX_QUERY_ROWS, NO_PROCESSES, NO_QUERY_STATS, NO_USER_ACCOUNTS, PASSWORD_ERROR_HIDDEN,
-    PROCEDURE, TRIGGER, VIEW,
+    MAX_QUERY_ROWS, NO_EXPLAIN, NO_PROCESSES, NO_QUERY_STATS, NO_USER_ACCOUNTS,
+    PASSWORD_ERROR_HIDDEN, PROCEDURE, TRIGGER, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -433,6 +433,20 @@ pub trait Repository: Send + Sync {
     /// `None` when the app cannot read plans of this database.
     async fn plan_sql(&self, _statement: &str, _analyze: bool) -> AppResult<Option<PlanSql>> {
         Ok(None)
+    }
+
+    /// Runs `steps` one after the other, each as a batch of its own, all on one connection.
+    /// So no other query of the tab can come between them. When a step fails, the rest is
+    /// skipped and `on_error` runs (its errors are dropped). `always` runs at the end in any
+    /// case; its error counts when the steps went well. Gives the result sets of the steps.
+    /// Only a database whose `plan_sql` has `before` or `after` needs it: SQL Server.
+    async fn query_steps(
+        &self,
+        _steps: &[&str],
+        _on_error: &[&str],
+        _always: &[&str],
+    ) -> AppResult<Vec<ResultSet>> {
+        Err(NO_EXPLAIN.into())
     }
 
     /// The words between the column list and `VALUES` of an `INSERT` that sets an

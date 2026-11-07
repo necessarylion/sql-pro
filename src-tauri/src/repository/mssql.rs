@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike as _};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use sqlx::error::BoxDynError;
+use sqlx::pool::PoolConnection;
 use sqlx::{AssertSqlSafe, Decode, Row as _, ValueRef as _};
 use sqlx_sqlserver::{
     Mssql, MssqlConnectOptions, MssqlConnection, MssqlPool, MssqlQueryResult, MssqlRow, MssqlType,
@@ -239,6 +240,12 @@ impl MssqlRepository {
 
     /// The driver cannot read some column types, like `xml`. Its error then says
     /// what to do instead. Browsing a table casts such columns by itself.
+    /// Runs one batch on `connection`.
+    async fn batch(connection: &mut PoolConnection<Mssql>, sql: &str) -> AppResult<Vec<ResultSet>> {
+        let stream = sqlx::raw_sql(AssertSqlSafe(sql.to_owned())).fetch_many(&mut **connection);
+        collect::<Mssql>(stream, Self::read, MssqlQueryResult::rows_affected).await
+    }
+
     fn readable(error: AppError) -> AppError {
         let AppError::Database(sqlx::Error::Protocol(message)) = &error else {
             return error;
@@ -716,17 +723,49 @@ impl Repository for MssqlRepository {
     /// Runs on the one connection of the pool. When a cancel ended its session,
     /// that connection is let go, so the next query opens a new one.
     async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>> {
+        self.query_steps(&[sql], &[], &[]).await
+    }
+
+    /// `SET SHOWPLAN_XML` must be alone in its batch, and it stays on for the connection.
+    /// One connection for all steps keeps other queries of the tab out while it is on.
+    async fn query_steps(
+        &self,
+        steps: &[&str],
+        on_error: &[&str],
+        always: &[&str],
+    ) -> AppResult<Vec<ResultSet>> {
         let mut connection = self.pool.acquire().await?;
         self.cancelled.store(false, Ordering::SeqCst);
         self.running.store(true, Ordering::SeqCst);
-        let stream = sqlx::raw_sql(AssertSqlSafe(sql.to_owned())).fetch_many(&mut *connection);
-        let result = collect::<Mssql>(stream, Self::read, MssqlQueryResult::rows_affected).await;
+        let mut sets = Vec::new();
+        let mut result = Ok(());
+        for step in steps {
+            match Self::batch(&mut connection, step).await {
+                Ok(mut more) => sets.append(&mut more),
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+        }
         self.running.store(false, Ordering::SeqCst);
         if self.cancelled.swap(false, Ordering::SeqCst) && result.is_err() {
+            // The session ended, and its settings with it.
             drop(connection.detach());
             return Err(QUERY_CANCELLED.into());
         }
-        result.map_err(Self::readable)
+        if result.is_err() {
+            for step in on_error {
+                let _ = Self::batch(&mut connection, step).await;
+            }
+        }
+        for step in always {
+            let done = Self::batch(&mut connection, step).await;
+            if let (Ok(()), Err(error)) = (&result, done) {
+                result = Err(error);
+            }
+        }
+        result.map(|()| sets).map_err(Self::readable)
     }
 
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64> {

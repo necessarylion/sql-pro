@@ -36,23 +36,31 @@ impl ConnectionService {
         if analyze {
             Self::check_no_transaction(&connection).await?;
         }
-        if let Some(before) = plan_sql.before {
-            repository.query(before).await?;
-        }
-        let result = if analyze {
-            Self::guarded_batch(repository, &plan_sql.sql).await
-        } else {
-            repository.query(&plan_sql.sql).await
-        };
-        if let Some(after) = plan_sql.after {
-            // A setting that stays on would change every later query of the tab.
-            let undone = repository.query(after).await;
-            if result.is_ok() {
-                undone?;
+        let sets = if plan_sql.before.is_none() && plan_sql.after.is_none() {
+            if analyze {
+                Self::guarded_batch(repository, &plan_sql.sql).await?
+            } else {
+                repository.query(&plan_sql.sql).await?
             }
-        }
-        let output = last_with_columns(result?);
+        } else {
+            // The settings stay on for the connection. So they run on the same connection
+            // as the statement, with nothing between, and `after` turns them off again.
+            let body = if analyze {
+                Self::guarded_sql(repository, &plan_sql.sql)
+            } else {
+                plan_sql.sql.clone()
+            };
+            let mut steps: Vec<&str> = plan_sql.before.into_iter().collect();
+            steps.push(&body);
+            let end = repository.read_only_guard().1;
+            let on_error: &[&str] = if analyze { &[end] } else { &[] };
+            let always: Vec<&str> = plan_sql.after.into_iter().collect();
+            repository.query_steps(&steps, on_error, &always).await?
+        };
+        let output = last_with_columns(sets);
         let raw = match repository.explain_prefix() {
+            // `SQLite` explains with the same words. Its plan is the plain output already.
+            Some(prefix) if format!("{prefix} {statement}") == plan_sql.sql => output.clone(),
             Some(prefix) => {
                 last_with_columns(repository.query(&format!("{prefix} {statement}")).await?)
             }
@@ -581,24 +589,30 @@ fn mysql_tree_node(step: &str) -> PlanNode {
         }
         rest = rest[..start].trim_end();
     }
-    let (operation, object) = match rest.split_once(": ") {
-        Some((operation, what)) => {
-            detail(&mut node.details, "Detail", what);
-            (operation, None)
+    // `Filter: (a on b)` and `Index lookup on t (a: b)`: the first marker ends the name.
+    let colon = rest.find(": ");
+    let on = rest.find(" on ");
+    let (operation, object) = match (colon, on) {
+        (Some(colon), on) if on.is_none_or(|on| colon < on) => {
+            detail(&mut node.details, "Detail", &rest[colon + 2..]);
+            (&rest[..colon], None)
         }
-        None => match rest.split_once(" on ") {
-            Some((operation, object)) => (operation, Some(object.to_owned())),
-            None => (rest, None),
-        },
+        (_, Some(on)) => (&rest[..on], Some(rest[on + 4..].to_owned())),
+        _ => (rest, None),
     };
-    let lower = rest.to_ascii_lowercase();
-    if operation == "Table scan" && object.as_deref().is_some_and(|name| !name.starts_with('<')) {
+    // Only the name of the step and of an inner table (`<temporary>`) count, not a condition.
+    let lower = operation.to_ascii_lowercase();
+    let inner = object.as_deref().filter(|name| name.starts_with('<'));
+    if operation == "Table scan" && object.is_some() && inner.is_none() {
         add(&mut node.problems, PlanProblem::FullScan);
     }
     if operation.starts_with("Sort") {
         add(&mut node.problems, PlanProblem::Filesort);
     }
-    if lower.contains("temporary") || lower.contains("materialize") {
+    if lower.contains("temporary")
+        || lower.contains("materialize")
+        || inner.is_some_and(|name| name.contains("temporary"))
+    {
         add(&mut node.problems, PlanProblem::TempTable);
     }
     operation.clone_into(&mut node.operation);
@@ -796,7 +810,9 @@ fn mssql_runtime(relop: roxmltree::Node, node: &mut PlanNode) {
     else {
         return;
     };
-    let (mut rows, mut loops, mut elapsed, mut batch) = (0.0, 0.0, 0.0_f64, false);
+    let (mut rows, mut loops, mut batch) = (0.0, 0.0, false);
+    // SQL Server 2014 and older give no time. Then the step has none, not 0.
+    let mut elapsed: Option<f64> = None;
     for thread in runtime
         .children()
         .filter(|child| child.has_tag_name("RunTimeCountersPerThread"))
@@ -810,16 +826,21 @@ fn mssql_runtime(relop: roxmltree::Node, node: &mut PlanNode) {
         rows += get("ActualRows");
         loops += get("ActualExecutions");
         // Threads run at the same time, so the slowest one is the time of the step.
-        elapsed = elapsed.max(get("ActualElapsedms"));
+        if let Some(time) = thread
+            .attribute("ActualElapsedms")
+            .and_then(|value| value.parse::<f64>().ok())
+        {
+            elapsed = Some(elapsed.map_or(time, |slowest| slowest.max(time)));
+        }
         batch |= thread.attribute("ActualExecutionMode") == Some("Batch");
     }
     node.loops = Some(loops);
     node.actual_rows = Some(if loops > 0.0 { rows / loops } else { 0.0 });
     // In row mode the time holds the steps below. In batch mode it is the step alone.
     if batch {
-        node.own_time = Some(elapsed);
+        node.own_time = elapsed;
     } else {
-        node.time_ms = Some(elapsed);
+        node.time_ms = elapsed;
     }
 }
 
@@ -1332,6 +1353,56 @@ mod tests {
             .find(|node| node.actual_rows == Some(3960.0))
             .expect("scan");
         assert_eq!(scan.problems, [PlanProblem::FullScan]);
+    }
+
+    #[test]
+    fn mysql_steps_keep_the_order_of_the_server() {
+        let plan = read(
+            PlanFormat::MysqlJson,
+            include_str!("../../tests/plans/mysql_plan_subquery.json"),
+            false,
+        );
+        let block = &plan.nodes[0];
+        // The table comes before the subquery of the select list, as MySQL wrote it.
+        let operations: Vec<&str> = block
+            .children
+            .iter()
+            .map(|node| node.operation.as_str())
+            .collect();
+        assert_eq!(operations, ["Index range scan", "Query block #2"]);
+    }
+
+    #[test]
+    fn mysql_tree_badges_come_from_the_step_name_only() {
+        let text = "-> Filter: (t.temporary_until > now())  (cost=1 rows=1) (actual time=0.01..0.02 rows=1 loops=1)\n    \
+            -> Index lookup on t using k (note='Sort: a')  (cost=1 rows=1) (actual time=0.01..0.01 rows=1 loops=1)";
+        let plan = read(PlanFormat::MysqlTree, text, true);
+        let filter = &plan.nodes[0];
+        assert_eq!(filter.operation, "Filter");
+        assert_eq!(filter.problems, []);
+        let lookup = &filter.children[0];
+        assert_eq!(lookup.operation, "Index lookup");
+        assert_eq!(lookup.object.as_deref(), Some("t using k (note='Sort: a')"));
+        assert_eq!(lookup.problems, []);
+    }
+
+    #[test]
+    fn mssql_without_times_has_no_time() {
+        // SQL Server 2014 and older write no ActualElapsedms.
+        let text = include_str!("../../tests/plans/mssql_analyze.xml");
+        let mut old = String::new();
+        let mut rest = text;
+        while let Some(start) = rest.find(" ActualElapsedms=\"") {
+            old.push_str(&rest[..start]);
+            let value = &rest[start + 18..];
+            rest = &value[value.find('"').map_or(0, |end| end + 1)..];
+        }
+        old.push_str(rest);
+        assert!(!old.contains("ActualElapsedms"));
+        let plan = read(PlanFormat::MssqlXml, &old, true);
+        assert_eq!(plan.nodes[0].actual_rows, Some(20.0));
+        assert_eq!(plan.nodes[0].time_ms, None);
+        assert_eq!(plan.measure, Some(PlanMeasure::Cost));
     }
 
     #[test]

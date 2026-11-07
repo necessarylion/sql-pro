@@ -2015,6 +2015,32 @@ async fn query_plan(service: &ConnectionService, table: &TableRef, driver: Drive
         .await
         .expect("query");
     assert_eq!(sets.len(), 1);
+    if driver == Driver::Mssql {
+        plan_setting_stays_private(service).await;
+    }
+}
+
+/// A query of the same tab that comes during an Analyze waits for it. It never runs while
+/// `STATISTICS XML` is on, so it gets its own rows and no plan. It reads a table, because
+/// SQL Server writes no plan for a trivial query like `SELECT 1`.
+async fn plan_setting_stays_private(service: &ConnectionService) {
+    // About 0.3 s. The filter keeps SQL Server from counting the rows without reading them.
+    let slow = "SELECT COUNT(*) FROM sys.all_columns a CROSS JOIN sys.all_columns b \
+        WHERE (a.column_id * b.column_id) % 7 = 3";
+    let other = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        service
+            .run_query(ID, "SELECT COUNT(*) AS one FROM sys.objects")
+            .await
+    };
+    let started = Instant::now();
+    let (plan, sets) = tokio::join!(service.query_plan(ID, slow, true), other);
+    assert!(plan.expect("analyze").analyzed);
+    let sets = sets.expect("query");
+    assert_eq!(sets.len(), 1);
+    assert_eq!(sets[0].columns, vec!["one"]);
+    // The check means something only when the other query came while the analyze ran.
+    assert!(started.elapsed() > Duration::from_millis(100));
 }
 
 /// Every SQL Server type comes back as the text SQL Server itself writes.
