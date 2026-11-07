@@ -852,7 +852,7 @@ impl Repository for MysqlRepository {
     }
 
     async fn close(&self) {
-        self.pool.close().await;
+        super::close_pool(&self.pool).await;
     }
 
     async fn cancel(&self) -> AppResult<()> {

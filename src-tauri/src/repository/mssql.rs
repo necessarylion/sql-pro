@@ -761,7 +761,7 @@ impl Repository for MssqlRepository {
     }
 
     async fn close(&self) {
-        self.pool.close().await;
+        super::close_pool(&self.pool).await;
     }
 
     /// The driver has no cancel of its own. So a second connection ends the session

@@ -9,6 +9,11 @@ pub const CSV_PREVIEW_ROWS: usize = 6;
 /// How long we wait for a connection before we give up.
 pub const CONNECT_TIMEOUT_SECONDS: u64 = 10;
 
+/// How long we wait on a connection that may be dead: a ping of the spare, or a close.
+/// After sleep or hours idle, a socket can be gone without a word, and a read on it
+/// then hangs for minutes.
+pub const DEAD_CONNECTION_SECONDS: u64 = 3;
+
 /// Which build this is: `dev` for a debug build (`tauri dev` and `tauri build --debug`),
 /// empty for a release build. The two builds must never share saved data.
 pub const PROFILE: &str = if cfg!(debug_assertions) { "dev" } else { "" };

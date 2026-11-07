@@ -30,8 +30,9 @@ pub use password::{Keychain, OsKeychain, PasswordRepository};
 pub use tunnel::SshTunnel;
 
 use crate::constants::{
-    CANCEL_NOT_REACHED, CONNECT_TIMEOUT_SECONDS, LOCALHOST, MAX_QUERY_ROWS, NO_PROCESSES,
-    NO_QUERY_STATS, NO_USER_ACCOUNTS, PASSWORD_ERROR_HIDDEN, PROCEDURE, TRIGGER,
+    CANCEL_NOT_REACHED, CONNECT_TIMEOUT_SECONDS, DEAD_CONNECTION_SECONDS, LOCALHOST,
+    MAX_QUERY_ROWS, NO_PROCESSES, NO_QUERY_STATS, NO_USER_ACCOUNTS, PASSWORD_ERROR_HIDDEN,
+    PROCEDURE, TRIGGER,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -455,6 +456,17 @@ fn pool_options<DB: Database>() -> PoolOptions<DB> {
         .idle_timeout(None)
         .max_lifetime(None)
         .acquire_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
+}
+
+/// Closes `pool`, but waits at most `DEAD_CONNECTION_SECONDS`.
+///
+/// `Pool::close` waits until the connection is back in the pool. After hours idle the
+/// connection can hang on a dead socket for minutes. Then a connect again (it closes the
+/// old pool of the tab) or a disconnect would hang too. The pool is marked closed at
+/// once, so a connection that comes back later is closed then.
+async fn close_pool<DB: Database>(pool: &Pool<DB>) {
+    let wait = Duration::from_secs(DEAD_CONNECTION_SECONDS);
+    let _ = tokio::time::timeout(wait, pool.close()).await;
 }
 
 /// Takes the one connection of the pool for a write, and checks it first.
@@ -881,4 +893,29 @@ fn hex(bytes: &[u8]) -> String {
         let _ = write!(hex, "{byte:02x}");
     }
     hex
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::close_pool;
+    use crate::constants::DEAD_CONNECTION_SECONDS;
+
+    /// A connection that never comes back (a hung read) must not make the close hang.
+    #[tokio::test]
+    async fn close_does_not_wait_for_a_hung_connection() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        let _held = pool.acquire().await.expect("connection");
+        let limit = Duration::from_secs(DEAD_CONNECTION_SECONDS + 5);
+        tokio::time::timeout(limit, close_pool(&pool))
+            .await
+            .expect("close hung");
+        assert!(pool.is_closed());
+    }
 }
