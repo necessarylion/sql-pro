@@ -369,8 +369,15 @@ pub trait Repository: Send + Sync {
         (self.select_column(column), false)
     }
 
-    /// A key value as SQL that compares the way `column` sorts in `ORDER BY`.
-    fn key_literal(&self, _column: &ColumnInfo, value: &str) -> String {
+    /// Per key column name of `table`, what `key_literal` needs to write a value that
+    /// compares like the column. Empty when a plain literal does that.
+    async fn key_casts(&self, _table: &TableRef) -> AppResult<HashMap<String, KeyCast>> {
+        Ok(HashMap::new())
+    }
+
+    /// A key value as SQL that compares the way its column sorts in `ORDER BY`.
+    /// `cast` is the entry of `key_casts` for the column.
+    fn key_literal(&self, _cast: Option<&KeyCast>, value: &str) -> String {
         self.literal(value)
     }
 
@@ -427,6 +434,15 @@ pub trait Repository: Send + Sync {
             None => self.quote(&table.name),
         }
     }
+}
+
+/// The system type and the collation of a key column, from `Repository::key_casts`.
+#[derive(Clone, Debug)]
+pub struct KeyCast {
+    /// The system type with its length, like `varchar(10)`. An alias type gives its base.
+    pub data_type: String,
+    /// The collation of a text column.
+    pub collation: Option<String>,
 }
 
 /// One statement of a batch, with its bound values.

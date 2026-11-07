@@ -3236,9 +3236,65 @@ async fn mssql_varchar_keys(service: &ConnectionService) {
     let diff = sync_table(service, "data_text").await;
     assert_eq!(
         diff.deletes,
-        ["DELETE FROM [dbo].[data_text] WHERE [k] = CAST(N'a0000' AS varchar(10))"]
+        ["DELETE FROM [dbo].[data_text] WHERE [k] = \
+            CAST(N'a0000' COLLATE SQL_Latin1_General_CP1_CI_AS AS varchar(10))"]
     );
     assert_eq!((diff.update_rows, diff.insert_rows), (0, 0));
+}
+
+/// SQL Server keys that a plain cast breaks: a `varchar` with another code page than
+/// the database, an alias type, and a `datetime` in a session with a day-month language.
+async fn mssql_key_types(service: &ConnectionService) {
+    data_table(
+        service,
+        "CREATE TABLE data_cn (k VARCHAR(10) COLLATE Chinese_PRC_CI_AS PRIMARY KEY, v INTEGER)",
+        "INSERT INTO data_cn VALUES (N'中文', 1), (N'乙', 2)",
+        "INSERT INTO data_cn VALUES (N'中文', 9), (N'甲', 1)",
+    )
+    .await;
+    let diff = sync_table(service, "data_cn").await;
+    assert_eq!(
+        (diff.delete_rows, diff.update_rows, diff.insert_rows),
+        (1, 1, 1)
+    );
+    let text = target_cell(
+        service,
+        "SELECT STRING_AGG(CONCAT(CAST(k AS NVARCHAR(10)), ':', v), ',') WITHIN GROUP (ORDER BY v) \
+            FROM data_cn",
+    )
+    .await;
+    assert_eq!(text.as_deref(), Some("中文:1,乙:2"));
+
+    for id in [DATA_SOURCE, DATA_TARGET] {
+        run_all(service, id, &["CREATE TYPE dbo.CodeT FROM VARCHAR(20)"]).await;
+    }
+    data_table(
+        service,
+        "CREATE TABLE data_alias (k dbo.CodeT PRIMARY KEY, v INTEGER)",
+        "INSERT INTO data_alias VALUES ('a', 1)",
+        "INSERT INTO data_alias VALUES ('a', 2), ('b', 1)",
+    )
+    .await;
+    // The alias type is cast to its base type. `CodeT` is no system type.
+    let diff = sync_table(service, "data_alias").await;
+    assert_eq!(diff.deletes.len(), 1);
+    assert!(
+        diff.deletes[0].ends_with(" AS varchar(20))"),
+        "{}",
+        diff.deletes[0]
+    );
+
+    data_table(
+        service,
+        "CREATE TABLE data_time (k DATETIME PRIMARY KEY, v INTEGER)",
+        "INSERT INTO data_time VALUES ('2024-01-13T10:00:00.007', 1)",
+        "INSERT INTO data_time VALUES ('2024-01-13T10:00:00.007', 2), ('2024-01-14T10:00:00', 1)",
+    )
+    .await;
+    // `British` reads `2024-01-13` as year, day, month: day 2024-01, month 13 fails.
+    run_all(service, DATA_TARGET, &["SET LANGUAGE British"]).await;
+    sync_table(service, "data_time").await;
+    run_all(service, DATA_TARGET, &["SET LANGUAGE us_english"]).await;
 }
 
 /// Values that only some databases have trouble with: binary bytes that are not UTF-8,
@@ -3313,6 +3369,7 @@ async fn data_types(service: &ConnectionService, driver: Driver) {
             let diff = sync_table(service, "data_bin").await;
             assert_eq!(diff.generated, ["rv", "n"]);
             mssql_varchar_keys(service).await;
+            mssql_key_types(service).await;
             (
                 "SELECT STRING_AGG(CONCAT(id, ':', ISNULL(CONVERT(VARCHAR(30), b, 1), 'null'), \
                     ':', name), ',') WITHIN GROUP (ORDER BY id) FROM data_bin",

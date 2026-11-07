@@ -1,5 +1,6 @@
 //! Microsoft SQL Server access, through our fork of the `sqlx-sqlserver` driver.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,9 +16,9 @@ use sqlx_sqlserver::{
 };
 
 use super::{
-    Repository, ServerId, Statement, cell, collect, definition, execute, execute_all, first_column,
-    foreign_keys, hex, indexes, kind, objects, pool_options, relations, run_on_new_connection,
-    run_script, single, standard_columns, swap_create,
+    KeyCast, Repository, ServerId, Statement, cell, collect, definition, execute, execute_all,
+    first_column, foreign_keys, hex, indexes, kind, objects, pool_options, relations,
+    run_on_new_connection, run_script, single, standard_columns, swap_create,
 };
 use crate::constants::{MSSQL_NO_QUERY_STATS, QUERY_CANCELLED, QUERY_STATS_LIMIT};
 use crate::error::{AppError, AppResult};
@@ -566,15 +567,82 @@ impl Repository for MssqlRepository {
     }
 
     /// A binary value comes as `0x…` text, which is a SQL literal as it is.
+    /// A `varchar` is read as `nvarchar`, so letters of any code page come out right
+    /// (`single_byte_text` reads one byte as Latin-1). No `AS` name, so `ORDER BY`
+    /// still sorts by the column.
     fn compare_column(&self, column: &ColumnInfo) -> (String, bool) {
-        let binary = BINARY_TYPES.contains(&Self::base_type(&column.data_type).as_str());
+        let base = Self::base_type(&column.data_type);
+        if base == "varchar" || base == "char" {
+            let name = self.quote(&column.name);
+            return (format!("CAST({name} AS NVARCHAR(MAX))"), false);
+        }
+        let binary = BINARY_TYPES.contains(&base.as_str());
         (self.select_column(column), binary)
     }
 
     /// An `N'…'` text would make a `varchar` key compare as `nvarchar`, which sorts
     /// another way. So the value takes the type of the column. That also lets an index work.
-    fn key_literal(&self, column: &ColumnInfo, value: &str) -> String {
-        format!("CAST({} AS {})", self.literal(value), column.data_type)
+    /// The text also takes the collation of the column. Without it, a `varchar` with
+    /// another code page than the database turns the letters into `?`.
+    /// `datetime` reads the text by the language of the session, so style 121 fixes it.
+    fn key_literal(&self, cast: Option<&KeyCast>, value: &str) -> String {
+        let text = self.literal(value);
+        let Some(cast) = cast else {
+            return text;
+        };
+        let kind = &cast.data_type;
+        match (Self::base_type(kind).as_str(), &cast.collation) {
+            ("datetime" | "smalldatetime", _) => format!("CONVERT({kind}, {text}, 121)"),
+            (_, Some(collation)) => format!("CAST({text} COLLATE {collation} AS {kind})"),
+            _ => format!("CAST({text} AS {kind})"),
+        }
+    }
+
+    /// The base system type (an alias type gives the type it is made from) and the
+    /// collation of each primary key column.
+    async fn key_casts(&self, table: &TableRef) -> AppResult<HashMap<String, KeyCast>> {
+        let sql = format!(
+            "SELECT c.name, TYPE_NAME(c.system_type_id), c.max_length, c.precision, c.scale, \
+                c.collation_name \
+            FROM sys.columns c \
+            JOIN sys.index_columns ic ON ic.object_id = c.object_id AND ic.column_id = c.column_id \
+            JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id \
+            WHERE c.object_id = {} AND i.is_primary_key = 1",
+            self.object_id(table)
+        );
+        let mut casts = HashMap::new();
+        for row in single(self.query(&sql).await?).rows {
+            let base = cell(&row, 1);
+            let number = |index: usize| cell(&row, index).parse::<i64>().unwrap_or(0);
+            let length = number(2);
+            let size = |chars: i64| {
+                if length == -1 {
+                    "max".to_owned()
+                } else {
+                    chars.to_string()
+                }
+            };
+            let data_type = match base.as_str() {
+                "varchar" | "char" | "varbinary" | "binary" => format!("{base}({})", size(length)),
+                "nvarchar" | "nchar" => format!("{base}({})", size(length / 2)),
+                "decimal" | "numeric" => format!("{base}({},{})", number(3), number(4)),
+                "datetime2" | "time" | "datetimeoffset" => format!("{base}({})", number(4)),
+                _ => base.clone(),
+            };
+            // A collation name is letters, digits and `_`. Anything else is not used.
+            let collation = row.get(5).cloned().flatten().filter(|name| {
+                name.chars()
+                    .all(|letter| letter.is_ascii_alphanumeric() || letter == '_')
+            });
+            casts.insert(
+                cell(&row, 0),
+                KeyCast {
+                    data_type,
+                    collation,
+                },
+            );
+        }
+        Ok(casts)
     }
 
     /// A `rowversion` (`timestamp`) changes on every write. No `INSERT` or `UPDATE` can set it.

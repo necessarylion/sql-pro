@@ -15,7 +15,7 @@ use crate::constants::{
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{ColumnInfo, DataDiff, DataKinds, TableRef};
-use crate::repository::{Repository, Statement};
+use crate::repository::{KeyCast, Repository, Statement};
 
 /// One row as the app reads it: every value as text, NULL as `None`.
 type Cells = Vec<Option<String>>;
@@ -155,7 +155,8 @@ impl RowMerge {
         if self.limited {
             return RowDiff {
                 limited: true,
-                unsorted: self.sure() <= max,
+                // With no match at all there is nothing to tell the sort order by.
+                unsorted: self.passed != [0, 0] && self.sure() <= max,
                 ..RowDiff::default()
             };
         }
@@ -176,11 +177,12 @@ impl RowMerge {
     }
 
     /// How many differences are sure, if both sides sort the key the same way.
+    /// When the other side is read to its end, every waiting row is sure.
     fn sure(&self) -> usize {
         let mut sure = self.changed.len();
         for side in [SOURCE, TARGET] {
             for (number, _) in self.waiting[side].values() {
-                if *number < self.passed[side] {
+                if self.done[1 - side] || *number < self.passed[side] {
                     sure += 1;
                 }
             }
@@ -237,6 +239,8 @@ struct Columns {
     /// Per side, how each column of `shared` is read, and true when the value read is
     /// already a SQL literal (`Repository::compare_column`).
     read: [Vec<(String, bool)>; 2],
+    /// Per side, how a key value is written (`Repository::key_casts`).
+    casts: [HashMap<String, KeyCast>; 2],
 }
 
 impl Columns {
@@ -255,25 +259,28 @@ impl Columns {
         }
     }
 
-    /// A key value of a row of `side` as SQL that compares like `column` does.
+    /// A key value of a row of `side` as SQL that compares like the key column of
+    /// `column_side`, where the SQL runs.
     fn key_value(
         &self,
         repository: &dyn Repository,
-        column: &ColumnInfo,
+        column_side: usize,
         side: usize,
         index: usize,
         cell: Option<&str>,
     ) -> String {
         match cell {
-            Some(text) if !self.read[side][index].1 => repository.key_literal(column, text),
+            Some(text) if !self.read[side][index].1 => {
+                let (source, target) = &self.shared[index];
+                let name = if column_side == SOURCE {
+                    &source.name
+                } else {
+                    &target.name
+                };
+                repository.key_literal(self.casts[column_side].get(name), text)
+            }
             _ => self.value(repository, side, index, cell),
         }
-    }
-
-    /// The column of `side` at `index` of `shared`.
-    fn column(&self, side: usize, index: usize) -> &ColumnInfo {
-        let (source, target) = &self.shared[index];
-        if side == SOURCE { source } else { target }
     }
 
     /// True when the key of a row of `side` has a NULL. Such a row cannot be matched in SQL.
@@ -310,12 +317,15 @@ impl ConnectionService {
             database: Self::current_database(to).await?,
             ..DataDiff::default()
         };
-        let columns = Self::shared_columns(
+        let mut columns = Self::shared_columns(
             &label,
             [from, to],
             [&source_columns, &target_columns],
             &mut diff,
         )?;
+        let (source_casts, target_casts) =
+            tokio::try_join!(from.key_casts(table), to.key_casts(table))?;
+        columns.casts = [source_casts, target_casts];
         let rows = Self::merge_rows([from, to], table, &label, &columns).await?;
         if rows.limited {
             diff.limited = true;
@@ -412,6 +422,7 @@ impl ConnectionService {
             shared: Vec::new(),
             key: Vec::new(),
             read: [Vec::new(), Vec::new()],
+            casts: [HashMap::new(), HashMap::new()],
         };
         for wanted in source {
             let Some(found) = target.iter().find(|found| found.name == wanted.name) else {
@@ -518,7 +529,7 @@ impl ConnectionService {
                     for (&index, cell) in columns.key.iter().zip(last) {
                         values.push(columns.key_value(
                             repository,
-                            columns.column(side, index),
+                            side,
                             side,
                             index,
                             cell.as_deref(),
@@ -647,13 +658,7 @@ impl ConnectionService {
             parts.push(format!(
                 "{} = {}",
                 names[index],
-                columns.key_value(
-                    target,
-                    columns.column(TARGET, index),
-                    side,
-                    index,
-                    row[index].as_deref()
-                )
+                columns.key_value(target, TARGET, side, index, row[index].as_deref())
             ));
         }
         parts.join(" AND ")
@@ -849,15 +854,53 @@ mod tests {
         assert!(merge.finish(100).limited);
     }
 
+    /// Runs a merge with the real page size and limits, the way the service does.
+    fn full_merge(source: &[Cells], target: &[Cells]) -> RowDiff {
+        let mut merge = RowMerge::new(
+            vec![0],
+            MAX_QUERY_ROWS,
+            2 * MAX_DATA_DIFFS + 2 * MAX_QUERY_ROWS,
+        );
+        let sides = [source, target];
+        let mut offsets = [0; 2];
+        while let Some(side) = merge.next_side() {
+            let rows = sides[side];
+            let start = offsets[side].min(rows.len());
+            let end = (start + MAX_QUERY_ROWS).min(rows.len());
+            merge.push_page(side, rows[start..end].to_vec());
+            offsets[side] += MAX_QUERY_ROWS;
+        }
+        merge.finish(MAX_DATA_DIFFS)
+    }
+
+    fn numbered(ids: std::ops::Range<u32>) -> Vec<Cells> {
+        ids.map(|id| row(&[Some(&id.to_string())])).collect()
+    }
+
+    #[test]
+    fn many_real_differences_are_not_a_sort_problem() {
+        let cases = [
+            (numbered(1..25_001), Vec::new()),
+            (numbered(1..50_001), numbered(1..1001)),
+            (numbered(1..25_001), numbered(100_001..125_001)),
+        ];
+        for (source, target) in cases {
+            let diff = full_merge(&source, &target);
+            assert!(diff.limited);
+            assert!(!diff.unsorted, "{} / {}", source.len(), target.len());
+        }
+    }
+
     #[test]
     fn sides_that_sort_the_key_apart_are_named() {
-        // The same 20 keys, but the target gives them from high to low.
+        // The same 20 keys. The target gives the first two the same way, then the rest
+        // from high to low.
         let mut source = Vec::new();
         for id in 1..=20 {
             source.push(row(&[Some(&id.to_string())]));
         }
         let mut target = source.clone();
-        target.reverse();
+        target[2..].reverse();
         let mut merge = RowMerge::new(vec![0], 2, 8);
         let mut offsets = [0; 2];
         let sides = [&source, &target];
