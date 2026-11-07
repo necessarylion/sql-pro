@@ -1,0 +1,40 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost": 19.9682392,
+    "filesort": {
+      "sort_key": "sum(o.total) desc",
+      "temporary_table": {
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "c",
+              "access_type": "ALL",
+              "possible_keys": ["PRIMARY"],
+              "loops": 1,
+              "rows": 2000,
+              "cost": 0.3411288,
+              "filtered": 100
+            }
+          },
+          {
+            "table": {
+              "table_name": "o",
+              "access_type": "ref",
+              "possible_keys": ["orders_customer"],
+              "key": "orders_customer",
+              "key_length": "5",
+              "used_key_parts": ["customer_id"],
+              "ref": ["shop.c.id"],
+              "loops": 2000,
+              "rows": 9,
+              "cost": 19.6271104,
+              "filtered": 100,
+              "attached_condition": "o.`status` = 'paid'"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

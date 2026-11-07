@@ -370,6 +370,22 @@ pub const EXPLAIN_ONE_STATEMENT: &str =
 /// The error when the database has no Explain in this app.
 pub const NO_EXPLAIN: &str = "Explain is not available for this database.";
 
+/// The error when Analyze gets a statement that is not a read. Analyze runs the statement.
+pub const ANALYZE_NOT_A_READ: &str =
+    "Analyze runs the statement, so it only takes a read. Use Explain for this one.";
+
+/// The error for Analyze on `SQLite`.
+pub const SQLITE_NO_ANALYZE: &str = "SQLite gives no real times. Use Explain.";
+
+/// A plan step that takes this part of the whole time or cost itself is slow (red).
+pub const PLAN_SLOW_SHARE: f64 = 0.30;
+
+/// A plan step that takes this part of the whole time or cost itself is marked amber.
+pub const PLAN_WARM_SHARE: f64 = 0.10;
+
+/// Real rows this many times more, or fewer, than the estimate get a badge.
+pub const PLAN_ROW_GAP: f64 = 10.0;
+
 /// The error when the Claude Code CLI cannot be found.
 pub const CLAUDE_NOT_FOUND: &str = "Claude Code is not installed. Install it from https://claude.com/claude-code, then run `claude` once in a terminal to log in.";
 

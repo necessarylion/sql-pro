@@ -12,9 +12,9 @@ use crate::error::{AppError, AppResult};
 use crate::model::{
     AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
     ConnectionConfig, CsvImport, CsvPreview, DataDiff, DataKinds, DbObject, DbProcess, Diagram,
-    DumpProgress, ExportRequest, NewColumn, NewForeignKey, NewIndex, NewUser, Notes, QueryStat,
-    ResultSet, RowUpdate, RowsExport, RowsSql, SaveResult, SchemaChange, SyncSql, TableKeys,
-    TablePage, TableRef, UserList, Values,
+    DumpProgress, ExportRequest, NewColumn, NewForeignKey, NewIndex, NewUser, Notes, QueryPlan,
+    QueryStat, ResultSet, RowUpdate, RowsExport, RowsSql, SaveResult, SchemaChange, SyncSql,
+    TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::open_file::OpenedFiles;
 use crate::repository::PasswordRepository;
@@ -97,10 +97,16 @@ pub async fn run_query(service: Service<'_>, id: String, sql: String) -> AppResu
     service.run_query(&id, &sql).await
 }
 
-/// Gives the query plan of one statement without running it.
+/// Gives the query plan of one statement as a tree. Without `analyze` it never runs.
+/// With `analyze` it runs once for real times, and only when it is a read.
 #[tauri::command]
-pub async fn explain(service: Service<'_>, id: String, sql: String) -> AppResult<Vec<ResultSet>> {
-    service.explain(&id, &sql).await
+pub async fn query_plan(
+    service: Service<'_>,
+    id: String,
+    sql: String,
+    analyze: bool,
+) -> AppResult<QueryPlan> {
+    service.query_plan(&id, &sql, analyze).await
 }
 
 /// Runs at the same time as the query it stops. Tauri runs async commands side by side.

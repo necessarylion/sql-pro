@@ -16,6 +16,7 @@ import {
   SQLITE_ROWID_TYPE,
 } from '../constants/columns'
 import { DIAGRAM_SAVED_STATUS_MS } from '../constants/diagram'
+import { ANALYZE_STATUS, PLAN_STATUS } from '../constants/plan'
 import { RAW_FILTER_COLUMN, VALUELESS_OPERATORS } from '../constants/filters'
 import {
   MYSQL_CURRENT_USER_SQL,
@@ -37,6 +38,7 @@ import type {
   DbObject,
   DbObjectKind,
   DbProcess,
+  QueryPlan,
   QueryStat,
   DbUser,
   Diagram,
@@ -144,6 +146,8 @@ export class Session {
   deletes: Record<string, Values> = {}
   sql = ''
   result: ResultSet | null = null
+  /** The plan tree of the last Explain or Analyze. Null after a normal run. */
+  plan: QueryPlan | null = null
   status = ''
   /** The accounts of the server, with their access on the current database. */
   users: DbUser[] = []
@@ -524,6 +528,7 @@ export class Session {
       this.tables = []
       this.objects = []
       this.result = null
+      this.plan = null
       this.status = ''
       this.diagram = null
       this.processes = []
@@ -1510,6 +1515,10 @@ export class Session {
 
   /** Shows the progress like `Backing up… 48 MB, 0:32 · Dumping table orders (12 of 40)`. */
   showBackupProgress(progress: DumpProgress): void {
+    // The last message can arrive after the backup ended. Then it must not show.
+    if (!this.dumping) {
+      return
+    }
     const minutes = Math.floor(progress.seconds / 60)
     let text = `Backing up… ${this.sizeText(progress.bytes)}, ${minutes}:${this.two(progress.seconds % 60)}`
     if (progress.table) {
@@ -1685,6 +1694,7 @@ export class Session {
     }
     // markRaw: Vue does not wrap the rows. A result is only replaced, never changed in place.
     this.result = result && markRaw(result)
+    this.plan = null
     if (result) {
       const cut = result.truncated ? ' (truncated)' : ''
       const changed = affected > 0 ? `, ${this.plural(affected, 'row')} affected` : ''
@@ -1696,17 +1706,20 @@ export class Session {
     await this.loadTables()
   }
 
-  /** Shows the query plan of one statement in the result grid. The statement does not run. */
-  async explain(sql: string): Promise<void> {
-    const sets = await this.api.explain(this.id, sql)
-    let plan: ResultSet | null = null
-    for (const set of sets) {
-      if (set.columns.length > 0) {
-        plan = set
-      }
-    }
-    this.result = plan && markRaw(plan)
-    this.status = 'Query plan. The statement did not run.'
+  /**
+   * Shows the query plan of one statement as a tree, and the plain EXPLAIN in the result grid.
+   * Without `analyze` the statement does not run. With `analyze` the backend runs it once
+   * for real times, only when it is a read, in a read-only transaction that is rolled back.
+   */
+  async explain(sql: string, analyze = false): Promise<void> {
+    // Analyze runs the statement, so it can be cancelled like a query.
+    this.cancellable = analyze
+    const plan = await this.api.queryPlan(this.id, sql, analyze)
+    this.cancellable = false
+    // markRaw: the tree is only replaced, never changed in place.
+    this.plan = markRaw(plan)
+    this.result = plan.raw && markRaw(plan.raw)
+    this.status = analyze ? ANALYZE_STATUS : PLAN_STATUS
   }
 
   /** Asks a yes or no question in a dialog. */

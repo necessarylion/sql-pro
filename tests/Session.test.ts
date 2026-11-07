@@ -99,10 +99,6 @@ class FakeApi {
     ]
   }
 
-  async explain(_id: string, sql: string): Promise<ResultSet[]> {
-    return [{ columns: ['QUERY PLAN'], rows: [[`plan of ${sql}`]], affected: 0, truncated: false }]
-  }
-
   async listTables(): Promise<TableRef[]> {
     return [USERS]
   }
@@ -594,14 +590,6 @@ test('the tab stays busy until the last of overlapping runs ends', async functio
   slow.resolve()
   await connect
   expect(session.busy).toBe(false)
-})
-
-test('explain shows the plan as the result', async function () {
-  const { session } = await openUsers()
-  await session.explain('DELETE FROM users')
-  expect(session.result?.columns).toEqual(['QUERY PLAN'])
-  expect(session.result?.rows).toEqual([['plan of DELETE FROM users']])
-  expect(session.status).toContain('did not run')
 })
 
 test('a new view clears the error, the same view keeps it', function () {

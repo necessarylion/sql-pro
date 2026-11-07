@@ -198,3 +198,16 @@ test('a backup that fails while it runs shows the error of the tool', async func
   expect(session.error).toBe('mysqldump: Got error: 1045')
   expect(session.dumping).toBe(false)
 })
+
+test('a progress message that arrives after the backup ended is ignored', async function () {
+  const api = new FakeApi()
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
+  const running = session.run(session.backup('/tmp/slow.sql'))
+  api.end()
+  expect(await running).toBe(true)
+
+  // Tauri can send the last progress after the reply of the command.
+  api.onProgress?.({ bytes: 4096, seconds: 3, table: 'orders', tables: 1 })
+  expect(session.backupProgress).toBe('')
+  expect(session.busyText).toBe('Working…')
+})
