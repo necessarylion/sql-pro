@@ -633,7 +633,8 @@ pub struct PlanSql {
     /// Runs on its own first, like `SET SHOWPLAN_XML ON`.
     pub before: Option<&'static str>,
     pub sql: String,
-    /// Runs on its own at the end, also when `sql` failed.
+    /// Runs on its own at the end, also when `sql` failed. If it fails itself, the
+    /// connection is closed, so the setting cannot stay on.
     pub after: Option<&'static str>,
     pub format: PlanFormat,
 }

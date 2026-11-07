@@ -436,12 +436,17 @@ pub trait Repository: Send + Sync {
     }
 
     /// Runs `steps` one after the other, each as a batch of its own, all on one connection.
-    /// So no other query of the tab can come between them. Then `always` runs on it.
-    /// When one fails, the rest is skipped, and the connection is closed: the next query
-    /// opens a new one, so nothing the steps turned on or opened stays behind.
-    /// Gives the result sets of `steps`.
+    /// So no other query of the tab can come between them. When a step fails, the rest is
+    /// skipped and `on_error` runs. `always` runs at the end in any case. When a step of
+    /// `on_error` or `always` fails, the connection is closed: the next query opens a new
+    /// one, so no setting stays on. Gives the result sets of `steps`.
     /// Only a database whose `plan_sql` has `before` or `after` needs it: SQL Server.
-    async fn query_steps(&self, _steps: &[&str], _always: &[&str]) -> AppResult<Vec<ResultSet>> {
+    async fn query_steps(
+        &self,
+        _steps: &[&str],
+        _on_error: &[&str],
+        _always: &[&str],
+    ) -> AppResult<Vec<ResultSet>> {
         Err(NO_EXPLAIN.into())
     }
 

@@ -2592,6 +2592,14 @@ async fn ai_read_guard(config: ConnectionConfig) {
         .await
         .expect_err("open transaction");
     assert_eq!(error.to_string(), sql_pro_lib::constants::OPEN_TRANSACTION);
+    // A failed Explain keeps the connection, so the transaction is still open.
+    assert!(
+        service
+            .query_plan(id, "SELECT * FROM sqlpro_missing", false)
+            .await
+            .is_err()
+    );
+    assert!(service.run_ai_read(id, "SELECT 1").await.is_err());
     service.run_query(id, "ROLLBACK").await.expect("rollback");
     service
         .run_ai_read(id, "SELECT 1")

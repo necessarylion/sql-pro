@@ -20,6 +20,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 # preserve_order: the steps of a MySQL plan keep the order the server wrote them in.
+# It keeps the key order of every JSON map in the backend. Nothing else depends on the order.
 serde_json = { version = "1", features = ["preserve_order"] }
 # sqlx is a driver toolkit, not an ORM. We write all SQL by hand.
 sqlx = { version = "0.9", default-features = false, features = [

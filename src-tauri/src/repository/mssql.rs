@@ -244,15 +244,16 @@ impl MssqlRepository {
         collect::<Mssql>(stream, Self::read, MssqlQueryResult::rows_affected).await
     }
 
-    /// Runs `steps` on one connection of the pool. When a cancel ended its session, or
-    /// `drop_on_error` is set and a step failed, that connection is let go. Then the next
-    /// query opens a new one, and nothing of the steps stays behind: no setting, and no
-    /// transaction (the server rolls it back).
+    /// Runs `steps` on one connection of the pool, then `always`. After a failed step,
+    /// `on_error` runs before `always`. When a cancel ended the session, or a step of
+    /// `on_error` or `always` fails, that connection is let go. Then the next query opens
+    /// a new one, so no setting stays on. A failed step alone keeps the connection: it may
+    /// hold a transaction of the user.
     async fn run_steps(
         &self,
         steps: &[&str],
+        on_error: &[&str],
         always: &[&str],
-        drop_on_error: bool,
     ) -> AppResult<Vec<ResultSet>> {
         let mut connection = self.pool.acquire().await?;
         self.cancelled.store(false, Ordering::SeqCst);
@@ -273,16 +274,18 @@ impl MssqlRepository {
             drop(connection.detach());
             return Err(QUERY_CANCELLED.into());
         }
-        if result.is_ok() {
-            for step in always {
-                if let Err(error) = Self::batch(&mut connection, step).await {
-                    result = Err(error);
-                    break;
-                }
+        let cleanup = if result.is_ok() {
+            always.to_vec()
+        } else {
+            [on_error, always].concat()
+        };
+        for step in cleanup {
+            if let Err(error) = Self::batch(&mut connection, step).await {
+                // The first error is the one the user needs to see.
+                result = result.and(Err(error));
+                drop(connection.detach());
+                break;
             }
-        }
-        if drop_on_error && result.is_err() {
-            drop(connection.detach());
         }
         result.map(|()| sets).map_err(Self::readable)
     }
@@ -766,16 +769,20 @@ impl Repository for MssqlRepository {
     /// Runs on the one connection of the pool. When a cancel ended its session,
     /// that connection is let go, so the next query opens a new one.
     async fn query(&self, sql: &str) -> AppResult<Vec<ResultSet>> {
-        // A failed statement keeps the connection: it may hold a transaction of the user.
-        self.run_steps(&[sql], &[], false).await
+        self.run_steps(&[sql], &[], &[]).await
     }
 
     /// `SET SHOWPLAN_XML` must be alone in its batch, and it stays on for the connection.
     /// One connection for all steps keeps other queries of the tab out while it is on.
-    /// After an error the connection is let go. An error inside the `BEGIN TRAN` guard
-    /// of Analyze leaves it unusable (error 3971), and no setting may stay on.
-    async fn query_steps(&self, steps: &[&str], always: &[&str]) -> AppResult<Vec<ResultSet>> {
-        self.run_steps(steps, always, true).await
+    /// An error inside the `BEGIN TRAN` guard of Analyze can leave the connection unusable
+    /// (error 3971). Then the cleanup fails too, and the connection is let go.
+    async fn query_steps(
+        &self,
+        steps: &[&str],
+        on_error: &[&str],
+        always: &[&str],
+    ) -> AppResult<Vec<ResultSet>> {
+        self.run_steps(steps, on_error, always).await
     }
 
     async fn execute(&self, sql: &str, params: Vec<Option<String>>) -> AppResult<u64> {

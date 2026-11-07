@@ -7,8 +7,8 @@ use sqlx::mysql::{
 use sqlx::{AssertSqlSafe, MySql, Row as _};
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, OnceLock};
 
 use super::{
     ColumnCast, Repository, ServerId, Statement, bytes_to_text, cell, collect, default_sql,
@@ -87,6 +87,8 @@ pub struct MysqlRepository {
     /// The settings of the pool. Cancel opens its own connection with them.
     options: MySqlConnectOptions,
     server_id: ServerId,
+    /// True for `MariaDB`. Asked once, on first use.
+    mariadb: OnceLock<bool>,
 }
 
 impl MysqlRepository {
@@ -126,6 +128,7 @@ impl MysqlRepository {
             has_database,
             options,
             server_id,
+            mariadb: OnceLock::new(),
         })
     }
 
@@ -492,8 +495,12 @@ impl MysqlRepository {
 impl MysqlRepository {
     /// True when the server is `MariaDB`, not `MySQL`.
     async fn mariadb(&self) -> AppResult<bool> {
+        if let Some(known) = self.mariadb.get() {
+            return Ok(*known);
+        }
         let version = single(self.query("SELECT VERSION()").await?);
-        Ok(first_column(&version).concat().contains("MariaDB"))
+        let mariadb = first_column(&version).concat().contains("MariaDB");
+        Ok(*self.mariadb.get_or_init(|| mariadb))
     }
 
     /// A part of an index on an expression has no column name. It shows as empty text.
