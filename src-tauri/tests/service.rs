@@ -3343,6 +3343,42 @@ async fn mssql_key_types(service: &ConnectionService) {
     assert_eq!(names.as_deref(), Some("“q”=‘x’,€ key=price 5 €"));
 }
 
+/// CLR types, `xml` and `sql_variant` are read as text and written back as text.
+/// A `hierarchyid` key is cast to its own type.
+async fn mssql_clr_types(service: &ConnectionService) {
+    data_table(
+        service,
+        "CREATE TABLE data_clr (id INT PRIMARY KEY, g GEOGRAPHY, h HIERARCHYID, x XML, \
+            s SQL_VARIANT)",
+        "INSERT INTO data_clr VALUES (1, geography::Point(1, 2, 4326), '/1/', '<a>1</a>', 5)",
+        "INSERT INTO data_clr VALUES (1, geography::Point(3, 4, 4326), '/2/', '<a>2</a>', 5)",
+    )
+    .await;
+    let diff = sync_table(service, "data_clr").await;
+    assert_eq!(diff.updates.len(), 1);
+    for column in ["[g]", "[h]", "[x]"] {
+        assert!(diff.updates[0].contains(column), "{}", diff.updates[0]);
+    }
+    let values = target_cell(
+        service,
+        "SELECT CONCAT(g.ToString(), '|', h.ToString(), '|', CAST(x AS NVARCHAR(20))) FROM data_clr",
+    )
+    .await;
+    assert_eq!(values.as_deref(), Some("POINT (2 1)|/1/|<a>1</a>"));
+    data_table(
+        service,
+        "CREATE TABLE data_tree (h HIERARCHYID PRIMARY KEY, v INT)",
+        "INSERT INTO data_tree VALUES ('/1/', 1)",
+        "INSERT INTO data_tree VALUES ('/1/', 2), ('/2/', 1)",
+    )
+    .await;
+    let diff = sync_table(service, "data_tree").await;
+    assert_eq!(
+        diff.deletes,
+        ["DELETE FROM [dbo].[data_tree] WHERE [h] = CAST(N'/2/' AS hierarchyid)"]
+    );
+}
+
 /// Values that only some databases have trouble with: binary bytes that are not UTF-8,
 /// columns the database fills itself, columns with no type (`SQLite`), and NULL keys.
 async fn data_types(service: &ConnectionService, driver: Driver) {
@@ -3416,6 +3452,7 @@ async fn data_types(service: &ConnectionService, driver: Driver) {
             assert_eq!(diff.generated, ["rv", "n"]);
             mssql_varchar_keys(service).await;
             mssql_key_types(service).await;
+            mssql_clr_types(service).await;
             (
                 "SELECT STRING_AGG(CONCAT(id, ':', ISNULL(CONVERT(VARCHAR(30), b, 1), 'null'), \
                     ':', name), ',') WITHIN GROUP (ORDER BY id) FROM data_bin",

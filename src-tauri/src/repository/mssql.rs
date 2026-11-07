@@ -392,7 +392,7 @@ impl MssqlRepository {
         Ok(text)
     }
 
-    /// The type name without its size, in lower case: `nvarchar(50)` gives `nvarchar`.
+    /// True for the types that read a text by the language of the session.
     fn is_datetime(data_type: &str) -> bool {
         matches!(
             Self::base_type(data_type).as_str(),
@@ -400,6 +400,7 @@ impl MssqlRepository {
         )
     }
 
+    /// The type name without its size, in lower case: `nvarchar(50)` gives `nvarchar`.
     fn base_type(data_type: &str) -> String {
         let end = data_type.find('(').unwrap_or(data_type.len());
         data_type[..end].trim().to_ascii_lowercase()
@@ -580,7 +581,7 @@ impl Repository for MssqlRepository {
     /// It decides on the base type, so an alias type over `varchar` is read right too.
     fn compare_column(&self, column: &ColumnInfo, cast: Option<&ColumnCast>) -> (String, bool) {
         let mut column = column.clone();
-        if let Some(cast) = cast {
+        if let Some(cast) = cast.filter(|cast| !cast.data_type.is_empty()) {
             cast.data_type.clone_into(&mut column.data_type);
         }
         let base = Self::base_type(&column.data_type);
@@ -611,7 +612,7 @@ impl Repository for MssqlRepository {
     /// `datetime` reads the text by the language of the session, so style 121 fixes it.
     fn key_literal(&self, cast: Option<&ColumnCast>, value: &str) -> String {
         let text = self.literal(value);
-        let Some(cast) = cast else {
+        let Some(cast) = cast.filter(|cast| !cast.data_type.is_empty()) else {
             return text;
         };
         let kind = &cast.data_type;
@@ -626,7 +627,8 @@ impl Repository for MssqlRepository {
     /// collation of each column.
     async fn column_casts(&self, table: &TableRef) -> AppResult<HashMap<String, ColumnCast>> {
         let sql = format!(
-            "SELECT c.name, TYPE_NAME(c.system_type_id), c.max_length, c.precision, c.scale, \
+            "SELECT c.name, COALESCE(TYPE_NAME(c.system_type_id), TYPE_NAME(c.user_type_id)), \
+                c.max_length, c.precision, c.scale, \
                 c.collation_name \
             FROM sys.columns c \
             WHERE c.object_id = {}",
