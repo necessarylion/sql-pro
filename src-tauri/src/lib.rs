@@ -90,6 +90,7 @@ pub fn run() {
             commands::truncate_table,
             commands::list_objects,
             commands::object_definition,
+            commands::save_object,
             commands::drop_object,
             commands::dump_database,
             commands::export_tables,

@@ -7,6 +7,7 @@ import {
   QUERY_RESULT_NAME,
 } from '../constants'
 import { FALLBACK_DATABASES } from '../constants/databases'
+import { OBJECT_TEMPLATES } from '../constants/objects'
 import {
   AUTO_COLUMN_EXTRA,
   GENERATED_COLUMN_EXTRA,
@@ -33,6 +34,7 @@ import type {
   CsvImport,
   CsvPreview,
   DbObject,
+  DbObjectKind,
   DbProcess,
   QueryStat,
   DbUser,
@@ -101,6 +103,8 @@ export class Session {
   table: TableRef | null = null
   /** The SQL of a view, trigger or routine. It is shown in the place of a table. */
   definition: ObjectDefinition | null = null
+  /** The text in the definition editor. It differs from `definition.sql` until it is saved. */
+  definitionText = ''
   private shownView: SessionView = 'content'
   page: TablePage | null = null
   /** The indexes and foreign keys of the open table. Loaded only for the Structure view. */
@@ -206,6 +210,11 @@ export class Session {
     return count
   }
 
+  /** True when the definition editor has text that is not saved. */
+  get definitionChanged(): boolean {
+    return this.definition !== null && this.definitionText !== this.definition.sql
+  }
+
   /** Like "4 unsaved changes". */
   get unsavedText(): string {
     return this.plural(this.pendingCount, 'unsaved change')
@@ -276,6 +285,17 @@ export class Session {
    * Returns true when the page may go. The unsaved changes are dropped then.
    */
   async mayDiscard(): Promise<boolean> {
+    const shown = this.definition
+    if (shown && this.definitionChanged) {
+      const where = shown.object
+        ? `"${shown.object.name}"`
+        : `the new ${OBJECT_KIND_LABELS[shown.kind].toLowerCase()}`
+      const sure = await this.prompt.ask(`You have unsaved SQL in ${where}. Discard it?`)
+      if (sure) {
+        this.definitionText = shown.sql
+      }
+      return sure
+    }
     const count = this.pendingCount
     if (count === 0) {
       return true
@@ -552,13 +572,82 @@ export class Session {
       this.view = 'content'
     }
     const sql = await this.api.objectDefinition(this.id, object)
-    this.definition = { object, sql }
+    this.definition = { object, kind: object.kind, sql }
+    this.definitionText = sql
   }
 
-  /** Puts the shown definition into the Query view, so it can be changed and run there. */
+  /** Opens the definition editor with the starter SQL of a new object. Save creates it. */
+  async newObject(kind: DbObjectKind): Promise<void> {
+    if (!(await this.mayDiscard())) {
+      return
+    }
+    this.clearTable()
+    if (this.view !== 'content' && this.view !== 'structure') {
+      this.view = 'content'
+    }
+    const sql = (this.config && OBJECT_TEMPLATES[this.config.driver][kind]) ?? ''
+    this.definition = { object: null, kind, sql }
+    this.definitionText = sql
+  }
+
+  /**
+   * Saves the text of the definition editor: it creates the new object or replaces the shown one.
+   * On an error the text stays in the editor, so nothing is lost. The lists are loaded again.
+   */
+  async saveDefinition(): Promise<void> {
+    const shown = this.definition
+    if (!shown) {
+      return
+    }
+    const sql = this.definitionText
+    const before: string[] = []
+    for (const object of this.objectsOf(shown.kind)) {
+      before.push(JSON.stringify(object))
+    }
+    await this.api.saveObject(this.id, shown.object, sql)
+    shown.sql = sql
+    await this.loadTables()
+    // A new object is shown as itself from now on, so the next save replaces it.
+    if (!shown.object) {
+      shown.object = this.addedObject(shown.kind, before)
+    }
+    this.status = `${OBJECT_KIND_LABELS[shown.kind]} saved`
+  }
+
+  /** The listed objects of `kind`. Views come from the table list. */
+  private objectsOf(kind: DbObjectKind): DbObject[] {
+    const found: DbObject[] = []
+    if (kind === 'view') {
+      for (const table of this.tables) {
+        if (table.kind === 'view') {
+          found.push(Session.viewObject(table))
+        }
+      }
+      return found
+    }
+    for (const object of this.objects) {
+      if (object.kind === kind) {
+        found.push(object)
+      }
+    }
+    return found
+  }
+
+  /** The one listed object of `kind` that is not in `before`. null when there is not exactly one. */
+  private addedObject(kind: DbObjectKind, before: string[]): DbObject | null {
+    const added: DbObject[] = []
+    for (const object of this.objectsOf(kind)) {
+      if (!before.includes(JSON.stringify(object))) {
+        added.push(object)
+      }
+    }
+    return added.length === 1 ? added[0] : null
+  }
+
+  /** Puts the editor text into the Query view, so it can be changed and run there. */
   editDefinition(): void {
     if (this.definition) {
-      this.sql = this.definition.sql
+      this.sql = this.definitionText
       this.view = 'query'
     }
   }
@@ -1330,7 +1419,7 @@ export class Session {
     return `${name}.${format}`
   }
 
-  /** Writes tables to a SQL or CSV file, then says where they went. */
+  /** Writes tables to a SQL, CSV, JSON or Excel file, then says where they went. */
   async exportTables(request: ExportRequest): Promise<void> {
     await this.api.exportTables(this.id, request)
     const what =
@@ -1601,6 +1690,7 @@ export class Session {
   private clearTable(): void {
     this.table = null
     this.definition = null
+    this.definitionText = ''
     this.page = null
     this.keys = null
     this.discardChanges()

@@ -768,6 +768,118 @@ async fn objects(service: &ConnectionService, driver: Driver) {
     }
 }
 
+const SAVED_VIEW: &str = "sqlpro_saved_view";
+const SAVED_TRIGGER: &str = "sqlpro_saved_trg";
+
+/// A trigger on `table` that runs on `event` and changes nothing.
+fn trigger_sql(driver: Driver, event: &str, table: &str) -> String {
+    let name = SAVED_TRIGGER;
+    match driver {
+        Driver::Sqlite => {
+            format!("CREATE TRIGGER {name} AFTER {event} ON {table} BEGIN SELECT 1; END")
+        }
+        Driver::Mssql => {
+            format!("CREATE TRIGGER {name} ON {table} AFTER {event} AS SET NOCOUNT ON")
+        }
+        Driver::Mysql => format!(
+            "CREATE TRIGGER {name} BEFORE {event} ON {table} FOR EACH ROW SET NEW.note = NEW.note"
+        ),
+        Driver::Postgres => format!(
+            "CREATE TRIGGER {name} BEFORE {event} ON {table} \
+                FOR EACH ROW EXECUTE FUNCTION {name}_fn()"
+        ),
+    }
+}
+
+/// The SQL the object has now, in upper case.
+async fn saved_sql(service: &ConnectionService, object: &DbObject) -> String {
+    service
+        .object_definition(ID, object)
+        .await
+        .expect("saved sql")
+        .to_uppercase()
+}
+
+/// Creates a view and a trigger from the editor, changes them, and checks that a
+/// change that fails keeps the old one.
+async fn save_objects(service: &ConnectionService, driver: Driver) {
+    // Only a CREATE may go this way.
+    let drop = format!("DROP TABLE {TABLE}");
+    assert!(service.save_object(ID, None, &drop).await.is_err());
+
+    let view_sql = format!("CREATE VIEW {SAVED_VIEW} AS SELECT id FROM {TABLE}");
+    service
+        .save_object(ID, None, &view_sql)
+        .await
+        .expect("create view");
+    let view = listed(service, SAVED_VIEW).await.expect("view is listed");
+    let view = DbObject {
+        kind: "view".to_owned(),
+        schema: view.schema.clone(),
+        name: view.name.clone(),
+        table: None,
+        args: None,
+    };
+    let changed = format!("CREATE VIEW {SAVED_VIEW} AS SELECT id, born FROM {TABLE}");
+    service
+        .save_object(ID, Some(&view), &changed)
+        .await
+        .expect("change view");
+    assert!(saved_sql(service, &view).await.contains("BORN"));
+    let broken = format!("CREATE VIEW {SAVED_VIEW} AS SELEC id FROM {TABLE}");
+    assert!(service.save_object(ID, Some(&view), &broken).await.is_err());
+    assert!(saved_sql(service, &view).await.contains("BORN"));
+
+    if driver == Driver::Postgres {
+        let function = format!(
+            "CREATE FUNCTION {SAVED_TRIGGER}_fn() RETURNS trigger LANGUAGE plpgsql \
+                AS $$ BEGIN RETURN NEW; END $$"
+        );
+        service
+            .save_object(ID, None, &function)
+            .await
+            .expect("create trigger function");
+    }
+    service
+        .save_object(ID, None, &trigger_sql(driver, "INSERT", TABLE))
+        .await
+        .expect("create trigger");
+    let trigger = object(service, "trigger", SAVED_TRIGGER).await;
+    assert_eq!(trigger.len(), 1);
+    service
+        .save_object(ID, Some(&trigger[0]), &trigger_sql(driver, "UPDATE", TABLE))
+        .await
+        .expect("change trigger");
+    assert!(saved_sql(service, &trigger[0]).await.contains("UPDATE"));
+    // A new trigger on a table that is not there fails. The old one must stay.
+    let broken = trigger_sql(driver, "INSERT", "sqlpro_nope");
+    assert!(
+        service
+            .save_object(ID, Some(&trigger[0]), &broken)
+            .await
+            .is_err()
+    );
+    assert_eq!(object(service, "trigger", SAVED_TRIGGER).await.len(), 1);
+    assert!(saved_sql(service, &trigger[0]).await.contains("UPDATE"));
+
+    service
+        .drop_object(ID, &trigger[0])
+        .await
+        .expect("drop saved trigger");
+    let view = listed(service, SAVED_VIEW).await.expect("view is listed");
+    service
+        .drop_table(ID, &view)
+        .await
+        .expect("drop saved view");
+    if driver == Driver::Postgres {
+        let cleanup = format!("DROP FUNCTION {SAVED_TRIGGER}_fn()");
+        service
+            .run_query(ID, &cleanup)
+            .await
+            .expect("drop saved trigger function");
+    }
+}
+
 fn new_column(spec: ColumnSpec, primary_key: bool, auto_increment: bool) -> NewColumn {
     NewColumn {
         spec,
@@ -956,6 +1068,32 @@ async fn export(service: &ConnectionService, table: &TableRef) {
     let csv = std::fs::read_to_string(out.join(format!("{TABLE}.csv"))).expect("table csv");
     assert!(csv.starts_with("id,name,born,note\r\n1,O'Brien,2020-01-31,\r\n"));
 
+    // JSON and Excel into a folder: one file per table, too.
+    for format in [ExportFormat::Json, ExportFormat::Xlsx] {
+        request.format = format;
+        service
+            .export_tables(ID, &request)
+            .await
+            .expect("export folder");
+    }
+    let json = std::fs::read_to_string(out.join(format!("{TABLE}.json"))).expect("table json");
+    assert!(
+        json.starts_with("[\n  {\n    \"id\": \"1\",\n    \"name\": \"O'Brien\""),
+        "{json}"
+    );
+    assert!(json.contains("\"note\": null"));
+    assert!(json.contains("\"line 1\\nline 2\""));
+    let xlsx = std::fs::read(out.join(format!("{TABLE}.xlsx"))).expect("table xlsx");
+    // An xlsx file is a zip file.
+    assert!(xlsx.starts_with(b"PK"));
+
+    // Many tables as JSON or Excel need a folder.
+    request.path = path.clone();
+    request.tables = vec![table.clone(), table.clone()];
+    assert!(service.export_tables(ID, &request).await.is_err());
+    request.tables = vec![table.clone()];
+    request.format = ExportFormat::Csv;
+
     // An unknown column fails and leaves no file behind.
     std::fs::remove_file(&path).expect("remove export");
     request.path = path.clone();
@@ -963,8 +1101,11 @@ async fn export(service: &ConnectionService, table: &TableRef) {
     assert!(service.export_tables(ID, &request).await.is_err());
     assert!(!path.exists());
     std::fs::remove_dir_all(&out).expect("remove export folder");
+    export_rows(service, &path);
+}
 
-    // Rows the app already has: written as they are, without reading the table.
+/// Rows the app already has: written as they are, in each format, without reading the table.
+fn export_rows(service: &ConnectionService, path: &std::path::Path) {
     let mut rows = RowsExport {
         format: ExportFormat::Sql,
         table: TableRef {
@@ -977,10 +1118,10 @@ async fn export(service: &ConnectionService, table: &TableRef) {
             vec![Some("1".to_owned()), Some("O'Brien".to_owned())],
             vec![Some("2".to_owned()), None],
         ],
-        path: path.clone(),
+        path: path.to_path_buf(),
     };
     service.export_rows(ID, &rows).expect("export rows sql");
-    let sql = std::fs::read_to_string(&path).expect("rows sql");
+    let sql = std::fs::read_to_string(path).expect("rows sql");
     assert_eq!(sql.matches("INSERT INTO").count(), 2);
     assert!(
         sql.contains("'O''Brien'"),
@@ -989,9 +1130,19 @@ async fn export(service: &ConnectionService, table: &TableRef) {
     assert!(sql.contains("NULL);"));
     rows.format = ExportFormat::Csv;
     service.export_rows(ID, &rows).expect("export rows csv");
-    let csv = std::fs::read_to_string(&path).expect("rows csv");
+    let csv = std::fs::read_to_string(path).expect("rows csv");
     assert_eq!(csv, "id,name\r\n1,O'Brien\r\n2,\r\n");
-    std::fs::remove_file(&path).expect("remove rows export");
+    rows.format = ExportFormat::Json;
+    service.export_rows(ID, &rows).expect("export rows json");
+    let json = std::fs::read_to_string(path).expect("rows json");
+    assert_eq!(
+        json,
+        "[\n  {\n    \"id\": \"1\",\n    \"name\": \"O'Brien\"\n  },\n  {\n    \"id\": \"2\",\n    \"name\": null\n  }\n]\n"
+    );
+    rows.format = ExportFormat::Xlsx;
+    service.export_rows(ID, &rows).expect("export rows xlsx");
+    assert!(std::fs::read(path).expect("rows xlsx").starts_with(b"PK"));
+    std::fs::remove_file(path).expect("remove rows export");
 }
 
 /// "Copy Rows As > INSERT Statement": names and values quoted the way each database wants.
@@ -2246,6 +2397,7 @@ async fn exercise(config: ConnectionConfig) {
     schema_changes(&service, &table, driver).await;
     drop_and_truncate(&service).await;
     objects(&service, driver).await;
+    save_objects(&service, driver).await;
     create_and_rename(&service).await;
     diagram(&service, driver).await;
     keys(&service, driver).await;

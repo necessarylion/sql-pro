@@ -13,11 +13,11 @@ use std::sync::atomic::Ordering;
 use super::{
     Repository, ServerId, Statement, bytes_to_text, cell, collect, default_sql, definition,
     execute, execute_all, first_column, foreign_keys, indexes, keyword, kind, objects,
-    password_safe, pool_options, relations, run_on_new_connection, run_script, single,
+    password_safe, pool_options, relations, run_on_new_connection, run_script, single, swap_create,
 };
 use crate::constants::{
     ANY_HOST, MYSQL_DATABASE_PRIVILEGES, MYSQL_HOST_MAX, MYSQL_NO_QUERY_STATS, MYSQL_SYSTEM_USERS,
-    MYSQL_USER_NAME_MAX, QUERY_STATS_LIMIT,
+    MYSQL_USER_NAME_MAX, QUERY_STATS_LIMIT, VIEW,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
@@ -630,6 +630,20 @@ impl Repository for MysqlRepository {
             self.object_name(object)
         );
         definition(&single(self.query(&sql).await?), 2, &object.name)
+    }
+
+    /// A view has `CREATE OR REPLACE`. A trigger or routine is dropped and made again.
+    fn replace_object_sql(&self, object: &DbObject, sql: &str) -> AppResult<Vec<String>> {
+        if object.kind == VIEW {
+            return Ok(vec![swap_create(sql, "CREATE OR REPLACE")?]);
+        }
+        Ok(vec![self.drop_object_sql(object), sql.to_owned()])
+    }
+
+    /// `CREATE` and `DROP` commit by themselves in `MySQL` and `MariaDB`, also inside a
+    /// transaction. So the service keeps the old statement and runs it again on a failure.
+    fn ddl_in_transaction(&self) -> bool {
+        false
     }
 
     async fn modify_column_sql(

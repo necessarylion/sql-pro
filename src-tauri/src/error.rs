@@ -13,6 +13,8 @@ pub enum AppError {
     Keychain(#[from] keyring::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Excel(#[from] rust_xlsxwriter::XlsxError),
     #[error("{0}")]
     Message(String),
 }

@@ -3,6 +3,7 @@ import { nextTick, reactive, ref, useTemplateRef } from 'vue'
 import { save } from '@tauri-apps/plugin-dialog'
 import { ChevronRightIcon } from 'lucide-vue-next'
 import { COPY_FORMAT_GROUPS, COPY_SUBMENU_WIDTH } from '../constants/copy'
+import { EXPORT_FORMAT_LABELS } from '../constants/export'
 import type { CopyFormatItem } from '../constants/copy'
 import type { Session } from '../services/Session'
 import type { CopyFormat, ExportFormat, Row, RowsPick, TableRef } from '../types'
@@ -79,7 +80,7 @@ async function write(
   columns: string[],
   rows: Row[],
 ): Promise<void> {
-  const kind = format.toUpperCase()
+  const kind = EXPORT_FORMAT_LABELS[format]
   const path = await save({
     title: table ? `Export rows as ${kind}` : `Export rows as ${kind} (file name = table name)`,
     defaultPath: session.rowsName(table, format),
@@ -147,11 +148,15 @@ function close(): void {
     </template>
     <!-- The parent can put its own items above the export items. -->
     <slot />
-    <button role="menuitem" :disabled="rows.length === 0" @click="exportAs('csv')">
-      Export {{ rows.length.toLocaleString() }} {{ rows.length === 1 ? 'row' : 'rows' }} as CSV…
-    </button>
-    <button role="menuitem" :disabled="rows.length === 0" @click="exportAs('sql')">
-      Export {{ rows.length.toLocaleString() }} {{ rows.length === 1 ? 'row' : 'rows' }} as SQL…
+    <button
+      v-for="(name, format) in EXPORT_FORMAT_LABELS"
+      :key="format"
+      role="menuitem"
+      :disabled="rows.length === 0"
+      @click="exportAs(format)"
+    >
+      Export {{ rows.length.toLocaleString() }} {{ rows.length === 1 ? 'row' : 'rows' }} as
+      {{ name }}…
     </button>
   </ContextMenu>
 </template>

@@ -11,7 +11,7 @@ use super::{
     Repository, ServerId, Statement, cell, collect, default_sql, definition, double_quote, execute,
     execute_all, first_column, foreign_keys, indexes, keyword, kind, literal, objects,
     password_safe, pool_options, relations, run_on_new_connection, run_script, single,
-    standard_columns,
+    standard_columns, swap_create,
 };
 use crate::constants::{
     POSTGRES_NO_QUERY_STATS, POSTGRES_ROLE_NAME_MAX, QUERY_STATS_LIMIT, TRIGGER,
@@ -565,6 +565,16 @@ impl Repository for PostgresRepository {
         }
         let args = object.args.as_deref().unwrap_or_default();
         format!("DROP {} {name}({args})", keyword(object))
+    }
+
+    /// `CREATE OR REPLACE` keeps the rights and what depends on a view or routine.
+    /// A trigger has no such form before version 14, so it is dropped and made again.
+    /// `PostgreSQL` rolls back both in one transaction when the new one fails.
+    fn replace_object_sql(&self, object: &DbObject, sql: &str) -> AppResult<Vec<String>> {
+        if object.kind == TRIGGER {
+            return Ok(vec![self.drop_object_sql(object), sql.to_owned()]);
+        }
+        Ok(vec![swap_create(sql, "CREATE OR REPLACE")?])
     }
 
     async fn modify_column_sql(

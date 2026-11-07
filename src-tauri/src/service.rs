@@ -33,7 +33,8 @@ use crate::model::{
     RowUpdate, RowsExport, RowsSql, SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::repository::{
-    ClaudeCli, DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, not_saved,
+    ClaudeCli, DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, create_start,
+    not_saved,
 };
 use spare::Spare;
 
@@ -1005,6 +1006,76 @@ impl ConnectionService {
         }
         let object = Self::known_object(repository.as_ref(), object).await?;
         repository.object_sql(&object).await
+    }
+
+    /// Runs the `CREATE` statement of a new view, trigger or routine. With `object`, the
+    /// statement replaces that object instead. When the new one fails, the old one stays.
+    pub async fn save_object(
+        &self,
+        id: &str,
+        object: Option<&DbObject>,
+        sql: &str,
+    ) -> AppResult<()> {
+        let repository = self.repository(id)?;
+        // Only a CREATE goes this way. Other SQL belongs in the Query view.
+        create_start(sql)?;
+        let Some(object) = object else {
+            repository.query(sql).await?;
+            return Ok(());
+        };
+        let object = if object.kind == VIEW {
+            let view = TableRef {
+                schema: object.schema.clone(),
+                name: object.name.clone(),
+                kind: VIEW.to_owned(),
+            };
+            let view = Self::known_table(repository.as_ref(), &view).await?;
+            DbObject {
+                kind: VIEW.to_owned(),
+                schema: view.schema,
+                name: view.name,
+                table: None,
+                args: None,
+            }
+        } else {
+            Self::known_object(repository.as_ref(), object).await?
+        };
+        let statements = repository.replace_object_sql(&object, sql)?;
+        if statements.len() == 1 {
+            repository.query(&statements[0]).await?;
+            return Ok(());
+        }
+        if repository.ddl_in_transaction() {
+            let mut script = Vec::with_capacity(statements.len());
+            for sql in statements {
+                script.push(Statement {
+                    label: format!("Save {}", object.kind),
+                    sql,
+                    params: Vec::new(),
+                });
+            }
+            return repository.run_script(script).await;
+        }
+        // The database commits each statement by itself. So when the new one fails
+        // after the drop, the old statement runs again and the old object is back.
+        let old = self.object_definition(id, &object).await?;
+        for (index, statement) in statements.iter().enumerate() {
+            let Err(error) = repository.query(statement).await else {
+                continue;
+            };
+            if index == 0 {
+                return Err(error);
+            }
+            let message = match repository.query(&old).await {
+                Ok(_) => format!("{error}. The old {} is still there.", object.kind),
+                Err(lost) => format!(
+                    "{error}. The old {} could not be made again: {lost}",
+                    object.kind
+                ),
+            };
+            return Err(AppError::Message(message));
+        }
+        Ok(())
     }
 
     /// Removes a trigger or routine. A view is dropped with `drop_table`.
