@@ -1,10 +1,18 @@
 <script setup lang="ts">
 import { XIcon } from 'lucide-vue-next'
+import { computed } from 'vue'
 import { QUERY_HISTORY, injectRequired } from '../services/keys'
 import type { QueryHistoryEntry } from '../services/QueryHistory'
 
+/** `databaseKey`: only the history of this database is shown (see `QueryHistory.key`). */
+const props = defineProps<{ databaseKey: string }>()
 const emit = defineEmits<{ pick: [sql: string] }>()
 const history = injectRequired(QUERY_HISTORY)
+const entries = computed(databaseEntries)
+
+function databaseEntries(): QueryHistoryEntry[] {
+  return history.list(props.databaseKey)
+}
 
 /** The time of the run, in the date format of the user. */
 function ranAt(entry: QueryHistoryEntry): string {
@@ -16,20 +24,20 @@ function ranAt(entry: QueryHistoryEntry): string {
   <div class="history">
     <div class="section">
       <span>
-        History <span class="count">{{ history.entries.length }}</span>
+        History <span class="count">{{ entries.length }}</span>
       </span>
       <button
         class="clear"
-        title="Remove the whole history"
-        :disabled="history.entries.length === 0"
-        @click="history.clear()"
+        title="Remove the history of this database"
+        :disabled="entries.length === 0"
+        @click="history.clear(databaseKey)"
       >
         Clear
       </button>
     </div>
-    <div v-if="history.entries.length === 0" class="empty">No history yet</div>
+    <div v-if="entries.length === 0" class="empty">No history yet</div>
     <ul v-else class="list">
-      <li v-for="entry in history.entries" :key="entry.id" @click="emit('pick', entry.sql)">
+      <li v-for="entry in entries" :key="entry.id" @click="emit('pick', entry.sql)">
         <span class="dim">{{ ranAt(entry) }}</span>
         <span class="dim connection" :title="entry.connection">{{ entry.connection }}</span>
         <span class="name sql" :title="entry.sql">{{ entry.sql }}</span>
