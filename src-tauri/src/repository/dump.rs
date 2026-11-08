@@ -17,13 +17,14 @@ use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::Command;
 
 use crate::constants::{
-    BACKUP_CANCELLED, DUMP_PROGRESS_EVERY, MSSQL_NO_BACKUP, MYSQL_PASSWORD_ENV,
-    PARTIAL_DUMP_SUFFIX, PG_CUSTOM_MAGIC, POSTGRES_PASSWORD_ENV, RESTORE_ONLY_POSTGRES,
+    BACKUP_CANCELLED, DUMP_PROGRESS_EVERY, GUIDE_LINKS, MSSQL_NO_BACKUP, MYSQL_PASSWORD_ENV,
+    PARTIAL_DUMP_SUFFIX, PG_CUSTOM_MAGIC, PG_TOOL_HINT, POSTGRES_PASSWORD_ENV,
+    RESTORE_ONLY_POSTGRES,
 };
 #[cfg(unix)]
 use crate::constants::{
-    HOMEBREW_OPT_DIRS, LINUX_POSTGRES_DIR, POSTGRES_APP_VERSIONS_DIR, RHEL_POSTGRES_PARENT,
-    TOOL_DIRS,
+    EDB_MAC_POSTGRES_DIR, HOMEBREW_OPT_DIRS, LINUX_POSTGRES_DIR, POSTGRES_APP_VERSIONS_DIR,
+    RHEL_POSTGRES_PARENT, TOOL_DIRS,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{BackupOptions, ConnectionConfig, Driver, DumpProgress, PgTool, RestoreOptions};
@@ -125,10 +126,15 @@ impl DumpRepository {
             if !real.is_file() || !seen.insert(real) {
                 continue;
             }
-            if let Some(version) = Self::major_version(&path).await
+            if let Some(release) = Self::release(&path).await
+                && let Some(version) = Self::parse_major(&release)
                 && !tools.iter().any(|tool| tool.version == version)
             {
-                tools.push(PgTool { version, path });
+                tools.push(PgTool {
+                    version,
+                    release,
+                    path,
+                });
             }
         }
         tools.sort_by_key(|tool| std::cmp::Reverse(tool.version));
@@ -147,22 +153,45 @@ impl DumpRepository {
     /// The tool `name` with this major version. None means the first one found.
     async fn pg_tool(name: &str, version: Option<u32>) -> AppResult<PathBuf> {
         let Some(version) = version else {
-            return Self::find(&[name]).ok_or_else(|| {
-                AppError::Message(format!(
-                    "{name} was not found. Install the PostgreSQL client tools (macOS: brew install libpq)"
-                ))
-            });
+            return Self::find(&[name])
+                .ok_or_else(|| AppError::Message(format!("{name} was not found. {PG_TOOL_HINT}")));
         };
         Self::pg_tools(name)
             .await
             .into_iter()
             .find(|tool| tool.version == version)
             .map(|tool| tool.path)
-            .ok_or_else(|| AppError::Message(format!("{name} {version} was not found")))
+            .ok_or_else(|| {
+                AppError::Message(format!("{name} {version} was not found. {PG_TOOL_HINT}"))
+            })
     }
 
-    /// The major version a tool prints with `--version`. None when it does not run.
-    async fn major_version(tool: &Path) -> Option<u32> {
+    /// Opens a link of the install guide in the browser. Other links are refused.
+    pub fn open_link(url: &str) -> AppResult<()> {
+        if !GUIDE_LINKS.contains(&url) {
+            return Err("This link cannot be opened".into());
+        }
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(windows)]
+        let opener = "explorer";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let opener = "xdg-open";
+        let mut child = std::process::Command::new(opener)
+            .arg(url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        // Wait for the opener, so no finished process is left behind.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    }
+
+    /// The version a tool prints with `--version`, like `17.2`. None when it does not run.
+    async fn release(tool: &Path) -> Option<String> {
         let mut command = Command::new(tool);
         super::hide_console(&mut command);
         let output = command
@@ -171,15 +200,19 @@ impl DumpRepository {
             .output()
             .await
             .ok()?;
-        Self::parse_major(&String::from_utf8_lossy(&output.stdout))
+        Self::parse_release(&String::from_utf8_lossy(&output.stdout))
     }
 
-    /// The major version in text like `pg_dump (PostgreSQL) 17.2 (Homebrew)`.
-    fn parse_major(text: &str) -> Option<u32> {
-        let word = text
-            .split_whitespace()
-            .find(|word| word.starts_with(|c: char| c.is_ascii_digit()))?;
-        let digits: String = word.chars().take_while(char::is_ascii_digit).collect();
+    /// The version in text like `pg_dump (PostgreSQL) 17.2 (Homebrew)`: `17.2`.
+    fn parse_release(text: &str) -> Option<String> {
+        text.split_whitespace()
+            .find(|word| word.starts_with(|c: char| c.is_ascii_digit()))
+            .map(str::to_owned)
+    }
+
+    /// The major version in a version like `17.2` or `18beta1`.
+    fn parse_major(release: &str) -> Option<u32> {
+        let digits: String = release.chars().take_while(char::is_ascii_digit).collect();
         digits.parse().ok()
     }
 
@@ -437,6 +470,7 @@ impl DumpRepository {
                 }
             }
             folders.extend(Self::bin_folders(Path::new(POSTGRES_APP_VERSIONS_DIR), ""));
+            folders.extend(Self::bin_folders(Path::new(EDB_MAC_POSTGRES_DIR), ""));
             folders.extend(Self::bin_folders(Path::new(LINUX_POSTGRES_DIR), ""));
             folders.extend(Self::bin_folders(Path::new(RHEL_POSTGRES_PARENT), "pgsql-"));
         }
@@ -714,12 +748,34 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_major_version_of_the_tools() {
-        let parse = DumpRepository::parse_major;
-        assert_eq!(parse("pg_dump (PostgreSQL) 17.2\n"), Some(17));
-        assert_eq!(parse("pg_restore (PostgreSQL) 15.10 (Homebrew)"), Some(15));
-        assert_eq!(parse("pg_dump (PostgreSQL) 18beta1"), Some(18));
-        assert_eq!(parse("pg_dump (PostgreSQL) 9.6.24"), Some(9));
+    fn opens_only_the_guide_links() {
+        assert!(DumpRepository::open_link("file:///etc/passwd").is_err());
+        assert!(DumpRepository::open_link("https://example.com/").is_err());
+        assert!(DumpRepository::open_link("https://postgresapp.com/,x").is_err());
+    }
+
+    #[test]
+    fn reads_the_version_of_the_tools() {
+        let parse = |text| {
+            let release = DumpRepository::parse_release(text)?;
+            Some((DumpRepository::parse_major(&release)?, release))
+        };
+        assert_eq!(
+            parse("pg_dump (PostgreSQL) 17.2\n"),
+            Some((17, "17.2".into()))
+        );
+        assert_eq!(
+            parse("pg_restore (PostgreSQL) 15.10 (Homebrew)"),
+            Some((15, "15.10".into()))
+        );
+        assert_eq!(
+            parse("pg_dump (PostgreSQL) 18beta1"),
+            Some((18, "18beta1".into()))
+        );
+        assert_eq!(
+            parse("pg_dump (PostgreSQL) 9.6.24"),
+            Some((9, "9.6.24".into()))
+        );
         assert_eq!(parse("command not found"), None);
         assert_eq!(parse(""), None);
     }
@@ -728,6 +784,7 @@ mod tests {
     fn the_default_version_is_the_one_of_the_server() {
         let tool = |version| PgTool {
             version,
+            release: format!("{version}.1"),
             path: format!("/pg{version}/pg_dump").into(),
         };
         let tools = [tool(18), tool(17), tool(15)];

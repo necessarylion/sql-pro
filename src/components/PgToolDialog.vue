@@ -1,15 +1,21 @@
 <script setup lang="ts">
 import { reactive, ref, useTemplateRef } from 'vue'
 import { confirm, save } from '@tauri-apps/plugin-dialog'
-import { PgToolChoice } from '../services/PgToolChoice'
+import { PG_INSTALL_GUIDE, injectRequired } from '../services/keys'
+import type { GuideLink, GuideStep } from '../services/PgInstallGuide'
+import { PgToolLoader, type PgToolChoice } from '../services/PgToolChoice'
 import type { Session } from '../services/Session'
 
 // The PostgreSQL backup and restore dialog: the format of a backup, the pg_dump or
 // pg_restore version, and for a restore whether to drop the objects first.
+// A version that is not installed shows how to install it. The app installs nothing.
 const props = defineProps<{ session: Session }>()
+const guide = injectRequired(PG_INSTALL_GUIDE)
 const dialog = useTemplateRef<HTMLDialogElement>('dialog')
 const form = reactive({ restoring: false, path: '', custom: false, clean: false, problem: '' })
 const choice = ref<PgToolChoice | null>(null)
+const loader = new PgToolLoader()
+const checking = ref(false)
 
 function openBackup(): Promise<void> {
   return show(false, '')
@@ -24,18 +30,53 @@ async function show(restoring: boolean, path: string): Promise<void> {
   form.restoring = restoring
   form.path = path
   form.clean = false
-  form.problem = ''
   choice.value = null
   dialog.value?.showModal()
+  await load()
+}
+
+/** Loads the tool list. Keeps the picked version when it is still listed, so "Check again" stays on it. */
+async function load(): Promise<void> {
+  const picked = choice.value?.version ?? null
+  form.problem = ''
+  checking.value = true
   try {
-    const name = restoring ? 'pg_restore' : 'pg_dump'
-    choice.value = new PgToolChoice(name, await props.session.pgTools(restoring))
+    const next = await loader.load(props.session, form.restoring)
+    if (next === null) {
+      return
+    }
+    if (picked !== null) {
+      next.pick(picked)
+    }
+    choice.value = next
+    checking.value = false
+  } catch (error) {
+    form.problem = String(error)
+    checking.value = false
+  }
+}
+
+/** The install guide for the picked version. Empty when it is installed. */
+function steps(): GuideStep[] {
+  const current = choice.value
+  return current === null || current.installed ? [] : guide.steps(current.version)
+}
+
+async function copy(command: string): Promise<void> {
+  await navigator.clipboard.writeText(command)
+  props.session.status = 'Copied to the clipboard'
+}
+
+async function openLink(link: GuideLink): Promise<void> {
+  try {
+    await guide.open(link)
   } catch (error) {
     form.problem = String(error)
   }
 }
 
 function close(): void {
+  loader.drop()
   dialog.value?.close()
 }
 
@@ -46,9 +87,9 @@ function closeOnOutsideClick(event: MouseEvent): void {
   }
 }
 
-/** True when the dialog may go on: a tool was found. */
+/** True when the dialog may go on: the picked version is installed. */
 function ready(): boolean {
-  return choice.value !== null && choice.value.version !== null
+  return choice.value !== null && choice.value.installed
 }
 
 async function submit(): Promise<void> {
@@ -113,9 +154,9 @@ defineExpose({ openBackup, openRestore })
       </div>
       <div class="row">
         <label for="pg-version">Tool</label>
-        <select v-if="choice" id="pg-version" v-model="choice.version" :disabled="!ready()">
-          <option v-for="tool in choice.tools" :key="tool.version" :value="tool.version">
-            {{ choice.label(tool) }}
+        <select v-if="choice" id="pg-version" v-model="choice.version">
+          <option v-for="option in choice.options" :key="option.version" :value="option.version">
+            {{ choice.label(option) }}
           </option>
         </select>
         <select v-else id="pg-version" disabled>
@@ -128,8 +169,32 @@ defineExpose({ openBackup, openRestore })
       </label>
       <p v-if="choice?.warning" class="warning">{{ choice.warning }}</p>
       <p v-if="choice?.missing" class="error">{{ choice.missing }}</p>
+      <div v-if="steps().length > 0" class="guide">
+        <p class="note">
+          {{ form.restoring ? 'pg_restore' : 'pg_dump' }} {{ choice?.version }} is not installed.
+        </p>
+        <div v-for="step in steps()" :key="step.text">
+          <p class="note">
+            {{ step.text }}
+            <a
+              v-for="link in step.links"
+              :key="link.url"
+              href="#"
+              @click.prevent="openLink(link)"
+              >{{ link.label }}</a
+            >
+          </p>
+          <div v-if="step.command" class="command">
+            <code>{{ step.command }}</code>
+            <button type="button" @click="copy(step.command)">Copy</button>
+          </div>
+        </div>
+      </div>
       <p v-if="form.problem" class="error">{{ form.problem }}</p>
       <div class="actions">
+        <button type="button" class="check-again" :disabled="checking" @click="load">
+          Check again
+        </button>
         <button type="button" @click="close">Cancel</button>
         <button type="submit" class="primary" :disabled="!ready()">
           {{ form.restoring ? 'Restore…' : 'Back up…' }}
@@ -213,6 +278,39 @@ h2 {
 
 .warning {
   color: var(--warn);
+}
+
+.guide {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.note a {
+  margin-left: 6px;
+  color: var(--accent-text);
+}
+
+.command {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.command code {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  font-size: calc(11px * var(--font-scale));
+  background: var(--bg);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.check-again {
+  margin-right: auto;
 }
 
 .actions {

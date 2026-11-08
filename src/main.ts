@@ -27,11 +27,13 @@ import {
   SESSION_MANAGER,
   SETTINGS_WINDOW,
   SHORTCUTS,
+  PG_INSTALL_GUIDE,
   THEME_SERVICE,
   ZOOM_SERVICE,
 } from './services/keys'
 import { ColumnOrderStore } from './services/ColumnOrderStore'
 import { LayoutService } from './services/LayoutService'
+import { PgInstallGuide } from './services/PgInstallGuide'
 import { PinnedTables } from './services/PinnedTables'
 import { ProfileStorage } from './services/ProfileStorage'
 import { QueryHistory } from './services/QueryHistory'
@@ -101,4 +103,5 @@ createApp(App)
   .provide(ZOOM_SERVICE, zoomService)
   .provide(SETTINGS_WINDOW, settingsWindow)
   .provide(SHORTCUTS, new Shortcuts(navigator.platform))
+  .provide(PG_INSTALL_GUIDE, new PgInstallGuide(navigator.platform, api))
   .mount('#app')

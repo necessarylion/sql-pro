@@ -631,6 +631,11 @@ impl ConnectionService {
         DumpRepository::is_custom_dump(path)
     }
 
+    /// Opens an `https://` web page in the browser.
+    pub fn open_link(url: &str) -> AppResult<()> {
+        DumpRepository::open_link(url)
+    }
+
     /// The login of a tab for a dump tool. With an SSH tunnel it goes through the same
     /// tunnel as the tab. The tunnel stays open while `connection` lives.
     fn tool_config(connection: &Connection) -> ConnectionConfig {

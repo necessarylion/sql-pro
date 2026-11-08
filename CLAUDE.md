@@ -106,6 +106,8 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
   table and keeps only the real error lines. Progress (file size, time, table) goes to the frontend through a
   `Channel` about once per second. `cancel_dump` kills the tool and deletes the `.part` file.
   Esc stops a backup only when Escape has no other job there (`Shortcuts.cancelsBackup`).
+  The PostgreSQL dialog always lists versions 18 to 12 (`PG_TOOL_VERSIONS`). The app never installs a tool:
+  a missing version shows an install guide for the platform (`PgInstallGuide`). `open_link` opens only the guide links (`GUIDE_LINKS`).
   - PostgreSQL only (`PgToolDialog.vue`): the user picks plain SQL or custom format (`--format=custom`, a
     `.dump` file) and the pg_dump version. `DumpRepository::pg_tools` lists the installed versions
     (`--version`). The default is the server version (`SHOW server_version_num`), else the newest.

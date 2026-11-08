@@ -8,6 +8,7 @@ import type { DiagramLayoutStore } from './DiagramLayoutStore'
 import type { FavoriteStore } from './FavoriteStore'
 import type { FontService } from './FontService'
 import type { LayoutService } from './LayoutService'
+import type { PgInstallGuide } from './PgInstallGuide'
 import type { PinnedTables } from './PinnedTables'
 import type { QueryHistory } from './QueryHistory'
 import type { SavedQueries } from './SavedQueries'
@@ -35,6 +36,7 @@ export const CHAT_FORMATTER: InjectionKey<ChatFormatter> = Symbol('ChatFormatter
 export const FILE_DROP: InjectionKey<FileDrop> = Symbol('FileDrop')
 export const PINNED_TABLES: InjectionKey<PinnedTables> = Symbol('PinnedTables')
 export const COLUMN_ORDERS: InjectionKey<ColumnOrderStore> = Symbol('ColumnOrderStore')
+export const PG_INSTALL_GUIDE: InjectionKey<PgInstallGuide> = Symbol('PgInstallGuide')
 
 /** Like `inject`, but fails loudly when main.ts did not provide the object. */
 export function injectRequired<T>(key: InjectionKey<T>): T {
