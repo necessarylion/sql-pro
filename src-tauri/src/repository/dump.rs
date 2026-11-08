@@ -476,8 +476,9 @@ struct DumpLog {
     tables: usize,
     /// True for `pg_restore`. Its error lines are followed by the SQL that failed.
     restore: bool,
-    /// How many `pg_restore: error:` lines there were.
-    failures: usize,
+    /// The count in `pg_restore: warning: errors ignored on restore: N`. `pg_restore` prints it
+    /// only when it went on after errors. A fatal error has no such line.
+    ignored: Option<usize>,
 }
 
 impl DumpLog {
@@ -507,8 +508,8 @@ impl DumpLog {
             self.tables += 1;
             return true;
         }
-        if line.starts_with("pg_restore: error:") {
-            self.failures += 1;
+        if let Some(count) = line.strip_prefix("pg_restore: warning: errors ignored on restore: ") {
+            self.ignored = count.trim().parse().ok();
         }
         // The SQL after a pg_restore error can be long. Only its first line stays.
         let shown =
@@ -526,10 +527,12 @@ impl DumpLog {
         } else {
             self.errors.join("\n")
         };
-        match self.failures {
-            0 => lines,
-            1 => format!("pg_restore had 1 error. The rest was restored.\n{lines}"),
-            count => format!("pg_restore had {count} errors. The rest was restored.\n{lines}"),
+        match self.ignored {
+            None | Some(0) => lines,
+            Some(1) => format!("pg_restore had 1 error. The rest was restored.\n{lines}"),
+            Some(count) => {
+                format!("pg_restore had {count} errors. The rest was restored.\n{lines}")
+            }
         }
     }
 
@@ -812,6 +815,19 @@ mod tests {
             found.map(|found| found.expect("read")),
             [true, false, false]
         );
+    }
+
+    #[test]
+    fn a_fatal_pg_restore_error_does_not_say_the_rest_was_restored() {
+        for fatal in [
+            "pg_restore: error: connection to server at \"127.0.0.1\", port 5433 failed: \
+             FATAL:  password authentication failed for user \"me\"",
+            "pg_restore: error: unsupported version (1.16) in file header",
+        ] {
+            let mut log = DumpLog::restore();
+            log.read(fatal);
+            assert_eq!(log.reason(), fatal);
+        }
     }
 
     #[test]
