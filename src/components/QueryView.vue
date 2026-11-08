@@ -36,6 +36,8 @@ const saved = injectRequired(SAVED_QUERIES)
 const savedDialog = useTemplateRef<InstanceType<typeof SavedQueryDialog>>('savedDialog')
 // The saved queries of this tab are the ones of its server.
 const savedKey = computed(savedQueriesKey)
+// The history of this tab is the one of its open database. It follows a switch of database.
+const historyKey = computed(historyDatabaseKey)
 
 const host = useTemplateRef<HTMLDivElement>('host')
 const columns = computed(resultColumns)
@@ -55,6 +57,10 @@ let editor: SqlEditor | null = null
 
 function savedQueriesKey(): string {
   return saved.key(props.session.config)
+}
+
+function historyDatabaseKey(): string {
+  return history.key(props.session.config)
 }
 
 function resultColumns(): GridColumn[] {
@@ -155,7 +161,7 @@ async function runChecked(sql: string): Promise<void> {
     return
   }
   // Saved before the run. So SQL that fails is kept too.
-  history.add(sql, props.session.title)
+  history.add(sql, historyKey.value, props.session.title)
   await props.session.runQuery(sql)
 }
 
@@ -342,7 +348,7 @@ watch(sessionPlan, showPlanTab)
           @pick="useHistory"
           @rename="savedDialog?.rename($event)"
         />
-        <QueryHistoryList @pick="useHistory" />
+        <QueryHistoryList :database-key="historyKey" @pick="useHistory" />
       </aside>
     </div>
     <ExportRowsMenu
