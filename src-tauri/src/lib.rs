@@ -99,6 +99,7 @@ pub fn run() {
             commands::restore_dump,
             commands::pg_tools,
             commands::is_custom_dump,
+            commands::open_link,
             commands::export_tables,
             commands::export_rows,
             commands::rows_insert_sql,

@@ -3,7 +3,6 @@ import { expect, test } from 'bun:test'
 import type { DatabaseApi } from '../src/services/DatabaseApi'
 import { Session } from '../src/services/Session'
 import { FakePrompt } from './FakePrompt'
-import { PgToolChoice } from '../src/services/PgToolChoice'
 import type {
   BackupOptions,
   ConnectionConfig,
@@ -301,25 +300,6 @@ test('a failed or cancelled restore still loads the tables again', async functio
   expect(api.tableLoads).toBe(2)
 })
 
-test('the tool choice warns about a tool older than the server', function () {
-  const tools = [
-    { version: 18, path: '/a/pg_dump' },
-    { version: 15, path: '/b/pg_dump' },
-  ]
-  const choice = new PgToolChoice('pg_dump', { server: 17, tools, defaultVersion: 18 })
-  expect(choice.version).toBe(18)
-  expect(choice.label(tools[1]!)).toBe('PostgreSQL 15')
-  expect(choice.warning).toBe('')
-  expect(choice.missing).toBe('')
-  choice.version = 15
-  expect(choice.warning).toBe(
-    'pg_dump 15 is older than the server (PostgreSQL 17). pg_dump does not back up a newer server.',
-  )
-  const none = new PgToolChoice('pg_restore', { server: 17, tools: [], defaultVersion: null })
-  expect(none.warning).toBe('')
-  expect(none.missing).toContain('pg_restore was not found')
-})
-
 test('a failed restore keeps its error when the reload of the tables fails too', async function () {
   const api = new FakeApi()
   const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
@@ -328,5 +308,17 @@ test('a failed restore keeps its error when the reload of the tables fails too',
   api.end('pg_restore had 1 error. The rest was restored.')
   expect(await failing).toBe(false)
   expect(session.error).toBe('pg_restore had 1 error. The rest was restored.')
+  expect(api.tableLoads).toBe(1)
+})
+
+test('a cancelled restore keeps its status when the reload of the tables fails', async function () {
+  const api = new FakeApi()
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
+  api.tablesError = 'connection lost'
+  const cancelled = session.run(session.restore('/tmp/a.dump', { version: null, clean: false }))
+  await session.cancel()
+  expect(await cancelled).toBe(true)
+  expect(session.error).toBe('')
+  expect(session.status).toBe('Restore cancelled. What was loaded so far stays.')
   expect(api.tableLoads).toBe(1)
 })

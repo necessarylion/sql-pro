@@ -67,6 +67,8 @@ export interface RestoreOptions {
 export interface PgTool {
   /** The major version, like 17. */
   version: number
+  /** The full version, like `17.6`. */
+  release: string
   path: string
 }
 

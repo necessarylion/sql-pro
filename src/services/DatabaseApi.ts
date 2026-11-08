@@ -304,6 +304,11 @@ export class DatabaseApi {
     return invoke('pg_tools', { id, restore })
   }
 
+  /** Opens an https web page in the browser. */
+  openLink(url: string): Promise<void> {
+    return invoke('open_link', { url })
+  }
+
   /** True when the file is a custom format file of pg_dump, for pg_restore. */
   isCustomDump(path: string): Promise<boolean> {
     return invoke('is_custom_dump', { path })

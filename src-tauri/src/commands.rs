@@ -412,6 +412,11 @@ pub async fn pg_tools(service: Service<'_>, id: String, restore: bool) -> AppRes
 }
 
 #[tauri::command]
+pub fn open_link(url: String) -> AppResult<()> {
+    ConnectionService::open_link(&url)
+}
+
+#[tauri::command]
 pub fn is_custom_dump(path: PathBuf) -> AppResult<bool> {
     ConnectionService::is_custom_dump(&path)
 }

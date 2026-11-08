@@ -546,6 +546,8 @@ pub struct RestoreOptions {
 pub struct PgTool {
     /// The major version, like 17.
     pub version: u32,
+    /// The full version the tool prints, like `17.6`.
+    pub release: String,
     pub path: PathBuf,
 }
 

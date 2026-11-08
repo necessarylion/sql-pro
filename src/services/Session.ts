@@ -1529,10 +1529,10 @@ export class Session {
     } finally {
       this.stopDumpTool()
     }
-    if (failure === null || cancelled) {
+    if (failure === null) {
       await this.loadTables()
     } else {
-      // The error of pg_restore matters more than one of the reload.
+      // The error or cancel of pg_restore matters more than an error of the reload.
       try {
         await this.loadTables()
       } catch {

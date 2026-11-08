@@ -97,6 +97,13 @@ pub const PG_CUSTOM_DUMP_ELSEWHERE: &str = "This file is a PostgreSQL custom bac
 /// The error when a restore runs on a database that is not `PostgreSQL`.
 pub const RESTORE_ONLY_POSTGRES: &str = "Restore from .dump works only with PostgreSQL";
 
+/// Added to the error when a `pg_dump` or `pg_restore` is missing. The dialog has the guide.
+pub const PG_TOOL_HINT: &str =
+    "Pick the version in the backup dialog to see how to install it, then press Check again.";
+
+/// The start of a link the app may open in the browser.
+pub const LINK_PREFIX: &str = "https://";
+
 /// The Windows flag `CREATE_NO_WINDOW`. A tool started with it opens no console window.
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
