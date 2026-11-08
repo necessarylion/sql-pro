@@ -109,7 +109,7 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
   The PostgreSQL dialog always lists versions 18 to 12 (`PG_TOOL_VERSIONS`). The app never installs a tool:
   a missing version shows an install guide for the platform (`PgInstallGuide`). `open_link` opens only the guide links (`GUIDE_LINKS`).
   - PostgreSQL only (`PgToolDialog.vue`): the user picks plain SQL or custom format (`--format=custom`, a
-    `.dump` file) and the pg_dump version. `DumpRepository::pg_tools` lists the installed versions
+    `.dump` file, the default each time the dialog opens) and the pg_dump version. `DumpRepository::pg_tools` lists the installed versions
     (`--version`). The default is the server version (`SHOW server_version_num`), else the newest.
   - `restore_dump` loads a `.dump` file with `pg_restore --no-owner --no-privileges` into the current
     database, optionally with `--clean --if-exists`. It uses the same progress, cancel map and `DumpLog`.

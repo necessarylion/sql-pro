@@ -24,3 +24,6 @@ export const PG_WINDOWS_DOWNLOAD_URL = 'https://www.postgresql.org/download/wind
 
 /** `navigator.platform` of Windows matches this. */
 export const WINDOWS_PLATFORM_PATTERN = /win/i
+
+/** The backup dialog starts on the custom format (.dump). It is smaller and pg_restore loads it faster. */
+export const PG_BACKUP_CUSTOM_DEFAULT = true

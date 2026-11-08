@@ -4,6 +4,7 @@ import { confirm, save } from '@tauri-apps/plugin-dialog'
 import { PG_INSTALL_GUIDE, injectRequired } from '../services/keys'
 import type { GuideLink, GuideStep } from '../services/PgInstallGuide'
 import { PgToolLoader, type PgToolChoice } from '../services/PgToolChoice'
+import { PG_BACKUP_CUSTOM_DEFAULT } from '../constants/pgTools'
 import type { Session } from '../services/Session'
 
 // The PostgreSQL backup and restore dialog: the format of a backup, the pg_dump or
@@ -12,7 +13,13 @@ import type { Session } from '../services/Session'
 const props = defineProps<{ session: Session }>()
 const guide = injectRequired(PG_INSTALL_GUIDE)
 const dialog = useTemplateRef<HTMLDialogElement>('dialog')
-const form = reactive({ restoring: false, path: '', custom: false, clean: false, problem: '' })
+const form = reactive({
+  restoring: false,
+  path: '',
+  custom: PG_BACKUP_CUSTOM_DEFAULT,
+  clean: false,
+  problem: '',
+})
 const choice = ref<PgToolChoice | null>(null)
 const loader = new PgToolLoader()
 const checking = ref(false)
@@ -29,6 +36,7 @@ function openRestore(path: string): Promise<void> {
 async function show(restoring: boolean, path: string): Promise<void> {
   form.restoring = restoring
   form.path = path
+  form.custom = PG_BACKUP_CUSTOM_DEFAULT
   form.clean = false
   choice.value = null
   dialog.value?.showModal()
