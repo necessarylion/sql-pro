@@ -25,6 +25,9 @@ export const QUERY_CANCELLED_STATUS = 'Query cancelled'
 /** The status of a tab after the user cancelled its backup. */
 export const BACKUP_CANCELLED_STATUS = 'Backup cancelled'
 
+/** The status of a tab after the user cancelled its pg_restore. */
+export const RESTORE_CANCELLED_STATUS = 'Restore cancelled. What was loaded so far stays.'
+
 /** The note in the connection form after the user cancelled a connect. */
 export const CONNECT_CANCELLED_NOTE = 'Connection cancelled.'
 

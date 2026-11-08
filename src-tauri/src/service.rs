@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use futures_util::future::{AbortHandle, Abortable};
+use futures_util::future::{AbortHandle, AbortRegistration, Abortable};
 use parking_lot::Mutex;
 
 use crate::constants::{
@@ -30,11 +30,11 @@ use crate::constants::{
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
-    ConnectionConfig, DbObject, DbUser, Diagram, DiagramTable, Driver, DumpProgress, ExportRequest,
-    FilterOperator, FilterRule, ForeignKey, IndexInfo, NewColumn, NewForeignKey, NewIndex, NewUser,
-    Notes, ResultSet, RowUpdate, RowsExport, RowsSql, SaveResult, TableKeys, TablePage, TableRef,
-    UserList, Values,
+    AccessLevel, AiOptions, Attachment, BackupOptions, BrowseRequest, ClaudeReply, ColumnInfo,
+    ColumnSpec, ConnectionConfig, DbObject, DbUser, Diagram, DiagramTable, Driver, DumpProgress,
+    ExportRequest, FilterOperator, FilterRule, ForeignKey, IndexInfo, NewColumn, NewForeignKey,
+    NewIndex, NewUser, Notes, PgTools, RestoreOptions, ResultSet, RowUpdate, RowsExport, RowsSql,
+    SaveResult, TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::repository::{
     ClaudeCli, DumpRepository, Repository, RepositoryFactory, SshTunnel, Statement, create_start,
@@ -575,28 +575,84 @@ impl ConnectionService {
         &self,
         id: &str,
         path: &Path,
+        options: &BackupOptions,
         progress: impl FnMut(DumpProgress),
     ) -> AppResult<()> {
         // This copy also keeps the tunnel open until the dump is done.
         let connection = self.connection(id)?;
-        let mut config = connection.config;
+        let config = Self::tool_config(&connection);
+        let registration = self.start_tool(id)?;
+        let result = DumpRepository::dump(&config, path, options, progress, registration).await;
+        self.dumping.lock().remove(id);
+        result
+    }
+
+    /// Loads a `pg_restore` file into the current database. Progress and cancel work like
+    /// in `dump_database`, and a backup and a restore never run at once in one tab.
+    pub async fn restore_dump(
+        &self,
+        id: &str,
+        path: &Path,
+        options: &RestoreOptions,
+        progress: impl FnMut(DumpProgress),
+    ) -> AppResult<()> {
+        let connection = self.connection(id)?;
+        let config = Self::tool_config(&connection);
+        let registration = self.start_tool(id)?;
+        let result = DumpRepository::restore(&config, path, options, progress, registration).await;
+        self.dumping.lock().remove(id);
+        result
+    }
+
+    /// The `pg_dump` (or with `restore`, `pg_restore`) versions on this computer, and the
+    /// one that fits the server of the tab.
+    pub async fn pg_tools(&self, id: &str, restore: bool) -> AppResult<PgTools> {
+        let repository = self.repository(id)?;
+        let sets = repository.query("SHOW server_version_num").await?;
+        let number = sets
+            .first()
+            .and_then(|set| set.rows.first())
+            .and_then(|row| row.first().cloned().flatten())
+            .and_then(|text| text.trim().parse::<u32>().ok())
+            .ok_or("The server did not tell its version")?;
+        // Like 170002 for 17.2. Before version 10 it was like 90624 for 9.6.24.
+        let server = number / 10_000;
+        let tools = DumpRepository::pg_tools(if restore { "pg_restore" } else { "pg_dump" }).await;
+        let default_version = DumpRepository::default_version(server, &tools);
+        Ok(PgTools {
+            server,
+            tools,
+            default_version,
+        })
+    }
+
+    /// True when the file is a custom format file of `pg_dump`, for `pg_restore`.
+    pub fn is_custom_dump(path: &Path) -> AppResult<bool> {
+        DumpRepository::is_custom_dump(path)
+    }
+
+    /// The login of a tab for a dump tool. With an SSH tunnel it goes through the same
+    /// tunnel as the tab. The tunnel stays open while `connection` lives.
+    fn tool_config(connection: &Connection) -> ConnectionConfig {
+        let mut config = connection.config.clone();
         if let Some(tunnel) = &connection.tunnel {
-            // Go through the same tunnel as the tab.
             LOCALHOST.clone_into(&mut config.host);
             config.port = tunnel.local_port();
         }
+        config
+    }
+
+    /// Notes that a dump tool runs in tab `id`, so `cancel_dump` can stop it.
+    /// The caller removes the entry when the tool ends.
+    fn start_tool(&self, id: &str) -> AppResult<AbortRegistration> {
         let (handle, registration) = AbortHandle::new_pair();
-        {
-            let mut dumping = self.dumping.lock();
-            // Two backups of one tab would write the same side file.
-            if dumping.contains_key(id) {
-                return Err(BACKUP_RUNS.into());
-            }
-            dumping.insert(id.to_owned(), handle);
+        let mut dumping = self.dumping.lock();
+        // Two backups of one tab would write the same side file.
+        if dumping.contains_key(id) {
+            return Err(BACKUP_RUNS.into());
         }
-        let result = DumpRepository::dump(&config, path, progress, registration).await;
-        self.dumping.lock().remove(id);
-        result
+        dumping.insert(id.to_owned(), handle);
+        Ok(registration)
     }
 
     /// Stops the backup that runs now for `id`. It then fails with `BACKUP_CANCELLED`.

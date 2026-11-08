@@ -106,6 +106,13 @@ Constants are in `constants/mod.rs`. Errors are `AppError` (`error.rs`), which r
   table and keeps only the real error lines. Progress (file size, time, table) goes to the frontend through a
   `Channel` about once per second. `cancel_dump` kills the tool and deletes the `.part` file.
   Esc stops a backup only when Escape has no other job there (`Shortcuts.cancelsBackup`).
+  - PostgreSQL only (`PgToolDialog.vue`): the user picks plain SQL or custom format (`--format=custom`, a
+    `.dump` file) and the pg_dump version. `DumpRepository::pg_tools` lists the installed versions
+    (`--version`). The default is the server version (`SHOW server_version_num`), else the newest.
+  - `restore_dump` loads a `.dump` file with `pg_restore --no-owner --no-privileges` into the current
+    database, optionally with `--clean --if-exists`. It uses the same progress, cancel map and `DumpLog`.
+    pg_restore goes on after errors; the error then counts them. The SQL import sends a file that starts
+    with `PGDMP` to the restore dialog.
 - **AI notes** (`service/notes.rs`): each database has a `claude.md` file at
   `~/.sql-pro/<database>-<hash>/claude.md` (`~/.sql-pro-dev/` in a debug build). The hash (FNV-1a, 8 hex) is
   of driver, server host, port and database (SQLite: the file path), not the user. The user edits it in Ask AI. The AI adds facts to it (`remember`).

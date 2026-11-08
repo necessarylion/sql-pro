@@ -9,10 +9,11 @@
 
 use sql_pro_lib::model::DbObject;
 use sql_pro_lib::model::{
-    AccessLevel, BrowseRequest, ColumnSpec, ConnectionConfig, CsvColumn, CsvImport, DataKinds,
-    DbUser, Diagram, Driver, ExportFormat, ExportRequest, FilterOperator, FilterRule, ForeignKey,
-    IndexInfo, NewColumn, NewForeignKey, NewIndex, NewUser, PlanMeasure, ReferentialAction,
-    Relation, RowUpdate, RowsExport, RowsSql, SaveResult, SshConfig, TableRef, Values,
+    AccessLevel, BackupOptions, BrowseRequest, ColumnSpec, ConnectionConfig, CsvColumn, CsvImport,
+    DataKinds, DbUser, Diagram, Driver, ExportFormat, ExportRequest, FilterOperator, FilterRule,
+    ForeignKey, IndexInfo, NewColumn, NewForeignKey, NewIndex, NewUser, PlanMeasure,
+    ReferentialAction, Relation, RestoreOptions, RowUpdate, RowsExport, RowsSql, SaveResult,
+    SshConfig, TableRef, Values,
 };
 use std::time::{Duration, Instant};
 
@@ -990,7 +991,7 @@ async fn dump(service: &ConnectionService, driver: Driver, database: &str) {
     let path = temp_path("dump", "sql");
     if driver == Driver::Mssql {
         let error = service
-            .dump_database(ID, &path, drop)
+            .dump_database(ID, &path, &BackupOptions::default(), drop)
             .await
             .expect_err("no backup");
         assert!(error.to_string().contains("not supported"), "{error}");
@@ -999,7 +1000,9 @@ async fn dump(service: &ConnectionService, driver: Driver, database: &str) {
     }
     let mut steps = Vec::new();
     match service
-        .dump_database(ID, &path, |step| steps.push(step))
+        .dump_database(ID, &path, &BackupOptions::default(), |step| {
+            steps.push(step);
+        })
         .await
     {
         Err(error) if error.to_string().contains("was not found") => {
@@ -1012,6 +1015,7 @@ async fn dump(service: &ConnectionService, driver: Driver, database: &str) {
     if driver == Driver::Postgres {
         assert!(sql.contains("FROM stdin;"), "the dump has COPY rows");
         restore(service, &path, database).await;
+        pg_restore(service, database).await;
     }
     std::fs::remove_file(&path).expect("remove dump");
     assert!(
@@ -1040,7 +1044,12 @@ async fn dump(service: &ConnectionService, driver: Driver, database: &str) {
 
     // A folder that does not exist: an error, and no file.
     let missing = folder.join("sqlpro-no-such-folder").join("dump.sql");
-    assert!(service.dump_database(ID, &missing, drop).await.is_err());
+    assert!(
+        service
+            .dump_database(ID, &missing, &BackupOptions::default(), drop)
+            .await
+            .is_err()
+    );
     assert!(!missing.exists());
     assert!(!folder.join("sqlpro-no-such-folder").exists());
 }
@@ -1067,6 +1076,94 @@ async fn restore(service: &ConnectionService, path: &std::path::Path, back: &str
     let count = format!("SELECT count(*) FROM {TABLE}");
     let found = service.run_query(ID, &count).await.expect("plain name");
     assert_eq!(found[0].rows[0][0].as_deref(), Some("2"));
+    service
+        .use_database(ID, back.to_owned())
+        .await
+        .expect("back to the test database");
+    service
+        .drop_database(ID, RESTORED)
+        .await
+        .expect("drop restore database");
+}
+
+/// Backs up the test database in the custom format, then loads it with `pg_restore` into a
+/// new database. Expects the two rows that `exercise` inserts. Goes back to the test database.
+async fn pg_restore(service: &ConnectionService, back: &str) {
+    let dumps = service.pg_tools(ID, false).await.expect("pg_dump versions");
+    let restores = service
+        .pg_tools(ID, true)
+        .await
+        .expect("pg_restore versions");
+    let (Some(dump_version), Some(restore_version)) =
+        (dumps.default_version, restores.default_version)
+    else {
+        println!("NOTE: the pg_restore check is skipped: pg_dump or pg_restore was not found");
+        return;
+    };
+    assert!(dumps.server >= 10, "server {}", dumps.server);
+    let versions: Vec<u32> = dumps.tools.iter().map(|tool| tool.version).collect();
+    println!("pg_dump versions: {versions:?}, server {}", dumps.server);
+    assert!(
+        versions.windows(2).all(|pair| pair[0] > pair[1]),
+        "newest first"
+    );
+    let path = temp_path("custom", "dump");
+    let options = BackupOptions {
+        custom: true,
+        version: Some(dump_version),
+    };
+    service
+        .dump_database(ID, &path, &options, drop)
+        .await
+        .expect("custom dump");
+    assert!(ConnectionService::is_custom_dump(&path).expect("read the dump"));
+    // The SQL import does not run it. It says what to use.
+    let error = service.import_sql(ID, &path).await.expect_err("not SQL");
+    assert!(error.to_string().contains("Restore from .dump"), "{error}");
+
+    let _ = service.drop_database(ID, RESTORED).await;
+    let created = service.create_database(ID, RESTORED, "", "");
+    created.await.expect("create restore database");
+    service
+        .use_database(ID, RESTORED.to_owned())
+        .await
+        .expect("use restore database");
+    let mut options = RestoreOptions {
+        version: Some(restore_version),
+        clean: false,
+    };
+    let mut steps = Vec::new();
+    service
+        .restore_dump(ID, &path, &options, |step| steps.push(step))
+        .await
+        .expect("pg_restore");
+    assert!(
+        steps
+            .iter()
+            .any(|step| step.table.as_deref() == Some(&format!("public.{TABLE}"))),
+        "no progress for the table"
+    );
+    let rows = async || {
+        let table = listed(service, TABLE).await.expect("the restored table");
+        page(service, &table).await.rows
+    };
+    let loaded = rows().await;
+    assert_eq!(loaded.len(), 2);
+    assert_eq!(loaded[0][1].as_deref(), Some("O'Brien"));
+    assert_eq!(loaded[1][3].as_deref(), Some("line 1\nline 2"));
+    // Again: the objects are there already, so pg_restore counts its errors.
+    let error = service.restore_dump(ID, &path, &options, drop).await;
+    let error = error.expect_err("objects exist").to_string();
+    assert!(error.contains("errors. The rest was restored"), "{error}");
+    assert!(error.contains("already exists"), "{error}");
+    // With clean, each object is dropped first. No error, and the rows are there once.
+    options.clean = true;
+    service
+        .restore_dump(ID, &path, &options, drop)
+        .await
+        .expect("pg_restore with clean");
+    assert_eq!(rows().await.len(), 2);
+    std::fs::remove_file(&path).expect("remove custom dump");
     service
         .use_database(ID, back.to_owned())
         .await

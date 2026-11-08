@@ -73,6 +73,22 @@ pub const TOOL_DIRS: [&str; 8] = [
 /// Homebrew keeps each `PostgreSQL` version in a folder like `postgresql@16` in here.
 pub const HOMEBREW_OPT_DIR: &str = "/opt/homebrew/opt";
 
+/// Postgres.app keeps each version in a folder like `17` in here.
+pub const POSTGRES_APP_VERSIONS_DIR: &str = "/Applications/Postgres.app/Contents/Versions";
+
+/// Debian and Ubuntu keep each `PostgreSQL` version in a folder like `17` in here.
+pub const LINUX_POSTGRES_DIR: &str = "/usr/lib/postgresql";
+
+/// The first bytes of a custom format file of `pg_dump`. Only `pg_restore` reads it.
+pub const PG_CUSTOM_MAGIC: &[u8; 5] = b"PGDMP";
+
+/// The error when a custom format file of `pg_dump` is opened as a SQL file.
+pub const PG_CUSTOM_DUMP: &str =
+    "This file is a pg_dump custom archive, not SQL. Use Restore from .dump… to load it";
+
+/// The error when a restore runs on a database that is not `PostgreSQL`.
+pub const RESTORE_ONLY_POSTGRES: &str = "Restore from .dump works only with PostgreSQL";
+
 /// The Windows flag `CREATE_NO_WINDOW`. A tool started with it opens no console window.
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 

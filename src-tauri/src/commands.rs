@@ -10,11 +10,11 @@ use tauri::ipc::Channel;
 
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    AccessLevel, AiOptions, Attachment, BrowseRequest, ClaudeReply, ColumnInfo, ColumnSpec,
-    ConnectionConfig, CsvImport, CsvPreview, DataDiff, DataKinds, DbObject, DbProcess, Diagram,
-    DumpProgress, ExportRequest, NewColumn, NewForeignKey, NewIndex, NewUser, Notes, QueryPlan,
-    QueryStat, ResultSet, RowUpdate, RowsExport, RowsSql, SaveResult, SchemaChange, SyncSql,
-    TableKeys, TablePage, TableRef, UserList, Values,
+    AccessLevel, AiOptions, Attachment, BackupOptions, BrowseRequest, ClaudeReply, ColumnInfo,
+    ColumnSpec, ConnectionConfig, CsvImport, CsvPreview, DataDiff, DataKinds, DbObject, DbProcess,
+    Diagram, DumpProgress, ExportRequest, NewColumn, NewForeignKey, NewIndex, NewUser, Notes,
+    PgTools, QueryPlan, QueryStat, RestoreOptions, ResultSet, RowUpdate, RowsExport, RowsSql,
+    SaveResult, SchemaChange, SyncSql, TableKeys, TablePage, TableRef, UserList, Values,
 };
 use crate::open_file::OpenedFiles;
 use crate::repository::PasswordRepository;
@@ -374,10 +374,11 @@ pub async fn dump_database(
     service: Service<'_>,
     id: String,
     path: PathBuf,
+    options: BackupOptions,
     progress: Channel<DumpProgress>,
 ) -> AppResult<()> {
     service
-        .dump_database(&id, &path, |step| {
+        .dump_database(&id, &path, &options, |step| {
             // The page may be gone. The backup goes on anyway.
             let _ = progress.send(step);
         })
@@ -387,6 +388,32 @@ pub async fn dump_database(
 #[tauri::command]
 pub fn cancel_dump(service: Service<'_>, id: String) {
     service.cancel_dump(&id);
+}
+
+#[tauri::command]
+pub async fn restore_dump(
+    service: Service<'_>,
+    id: String,
+    path: PathBuf,
+    options: RestoreOptions,
+    progress: Channel<DumpProgress>,
+) -> AppResult<()> {
+    service
+        .restore_dump(&id, &path, &options, |step| {
+            // The page may be gone. The restore goes on anyway.
+            let _ = progress.send(step);
+        })
+        .await
+}
+
+#[tauri::command]
+pub async fn pg_tools(service: Service<'_>, id: String, restore: bool) -> AppResult<PgTools> {
+    service.pg_tools(&id, restore).await
+}
+
+#[tauri::command]
+pub fn is_custom_dump(path: PathBuf) -> AppResult<bool> {
+    ConnectionService::is_custom_dump(&path)
 }
 
 #[tauri::command]

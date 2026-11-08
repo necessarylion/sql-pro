@@ -58,6 +58,7 @@ import EnvBadge from './EnvBadge.vue'
 import ExportDialog from './ExportDialog.vue'
 import ImportDialog from './ImportDialog.vue'
 import PaneResizer from './PaneResizer.vue'
+import PgToolDialog from './PgToolDialog.vue'
 import QueryView from './QueryView.vue'
 import StructureView from './StructureView.vue'
 import TableDialog from './TableDialog.vue'
@@ -113,6 +114,7 @@ const tableDialog = useTemplateRef<InstanceType<typeof TableDialog>>('tableDialo
 const databaseDialog = useTemplateRef<InstanceType<typeof DatabaseDialog>>('databaseDialog')
 const exportDialog = useTemplateRef<InstanceType<typeof ExportDialog>>('exportDialog')
 const importDialog = useTemplateRef<InstanceType<typeof ImportDialog>>('importDialog')
+const pgDialog = useTemplateRef<InstanceType<typeof PgToolDialog>>('pgDialog')
 const menuElement = ref<HTMLElement | null>(null)
 const filteredTables = computed(matchingTables)
 const groups = computed(tableGroups)
@@ -462,11 +464,17 @@ async function importCsv(table: TableRef): Promise<void> {
 async function importSql(): Promise<void> {
   closeMenu()
   const session = props.session
+  const postgres = isPostgres()
   const path = await open({
     title: 'Import SQL file',
-    filters: [{ name: 'SQL', extensions: ['sql'] }],
+    filters: [{ name: 'SQL', extensions: postgres ? ['sql', 'dump'] : ['sql'] }],
   })
   if (!path) {
+    return
+  }
+  // A custom format file of pg_dump is not SQL. pg_restore loads it.
+  if (postgres && (await isCustomDump(path))) {
+    await pgDialog.value?.openRestore(path)
     return
   }
   const sure = await confirm(
@@ -475,6 +483,34 @@ async function importSql(): Promise<void> {
   )
   if (sure) {
     await session.run(session.importSql(path))
+  }
+}
+
+/** False when the file cannot be read. The SQL import then shows the error. */
+async function isCustomDump(path: string): Promise<boolean> {
+  try {
+    return await props.session.isCustomDump(path)
+  } catch {
+    return false
+  }
+}
+
+function isPostgres(): boolean {
+  return props.session.config?.driver === 'postgres'
+}
+
+/** Asks for a .dump file, then opens the restore dialog for it. Does nothing on cancel. */
+async function restoreDump(): Promise<void> {
+  closeMenu()
+  const path = await open({
+    title: 'Restore from .dump',
+    filters: [
+      { name: 'pg_dump file', extensions: ['dump', 'backup'] },
+      { name: 'All files', extensions: ['*'] },
+    ],
+  })
+  if (path) {
+    await pgDialog.value?.openRestore(path)
   }
 }
 
@@ -589,9 +625,20 @@ function backupButtonTitle(): string {
   if (backupBlocked.value) {
     return 'Choose a database first'
   }
-  return props.session.dumping
-    ? 'A backup already runs in this tab'
+  if (props.session.dumping) {
+    return props.session.restoring
+      ? 'A restore runs in this tab'
+      : 'A backup already runs in this tab'
+  }
+  return isPostgres()
+    ? 'Back up this database to a SQL or .dump file'
     : 'Back up this database to a SQL file'
+}
+
+function importTitle(): string {
+  return isPostgres()
+    ? 'Import a SQL or .dump file into this database'
+    : 'Import a SQL file into this database'
 }
 
 /** The database name. SQLite has none, so it is the file name. */
@@ -603,6 +650,11 @@ function databaseLabel(): string {
 /** Asks where to save, asks to confirm, then writes the SQL dump. Does nothing on cancel or no. */
 async function backup(): Promise<void> {
   const session = props.session
+  // PostgreSQL has a choice of format and pg_dump version first.
+  if (isPostgres()) {
+    await pgDialog.value?.openBackup()
+    return
+  }
   const path = await save({
     title: 'Back up database',
     defaultPath: session.backupName(new Date()),
@@ -706,7 +758,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
       </button>
       <button
         class="icon"
-        :title="backupBlocked ? 'Choose a database first' : 'Import a SQL file into this database'"
+        :title="backupBlocked ? 'Choose a database first' : importTitle()"
         :disabled="backupBlocked"
         @click="importSql"
       >
@@ -896,6 +948,9 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
               role="menu"
             >
               <button role="menuitem" @click.stop="importSql">Import SQL File…</button>
+              <button v-if="isPostgres()" role="menuitem" @click.stop="restoreDump">
+                Restore from .dump…
+              </button>
             </div>
           </div>
         </template>
@@ -1000,6 +1055,7 @@ async function switchDatabase(select: HTMLSelectElement): Promise<void> {
     <DatabaseDialog ref="databaseDialog" :session="session" />
     <ExportDialog ref="exportDialog" :session="session" />
     <ImportDialog ref="importDialog" :session="session" />
+    <PgToolDialog ref="pgDialog" :session="session" />
   </div>
 </template>
 

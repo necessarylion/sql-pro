@@ -47,6 +47,38 @@ export interface DumpProgress {
   tables: number
 }
 
+/** How to back up a PostgreSQL database. Other databases ignore it. */
+export interface BackupOptions {
+  /** True for the custom format of pg_dump (a .dump file for pg_restore). Else plain SQL. */
+  custom: boolean
+  /** The major version of pg_dump to use. null = the default one. */
+  version: number | null
+}
+
+/** How to load a .dump file with pg_restore. */
+export interface RestoreOptions {
+  /** The major version of pg_restore to use. null = the default one. */
+  version: number | null
+  /** Drop each object first (`--clean --if-exists`). */
+  clean: boolean
+}
+
+/** A pg_dump or pg_restore on this computer. */
+export interface PgTool {
+  /** The major version, like 17. */
+  version: number
+  path: string
+}
+
+/** The versions of pg_dump or pg_restore on this computer, newest first. */
+export interface PgTools {
+  /** The major version of the server, like 17. */
+  server: number
+  tools: PgTool[]
+  /** The version of the server when it is there, else the newest. null when none was found. */
+  defaultVersion: number | null
+}
+
 /** `schema` is set only for postgres and mssql. */
 export interface TableRef {
   schema: string | null
