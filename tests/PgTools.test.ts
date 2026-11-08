@@ -62,11 +62,19 @@ test('the install guide fits the platform', function () {
   const mac = new PgInstallGuide('MacIntel', api).steps(16)
   expect(mac[0]!.command).toBe('brew install postgresql@16')
   expect(mac[1]!.text).toContain('If Homebrew no longer has it')
+  const oldMac = new PgInstallGuide('MacIntel', api).steps(14)
+  expect(oldMac.length).toBe(1)
+  expect(oldMac[0]!.command).toBe('')
+  expect(oldMac[0]!.text).toBe('Use Postgres.app or the EDB installer.')
+  expect(new PgInstallGuide('MacIntel', api).steps(15)[0]!.command).toBe(
+    'brew install postgresql@15',
+  )
 
   const linux = new PgInstallGuide('Linux x86_64', api).steps(15)
   expect(linux[0]!.command).toBe('sudo apt install postgresql-client-15')
   expect(linux[0]!.links[0]!.url).toBe('https://wiki.postgresql.org/wiki/Apt')
   expect(linux[1]!.command).toBe('sudo dnf install postgresql15')
+  expect(linux[2]!.text).toContain('PGDG archive')
 
   const windows = new PgInstallGuide('Win32', api).steps(17)
   expect(windows[0]!.command).toBe('')

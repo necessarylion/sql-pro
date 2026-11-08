@@ -1,4 +1,5 @@
 import {
+  HOMEBREW_OLDEST_PG_VERSION,
   PG_APT_URL,
   PG_DNF_URL,
   PG_MAC_DOWNLOAD_URL,
@@ -40,6 +41,18 @@ export class PgInstallGuide {
 
   steps(version: number): GuideStep[] {
     if (this.platform === 'mac') {
+      const installers: GuideStep = {
+        text: 'Use Postgres.app or the EDB installer.',
+        command: '',
+        links: [
+          { label: 'Postgres.app', url: POSTGRES_APP_URL },
+          { label: 'EDB installer', url: PG_MAC_DOWNLOAD_URL },
+        ],
+      }
+      // Homebrew has disabled the old versions. Its install would fail.
+      if (version < HOMEBREW_OLDEST_PG_VERSION) {
+        return [installers]
+      }
       return [
         {
           text: 'Install it with Homebrew:',
@@ -47,12 +60,8 @@ export class PgInstallGuide {
           links: [],
         },
         {
+          ...installers,
           text: 'If Homebrew no longer has it, use Postgres.app or the EDB installer.',
-          command: '',
-          links: [
-            { label: 'Postgres.app', url: POSTGRES_APP_URL },
-            { label: 'EDB installer', url: PG_MAC_DOWNLOAD_URL },
-          ],
         },
       ]
     }
@@ -75,6 +84,11 @@ export class PgInstallGuide {
         text: 'RHEL and Fedora, from the PGDG repository:',
         command: `sudo dnf install postgresql${version}`,
         links: [{ label: 'Set up the repository', url: PG_DNF_URL }],
+      },
+      {
+        text: 'On a new distro release, an old version may need the PGDG archive repository.',
+        command: '',
+        links: [],
       },
     ]
   }

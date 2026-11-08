@@ -77,6 +77,9 @@ pub const HOMEBREW_OPT_DIRS: [&str; 2] = ["/opt/homebrew/opt", "/usr/local/opt"]
 /// Postgres.app keeps each version in a folder like `17` in here.
 pub const POSTGRES_APP_VERSIONS_DIR: &str = "/Applications/Postgres.app/Contents/Versions";
 
+/// The EDB installer for macOS keeps each `PostgreSQL` version in a folder like `17` in here.
+pub const EDB_MAC_POSTGRES_DIR: &str = "/Library/PostgreSQL";
+
 /// Debian and Ubuntu keep each `PostgreSQL` version in a folder like `17` in here.
 pub const LINUX_POSTGRES_DIR: &str = "/usr/lib/postgresql";
 
@@ -101,8 +104,15 @@ pub const RESTORE_ONLY_POSTGRES: &str = "Restore from .dump works only with Post
 pub const PG_TOOL_HINT: &str =
     "Pick the version in the backup dialog to see how to install it, then press Check again.";
 
-/// The start of a link the app may open in the browser.
-pub const LINK_PREFIX: &str = "https://";
+/// The only web pages the app opens in the browser: the links of the install guide.
+/// The frontend has the same links in `src/constants/pgTools.ts`.
+pub const GUIDE_LINKS: [&str; 5] = [
+    "https://postgresapp.com/",
+    "https://www.postgresql.org/download/macosx/",
+    "https://wiki.postgresql.org/wiki/Apt",
+    "https://www.postgresql.org/download/linux/redhat/",
+    "https://www.postgresql.org/download/windows/",
+];
 
 /// The Windows flag `CREATE_NO_WINDOW`. A tool started with it opens no console window.
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;

@@ -17,14 +17,14 @@ use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::Command;
 
 use crate::constants::{
-    BACKUP_CANCELLED, DUMP_PROGRESS_EVERY, LINK_PREFIX, MSSQL_NO_BACKUP, MYSQL_PASSWORD_ENV,
+    BACKUP_CANCELLED, DUMP_PROGRESS_EVERY, GUIDE_LINKS, MSSQL_NO_BACKUP, MYSQL_PASSWORD_ENV,
     PARTIAL_DUMP_SUFFIX, PG_CUSTOM_MAGIC, PG_TOOL_HINT, POSTGRES_PASSWORD_ENV,
     RESTORE_ONLY_POSTGRES,
 };
 #[cfg(unix)]
 use crate::constants::{
-    HOMEBREW_OPT_DIRS, LINUX_POSTGRES_DIR, POSTGRES_APP_VERSIONS_DIR, RHEL_POSTGRES_PARENT,
-    TOOL_DIRS,
+    EDB_MAC_POSTGRES_DIR, HOMEBREW_OPT_DIRS, LINUX_POSTGRES_DIR, POSTGRES_APP_VERSIONS_DIR,
+    RHEL_POSTGRES_PARENT, TOOL_DIRS,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{BackupOptions, ConnectionConfig, Driver, DumpProgress, PgTool, RestoreOptions};
@@ -166,10 +166,10 @@ impl DumpRepository {
             })
     }
 
-    /// Opens a web page in the browser, like an install guide. Only `https://` links.
+    /// Opens a link of the install guide in the browser. Other links are refused.
     pub fn open_link(url: &str) -> AppResult<()> {
-        if !url.starts_with(LINK_PREFIX) || url.chars().any(char::is_whitespace) {
-            return Err("Only https links can be opened".into());
+        if !GUIDE_LINKS.contains(&url) {
+            return Err("This link cannot be opened".into());
         }
         #[cfg(target_os = "macos")]
         let opener = "open";
@@ -177,12 +177,16 @@ impl DumpRepository {
         let opener = "explorer";
         #[cfg(all(unix, not(target_os = "macos")))]
         let opener = "xdg-open";
-        std::process::Command::new(opener)
+        let mut child = std::process::Command::new(opener)
             .arg(url)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
+        // Wait for the opener, so no finished process is left behind.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
         Ok(())
     }
 
@@ -466,6 +470,7 @@ impl DumpRepository {
                 }
             }
             folders.extend(Self::bin_folders(Path::new(POSTGRES_APP_VERSIONS_DIR), ""));
+            folders.extend(Self::bin_folders(Path::new(EDB_MAC_POSTGRES_DIR), ""));
             folders.extend(Self::bin_folders(Path::new(LINUX_POSTGRES_DIR), ""));
             folders.extend(Self::bin_folders(Path::new(RHEL_POSTGRES_PARENT), "pgsql-"));
         }
@@ -743,9 +748,10 @@ mod tests {
     }
 
     #[test]
-    fn opens_only_https_links() {
+    fn opens_only_the_guide_links() {
         assert!(DumpRepository::open_link("file:///etc/passwd").is_err());
-        assert!(DumpRepository::open_link("https://a.b/ --flag").is_err());
+        assert!(DumpRepository::open_link("https://example.com/").is_err());
+        assert!(DumpRepository::open_link("https://postgresapp.com/,x").is_err());
     }
 
     #[test]
