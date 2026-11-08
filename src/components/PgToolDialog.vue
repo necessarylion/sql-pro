@@ -61,7 +61,7 @@ async function submit(): Promise<void> {
   }
 }
 
-/** Asks where to save. The file type follows the format. Does nothing on cancel. */
+/** Asks where to save, then asks to confirm. The file type follows the format. Does nothing on cancel or no. */
 async function backup(version: number | null): Promise<void> {
   const session = props.session
   const extension = form.custom ? 'dump' : 'sql'
@@ -70,7 +70,14 @@ async function backup(version: number | null): Promise<void> {
     defaultPath: session.backupName(new Date(), extension),
     filters: [{ name: form.custom ? 'pg_restore file' : 'SQL', extensions: [extension] }],
   })
-  if (path) {
+  if (!path) {
+    return
+  }
+  const sure = await confirm(
+    `Back up database "${session.config?.database ?? ''}" to ${path}? A large database can take a few minutes.`,
+    { title: 'Back up database', kind: 'info' },
+  )
+  if (sure) {
     await session.run(session.backup(path, { custom: form.custom, version }))
   }
 }

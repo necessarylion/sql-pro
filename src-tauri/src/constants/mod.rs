@@ -71,7 +71,8 @@ pub const TOOL_DIRS: [&str; 8] = [
 ];
 
 /// Homebrew keeps each `PostgreSQL` version in a folder like `postgresql@16` in here.
-pub const HOMEBREW_OPT_DIR: &str = "/opt/homebrew/opt";
+/// The first is Apple silicon, the second Intel.
+pub const HOMEBREW_OPT_DIRS: [&str; 2] = ["/opt/homebrew/opt", "/usr/local/opt"];
 
 /// Postgres.app keeps each version in a folder like `17` in here.
 pub const POSTGRES_APP_VERSIONS_DIR: &str = "/Applications/Postgres.app/Contents/Versions";
@@ -79,12 +80,19 @@ pub const POSTGRES_APP_VERSIONS_DIR: &str = "/Applications/Postgres.app/Contents
 /// Debian and Ubuntu keep each `PostgreSQL` version in a folder like `17` in here.
 pub const LINUX_POSTGRES_DIR: &str = "/usr/lib/postgresql";
 
+/// RHEL and Fedora keep each `PostgreSQL` version in a folder like `/usr/pgsql-17`.
+pub const RHEL_POSTGRES_PARENT: &str = "/usr";
+
 /// The first bytes of a custom format file of `pg_dump`. Only `pg_restore` reads it.
 pub const PG_CUSTOM_MAGIC: &[u8; 5] = b"PGDMP";
 
 /// The error when a custom format file of `pg_dump` is opened as a SQL file.
 pub const PG_CUSTOM_DUMP: &str =
     "This file is a pg_dump custom archive, not SQL. Use Restore from .dump… to load it";
+
+/// The same error on a database that is not `PostgreSQL`. It has no restore.
+pub const PG_CUSTOM_DUMP_ELSEWHERE: &str = "This file is a PostgreSQL custom backup, not SQL. \
+     It can only be restored into a PostgreSQL database";
 
 /// The error when a restore runs on a database that is not `PostgreSQL`.
 pub const RESTORE_ONLY_POSTGRES: &str = "Restore from .dump works only with PostgreSQL";

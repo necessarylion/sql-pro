@@ -52,8 +52,14 @@ class FakeApi {
     await new Promise<void>(this.hold.bind(this))
   }
 
+  /** When set, loading the tables fails with this error. */
+  tablesError = ''
+
   async listTables(): Promise<TableRef[]> {
     this.tableLoads += 1
+    if (this.tablesError) {
+      throw this.tablesError
+    }
     return [table('restored')]
   }
 
@@ -312,4 +318,15 @@ test('the tool choice warns about a tool older than the server', function () {
   const none = new PgToolChoice('pg_restore', { server: 17, tools: [], defaultVersion: null })
   expect(none.warning).toBe('')
   expect(none.missing).toContain('pg_restore was not found')
+})
+
+test('a failed restore keeps its error when the reload of the tables fails too', async function () {
+  const api = new FakeApi()
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
+  api.tablesError = 'connection lost'
+  const failing = session.run(session.restore('/tmp/a.dump', { version: null, clean: false }))
+  api.end('pg_restore had 1 error. The rest was restored.')
+  expect(await failing).toBe(false)
+  expect(session.error).toBe('pg_restore had 1 error. The rest was restored.')
+  expect(api.tableLoads).toBe(1)
 })

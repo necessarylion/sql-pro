@@ -22,7 +22,8 @@ use crate::constants::{
 };
 #[cfg(unix)]
 use crate::constants::{
-    HOMEBREW_OPT_DIR, LINUX_POSTGRES_DIR, POSTGRES_APP_VERSIONS_DIR, TOOL_DIRS,
+    HOMEBREW_OPT_DIRS, LINUX_POSTGRES_DIR, POSTGRES_APP_VERSIONS_DIR, RHEL_POSTGRES_PARENT,
+    TOOL_DIRS,
 };
 use crate::error::{AppError, AppResult};
 use crate::model::{BackupOptions, ConnectionConfig, Driver, DumpProgress, PgTool, RestoreOptions};
@@ -195,7 +196,7 @@ impl DumpRepository {
             .arg(format!("--port={}", config.port))
             .arg("--no-password")
             .arg("--verbose")
-            .arg(format!("--dbname={}", config.database))
+            .arg(Self::dbname(&config.database))
             // The objects belong to the user of this connection, with no grants of
             // the old server. Its roles may not exist here.
             .arg("--no-owner")
@@ -213,6 +214,14 @@ impl DumpRepository {
         // "--" ends the options. A file name can then never be read as one.
         command.arg("--").arg(file);
         command
+    }
+
+    /// The `--dbname` option of `pg_dump` and `pg_restore`. They read a value with `=` or
+    /// `postgresql://` as a whole connection string, which could name another host and get
+    /// our password. So the name always goes in as `dbname='…'`, with `\` and `'` escaped.
+    fn dbname(database: &str) -> String {
+        let quoted = database.replace('\\', "\\\\").replace('\'', "\\'");
+        format!("--dbname=dbname='{quoted}'")
     }
 
     /// The dump command of the database.
@@ -351,7 +360,7 @@ impl DumpRepository {
             command.arg(format!("--username={}", config.user));
         }
         if !config.database.is_empty() {
-            command.arg(format!("--dbname={}", config.database));
+            command.arg(Self::dbname(&config.database));
         }
         if !config.password.is_empty() {
             command.env(POSTGRES_PASSWORD_ENV, &config.password);
@@ -422,11 +431,14 @@ impl DumpRepository {
                 folders.push(PathBuf::from(folder));
             }
             // Each PostgreSQL version that is installed. The user picks one in the app.
-            for prefix in ["postgresql@", "libpq@"] {
-                folders.extend(Self::bin_folders(Path::new(HOMEBREW_OPT_DIR), prefix));
+            for homebrew in HOMEBREW_OPT_DIRS {
+                for prefix in ["postgresql@", "libpq@"] {
+                    folders.extend(Self::bin_folders(Path::new(homebrew), prefix));
+                }
             }
             folders.extend(Self::bin_folders(Path::new(POSTGRES_APP_VERSIONS_DIR), ""));
             folders.extend(Self::bin_folders(Path::new(LINUX_POSTGRES_DIR), ""));
+            folders.extend(Self::bin_folders(Path::new(RHEL_POSTGRES_PARENT), "pgsql-"));
         }
         // The installer of PostgreSQL for Windows. An absolute folder, so it is safe.
         #[cfg(windows)]
@@ -739,7 +751,7 @@ mod tests {
                 "--port=5433",
                 "--no-password",
                 "--verbose",
-                "--dbname=shop",
+                "--dbname=dbname='shop'",
                 "--no-owner",
                 "--no-privileges",
                 "--clean",
@@ -761,6 +773,25 @@ mod tests {
         let args: Vec<_> = command.as_std().get_args().collect();
         assert!(!args.contains(&OsStr::new("--clean")));
         assert_eq!(command.as_std().get_envs().count(), 0);
+    }
+
+    #[test]
+    fn a_database_name_is_never_a_connection_string() {
+        let dbname = DumpRepository::dbname;
+        assert_eq!(dbname("shop"), "--dbname=dbname='shop'");
+        assert_eq!(
+            dbname("x host=evil.example"),
+            "--dbname=dbname='x host=evil.example'"
+        );
+        assert_eq!(
+            dbname("postgresql://evil.example/x"),
+            "--dbname=dbname='postgresql://evil.example/x'"
+        );
+        // A quote or backslash cannot end the value early.
+        assert_eq!(
+            dbname(r"it's' host=evil \"),
+            r"--dbname=dbname='it\'s\' host=evil \\'"
+        );
     }
 
     #[test]
