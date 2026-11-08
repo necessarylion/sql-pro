@@ -1,10 +1,12 @@
 //! Backups. We run the dump tool of each database: `mysqldump`, `pg_dump` and `sqlite3`.
 //!
 //! The tools know every detail of their own database, so the dump can be loaded again.
+//! A custom format file of `PostgreSQL` is loaded again with `pg_restore`.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs::File;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,12 +18,15 @@ use tokio::process::Command;
 
 use crate::constants::{
     BACKUP_CANCELLED, DUMP_PROGRESS_EVERY, MSSQL_NO_BACKUP, MYSQL_PASSWORD_ENV,
-    PARTIAL_DUMP_SUFFIX, POSTGRES_PASSWORD_ENV,
+    PARTIAL_DUMP_SUFFIX, PG_CUSTOM_MAGIC, POSTGRES_PASSWORD_ENV, RESTORE_ONLY_POSTGRES,
 };
 #[cfg(unix)]
-use crate::constants::{HOMEBREW_OPT_DIR, TOOL_DIRS};
+use crate::constants::{
+    HOMEBREW_OPT_DIRS, LINUX_POSTGRES_DIR, POSTGRES_APP_VERSIONS_DIR, RHEL_POSTGRES_PARENT,
+    TOOL_DIRS,
+};
 use crate::error::{AppError, AppResult};
-use crate::model::{ConnectionConfig, Driver, DumpProgress};
+use crate::model::{BackupOptions, ConnectionConfig, Driver, DumpProgress, PgTool, RestoreOptions};
 
 /// Writes SQL dumps with the dump tools that are installed on this computer.
 pub struct DumpRepository;
@@ -37,6 +42,7 @@ impl DumpRepository {
     pub async fn dump(
         config: &ConnectionConfig,
         path: &Path,
+        options: &BackupOptions,
         progress: impl FnMut(DumpProgress),
         cancel: AbortRegistration,
     ) -> AppResult<()> {
@@ -47,7 +53,10 @@ impl DumpRepository {
         // half file, and does not harm an older backup that is already at `path`.
         let partial = Self::partial_path(path);
 
-        let mut result = Self::run(config, &partial, progress, cancel).await;
+        let mut result = match Self::command(config, &partial, options).await {
+            Ok(command) => Self::run(command, &partial, DumpLog::default(), progress, cancel).await,
+            Err(error) => Err(error),
+        };
         if result.is_ok() {
             result = std::fs::rename(&partial, path).map_err(AppError::from);
         }
@@ -71,19 +80,173 @@ impl DumpRepository {
         PathBuf::from(partial)
     }
 
-    /// Runs the dump tool and waits for it. Its error text becomes our error.
-    async fn run(
+    /// Loads a custom format file of `pg_dump` into the current database with `pg_restore`.
+    ///
+    /// `pg_restore` goes on after an error. The restore then fails with the error lines
+    /// and how many there were. Progress and cancel work like in `dump`. A cancel leaves
+    /// what was loaded so far.
+    pub async fn restore(
+        config: &ConnectionConfig,
+        file: &Path,
+        options: &RestoreOptions,
+        progress: impl FnMut(DumpProgress),
+        cancel: AbortRegistration,
+    ) -> AppResult<()> {
+        if config.driver != Driver::Postgres {
+            return Err(RESTORE_ONLY_POSTGRES.into());
+        }
+        if config.database.is_empty() {
+            return Err("Choose a database first".into());
+        }
+        let tool = Self::pg_tool("pg_restore", options.version).await?;
+        let command = Self::restore_command(&tool, config, file, options.clean);
+        Self::run(command, file, DumpLog::restore(), progress, cancel).await
+    }
+
+    /// True when the file starts like a custom format file of `pg_dump`.
+    pub fn is_custom_dump(path: &Path) -> AppResult<bool> {
+        let mut start = [0; PG_CUSTOM_MAGIC.len()];
+        // A file shorter than that is no custom dump.
+        Ok(File::open(path)?.read_exact(&mut start).is_ok() && &start == PG_CUSTOM_MAGIC)
+    }
+
+    /// All versions of `name` (`pg_dump` or `pg_restore`) on this computer, newest first.
+    /// One tool per version: the first one found wins.
+    pub async fn pg_tools(name: &str) -> Vec<PgTool> {
+        let file = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+        let mut seen = HashSet::new();
+        let mut tools: Vec<PgTool> = Vec::new();
+        for folder in Self::folders() {
+            let path = folder.join(&file);
+            // PATH, Homebrew and Postgres.app often link to the same file.
+            let Ok(real) = path.canonicalize() else {
+                continue;
+            };
+            if !real.is_file() || !seen.insert(real) {
+                continue;
+            }
+            if let Some(version) = Self::major_version(&path).await
+                && !tools.iter().any(|tool| tool.version == version)
+            {
+                tools.push(PgTool { version, path });
+            }
+        }
+        tools.sort_by_key(|tool| std::cmp::Reverse(tool.version));
+        tools
+    }
+
+    /// The version to use by default: the one of the server, else the newest one.
+    pub fn default_version(server: u32, tools: &[PgTool]) -> Option<u32> {
+        tools
+            .iter()
+            .find(|tool| tool.version == server)
+            .or(tools.first())
+            .map(|tool| tool.version)
+    }
+
+    /// The tool `name` with this major version. None means the first one found.
+    async fn pg_tool(name: &str, version: Option<u32>) -> AppResult<PathBuf> {
+        let Some(version) = version else {
+            return Self::find(&[name]).ok_or_else(|| {
+                AppError::Message(format!(
+                    "{name} was not found. Install the PostgreSQL client tools (macOS: brew install libpq)"
+                ))
+            });
+        };
+        Self::pg_tools(name)
+            .await
+            .into_iter()
+            .find(|tool| tool.version == version)
+            .map(|tool| tool.path)
+            .ok_or_else(|| AppError::Message(format!("{name} {version} was not found")))
+    }
+
+    /// The major version a tool prints with `--version`. None when it does not run.
+    async fn major_version(tool: &Path) -> Option<u32> {
+        let mut command = Command::new(tool);
+        super::hide_console(&mut command);
+        let output = command
+            .arg("--version")
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .ok()?;
+        Self::parse_major(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    /// The major version in text like `pg_dump (PostgreSQL) 17.2 (Homebrew)`.
+    fn parse_major(text: &str) -> Option<u32> {
+        let word = text
+            .split_whitespace()
+            .find(|word| word.starts_with(|c: char| c.is_ascii_digit()))?;
+        let digits: String = word.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    }
+
+    /// The `pg_restore` command. The password goes in the environment, never in an argument.
+    fn restore_command(
+        tool: &Path,
+        config: &ConnectionConfig,
+        file: &Path,
+        clean: bool,
+    ) -> Command {
+        let mut command = Command::new(tool);
+        command
+            .arg(format!("--host={}", config.host))
+            .arg(format!("--port={}", config.port))
+            .arg("--no-password")
+            .arg("--verbose")
+            .arg(Self::dbname(&config.database))
+            // The objects belong to the user of this connection, with no grants of
+            // the old server. Its roles may not exist here.
+            .arg("--no-owner")
+            .arg("--no-privileges")
+            .stdout(Stdio::null());
+        if clean {
+            command.arg("--clean").arg("--if-exists");
+        }
+        if !config.user.is_empty() {
+            command.arg(format!("--username={}", config.user));
+        }
+        if !config.password.is_empty() {
+            command.env(POSTGRES_PASSWORD_ENV, &config.password);
+        }
+        // "--" ends the options. A file name can then never be read as one.
+        command.arg("--").arg(file);
+        command
+    }
+
+    /// The `--dbname` option of `pg_dump` and `pg_restore`. They read a value with `=` or
+    /// `postgresql://` as a whole connection string, which could name another host and get
+    /// our password. So the name always goes in as `dbname='…'`, with `\` and `'` escaped.
+    fn dbname(database: &str) -> String {
+        let quoted = database.replace('\\', "\\\\").replace('\'', "\\'");
+        format!("--dbname=dbname='{quoted}'")
+    }
+
+    /// The dump command of the database.
+    async fn command(
         config: &ConnectionConfig,
         output: &Path,
+        options: &BackupOptions,
+    ) -> AppResult<Command> {
+        match config.driver {
+            Driver::Mysql => Self::mysql(config, output).await,
+            Driver::Postgres => Self::postgres(config, output, options).await,
+            Driver::Sqlite => Self::sqlite(config, output),
+            Driver::Mssql => Err(MSSQL_NO_BACKUP.into()),
+        }
+    }
+
+    /// Runs the tool and waits for it. Its error text becomes our error.
+    /// `file` is the file whose size the progress shows.
+    async fn run(
+        mut command: Command,
+        file: &Path,
+        mut log: DumpLog,
         mut progress: impl FnMut(DumpProgress),
         cancel: AbortRegistration,
     ) -> AppResult<()> {
-        let mut command = match config.driver {
-            Driver::Mysql => Self::mysql(config, output).await?,
-            Driver::Postgres => Self::postgres(config, output)?,
-            Driver::Sqlite => Self::sqlite(config, output)?,
-            Driver::Mssql => return Err(MSSQL_NO_BACKUP.into()),
-        };
         super::hide_console(&mut command);
         command
             .stdin(Stdio::null())
@@ -96,7 +259,6 @@ impl DumpRepository {
             .ok_or("The dump tool has no error output")?;
         // Not `lines()`: a line that is not UTF-8 would end the read with an error.
         let mut lines = BufReader::new(stderr).split(b'\n');
-        let mut log = DumpLog::default();
         let started = Instant::now();
         let mut tick = tokio::time::interval(DUMP_PROGRESS_EVERY);
         let mut cancelled = Abortable::new(std::future::pending::<()>(), cancel);
@@ -114,12 +276,12 @@ impl DumpRepository {
                 line = lines.next_segment() => match line? {
                     Some(line) => {
                         if log.read(&String::from_utf8_lossy(&line)) {
-                            progress(log.progress(output, started));
+                            progress(log.progress(file, started));
                         }
                     }
                     None => break,
                 },
-                _ = tick.tick() => progress(log.progress(output, started)),
+                _ = tick.tick() => progress(log.progress(file, started)),
             }
         }
         let status = child.wait().await?;
@@ -176,10 +338,16 @@ impl DumpRepository {
         Ok(command)
     }
 
-    fn postgres(config: &ConnectionConfig, output: &Path) -> AppResult<Command> {
-        let tool = Self::find(&["pg_dump"])
-            .ok_or("pg_dump was not found. Install the PostgreSQL client tools (macOS: brew install libpq)")?;
+    async fn postgres(
+        config: &ConnectionConfig,
+        output: &Path,
+        options: &BackupOptions,
+    ) -> AppResult<Command> {
+        let tool = Self::pg_tool("pg_dump", options.version).await?;
         let mut command = Command::new(tool);
+        if options.custom {
+            command.arg("--format=custom");
+        }
         command
             .arg(format!("--host={}", config.host))
             .arg(format!("--port={}", config.port))
@@ -192,7 +360,7 @@ impl DumpRepository {
             command.arg(format!("--username={}", config.user));
         }
         if !config.database.is_empty() {
-            command.arg(format!("--dbname={}", config.database));
+            command.arg(Self::dbname(&config.database));
         }
         if !config.password.is_empty() {
             command.env(POSTGRES_PASSWORD_ENV, &config.password);
@@ -262,21 +430,37 @@ impl DumpRepository {
             for folder in TOOL_DIRS {
                 folders.push(PathBuf::from(folder));
             }
-            // ponytail: any Homebrew PostgreSQL version, in no fixed order. pg_dump
-            // refuses a server that is newer than itself; pick the newest if that hurts.
-            if let Ok(entries) = std::fs::read_dir(HOMEBREW_OPT_DIR) {
-                for entry in entries.flatten() {
-                    if entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with("postgresql@")
-                    {
-                        folders.push(entry.path().join("bin"));
-                    }
+            // Each PostgreSQL version that is installed. The user picks one in the app.
+            for homebrew in HOMEBREW_OPT_DIRS {
+                for prefix in ["postgresql@", "libpq@"] {
+                    folders.extend(Self::bin_folders(Path::new(homebrew), prefix));
                 }
+            }
+            folders.extend(Self::bin_folders(Path::new(POSTGRES_APP_VERSIONS_DIR), ""));
+            folders.extend(Self::bin_folders(Path::new(LINUX_POSTGRES_DIR), ""));
+            folders.extend(Self::bin_folders(Path::new(RHEL_POSTGRES_PARENT), "pgsql-"));
+        }
+        // The installer of PostgreSQL for Windows. An absolute folder, so it is safe.
+        #[cfg(windows)]
+        {
+            if let Some(programs) = std::env::var_os("ProgramFiles") {
+                let installs = Path::new(&programs).join("PostgreSQL");
+                folders.extend(Self::bin_folders(&installs, ""));
             }
         }
         folders
+    }
+
+    /// The `bin` folder of each folder in `parent` whose name starts with `prefix`.
+    fn bin_folders(parent: &Path, prefix: &str) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(parent) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(prefix))
+            .map(|entry| entry.path().join("bin"))
+            .collect()
     }
 }
 
@@ -290,9 +474,21 @@ struct DumpLog {
     tail: VecDeque<String>,
     table: Option<String>,
     tables: usize,
+    /// True for `pg_restore`. Its error lines are followed by the SQL that failed.
+    restore: bool,
+    /// The count in `pg_restore: warning: errors ignored on restore: N`. `pg_restore` prints it
+    /// only when it went on after errors. A fatal error has no such line.
+    ignored: Option<usize>,
 }
 
 impl DumpLog {
+    fn restore() -> Self {
+        Self {
+            restore: true,
+            ..Self::default()
+        }
+    }
+
     /// ponytail: a broken server can print many error lines. The first ones tell the cause.
     const MAX_ERRORS: usize = 20;
     const MAX_TAIL: usize = 5;
@@ -312,7 +508,13 @@ impl DumpLog {
             self.tables += 1;
             return true;
         }
-        if !Self::is_chatter(line) && self.errors.len() < Self::MAX_ERRORS {
+        if let Some(count) = line.strip_prefix("pg_restore: warning: errors ignored on restore: ") {
+            self.ignored = count.trim().parse().ok();
+        }
+        // The SQL after a pg_restore error can be long. Only its first line stays.
+        let shown =
+            !self.restore || line.starts_with("pg_restore: ") || line.starts_with("Command was: ");
+        if shown && !Self::is_chatter(line) && self.errors.len() < Self::MAX_ERRORS {
             self.errors.push(line.to_owned());
         }
         false
@@ -320,10 +522,17 @@ impl DumpLog {
 
     /// The error text when the tool failed.
     fn reason(&self) -> String {
-        if self.errors.is_empty() {
+        let lines = if self.errors.is_empty() {
             Vec::from(self.tail.clone()).join("\n")
         } else {
             self.errors.join("\n")
+        };
+        match self.ignored {
+            None | Some(0) => lines,
+            Some(1) => format!("pg_restore had 1 error. The rest was restored.\n{lines}"),
+            Some(count) => {
+                format!("pg_restore had {count} errors. The rest was restored.\n{lines}")
+            }
         }
     }
 
@@ -338,11 +547,15 @@ impl DumpLog {
     }
 
     /// The table a line names, like `-- Retrieving table structure for table orders...`
-    /// (mysqldump) or `pg_dump: dumping contents of table "public.orders"`.
+    /// (mysqldump), `pg_dump: dumping contents of table "public.orders"` or
+    /// `pg_restore: processing data for table "public.orders"`.
     fn table_of(line: &str) -> Option<String> {
         let name = if let Some(rest) = line.strip_prefix("-- Retrieving table structure for table ")
         {
             rest.trim_end_matches("...").trim_matches('`')
+        } else if let Some(rest) = line.strip_prefix("pg_restore: ") {
+            rest.strip_prefix("processing data for table ")?
+                .trim_matches('"')
         } else {
             line.strip_prefix("pg_dump: ")?
                 .strip_prefix("dumping contents of table ")?
@@ -356,7 +569,10 @@ impl DumpLog {
         if line.starts_with("-- ") {
             return true;
         }
-        line.strip_prefix("pg_dump: ").is_some_and(|rest| {
+        let rest = line
+            .strip_prefix("pg_dump: ")
+            .or_else(|| line.strip_prefix("pg_restore: "));
+        rest.is_some_and(|rest| {
             !["error:", "detail:", "hint:", "warning:"]
                 .iter()
                 .any(|kind| rest.starts_with(kind))
@@ -373,7 +589,7 @@ mod tests {
 
     use super::{DumpLog, DumpRepository};
     use crate::constants::BACKUP_CANCELLED;
-    use crate::model::{ConnectionConfig, Driver, SslConfig};
+    use crate::model::{BackupOptions, ConnectionConfig, Driver, PgTool, SslConfig};
 
     #[tokio::test]
     async fn a_cancel_leaves_the_older_backup_alone() {
@@ -412,7 +628,8 @@ mod tests {
             steps += 1;
             handle.abort();
         };
-        let result = DumpRepository::dump(&config, &path, cancel, registration).await;
+        let options = BackupOptions::default();
+        let result = DumpRepository::dump(&config, &path, &options, cancel, registration).await;
         let old = std::fs::read_to_string(&path);
         let partial = std::fs::read_dir(&folder)
             .expect("temp folder")
@@ -480,6 +697,161 @@ mod tests {
             "pg_dump: error: query failed: ERROR:  permission denied for table secret\n\
              pg_dump: detail: Query was: LOCK TABLE public.secret IN ACCESS SHARE MODE\n\
              mysqldump: Got error: 1045: Access denied for user 'me'"
+        );
+    }
+
+    fn postgres(password: &str) -> ConnectionConfig {
+        ConnectionConfig {
+            driver: Driver::Postgres,
+            host: "127.0.0.1".to_owned(),
+            port: 5433,
+            user: "me".to_owned(),
+            password: password.to_owned(),
+            database: "shop".to_owned(),
+            ssh: None,
+            ssl: SslConfig::default(),
+        }
+    }
+
+    #[test]
+    fn reads_the_major_version_of_the_tools() {
+        let parse = DumpRepository::parse_major;
+        assert_eq!(parse("pg_dump (PostgreSQL) 17.2\n"), Some(17));
+        assert_eq!(parse("pg_restore (PostgreSQL) 15.10 (Homebrew)"), Some(15));
+        assert_eq!(parse("pg_dump (PostgreSQL) 18beta1"), Some(18));
+        assert_eq!(parse("pg_dump (PostgreSQL) 9.6.24"), Some(9));
+        assert_eq!(parse("command not found"), None);
+        assert_eq!(parse(""), None);
+    }
+
+    #[test]
+    fn the_default_version_is_the_one_of_the_server() {
+        let tool = |version| PgTool {
+            version,
+            path: format!("/pg{version}/pg_dump").into(),
+        };
+        let tools = [tool(18), tool(17), tool(15)];
+        assert_eq!(DumpRepository::default_version(17, &tools), Some(17));
+        // No tool of the server version: the newest one.
+        assert_eq!(DumpRepository::default_version(16, &tools), Some(18));
+        assert_eq!(DumpRepository::default_version(17, &[]), None);
+    }
+
+    #[test]
+    fn the_restore_password_is_never_an_argument() {
+        let file = Path::new("/backups/-shop.dump");
+        let tool = Path::new("pg_restore");
+        let command = DumpRepository::restore_command(tool, &postgres("s3cret"), file, true);
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "--host=127.0.0.1",
+                "--port=5433",
+                "--no-password",
+                "--verbose",
+                "--dbname=dbname='shop'",
+                "--no-owner",
+                "--no-privileges",
+                "--clean",
+                "--if-exists",
+                "--username=me",
+                "--",
+                "/backups/-shop.dump",
+            ]
+        );
+        assert!(args.iter().all(|arg| !arg.contains("s3cret")));
+        let password = command
+            .as_std()
+            .get_envs()
+            .find(|(name, _)| *name == "PGPASSWORD")
+            .and_then(|(_, value)| value);
+        assert_eq!(password, Some(OsStr::new("s3cret")));
+        // Without clean and without a password.
+        let command = DumpRepository::restore_command(tool, &postgres(""), file, false);
+        let args: Vec<_> = command.as_std().get_args().collect();
+        assert!(!args.contains(&OsStr::new("--clean")));
+        assert_eq!(command.as_std().get_envs().count(), 0);
+    }
+
+    #[test]
+    fn a_database_name_is_never_a_connection_string() {
+        let dbname = DumpRepository::dbname;
+        assert_eq!(dbname("shop"), "--dbname=dbname='shop'");
+        assert_eq!(
+            dbname("x host=evil.example"),
+            "--dbname=dbname='x host=evil.example'"
+        );
+        assert_eq!(
+            dbname("postgresql://evil.example/x"),
+            "--dbname=dbname='postgresql://evil.example/x'"
+        );
+        // A quote or backslash cannot end the value early.
+        assert_eq!(
+            dbname(r"it's' host=evil \"),
+            r"--dbname=dbname='it\'s\' host=evil \\'"
+        );
+    }
+
+    #[test]
+    fn knows_a_custom_dump_by_its_first_bytes() {
+        let folder = std::env::temp_dir();
+        let id = std::process::id();
+        let custom = folder.join(format!("sqlpro-magic-{id}.dump"));
+        let plain = folder.join(format!("sqlpro-magic-{id}.sql"));
+        let short = folder.join(format!("sqlpro-magic-{id}.short"));
+        std::fs::write(&custom, b"PGDMP\x01\x0e\x00").expect("custom");
+        std::fs::write(&plain, "-- PostgreSQL database dump\n").expect("plain");
+        std::fs::write(&short, "PG").expect("short");
+        let found = [&custom, &plain, &short].map(|path| DumpRepository::is_custom_dump(path));
+        for path in [&custom, &plain, &short] {
+            let _ = std::fs::remove_file(path);
+        }
+        assert_eq!(
+            found.map(|found| found.expect("read")),
+            [true, false, false]
+        );
+    }
+
+    #[test]
+    fn a_fatal_pg_restore_error_does_not_say_the_rest_was_restored() {
+        for fatal in [
+            "pg_restore: error: connection to server at \"127.0.0.1\", port 5433 failed: \
+             FATAL:  password authentication failed for user \"me\"",
+            "pg_restore: error: unsupported version (1.16) in file header",
+        ] {
+            let mut log = DumpLog::restore();
+            log.read(fatal);
+            assert_eq!(log.reason(), fatal);
+        }
+    }
+
+    #[test]
+    fn counts_the_errors_of_pg_restore() {
+        let mut log = DumpLog::restore();
+        assert!(!log.read("pg_restore: connecting to database for restore"));
+        assert!(!log.read(r#"pg_restore: creating TABLE "public.orders""#));
+        assert!(log.read(r#"pg_restore: processing data for table "public.orders""#));
+        assert_eq!(log.table.as_deref(), Some("public.orders"));
+        log.read(r#"pg_restore: error: could not execute query: ERROR:  relation "orders" already exists"#);
+        log.read("Command was: CREATE TABLE public.orders (");
+        log.read("    id integer NOT NULL");
+        log.read(");");
+        log.read(
+            r#"pg_restore: error: could not execute query: ERROR:  role "old" does not exist"#,
+        );
+        log.read("pg_restore: warning: errors ignored on restore: 2");
+        assert_eq!(
+            log.reason(),
+            "pg_restore had 2 errors. The rest was restored.\n\
+             pg_restore: error: could not execute query: ERROR:  relation \"orders\" already exists\n\
+             Command was: CREATE TABLE public.orders (\n\
+             pg_restore: error: could not execute query: ERROR:  role \"old\" does not exist\n\
+             pg_restore: warning: errors ignored on restore: 2"
         );
     }
 }

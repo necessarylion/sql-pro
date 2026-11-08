@@ -19,6 +19,9 @@ import type {
   DbUser,
   Diagram,
   DumpProgress,
+  BackupOptions,
+  PgTools,
+  RestoreOptions,
   ExportRequest,
   NewColumn,
   NewForeignKey,
@@ -272,15 +275,38 @@ export class DatabaseApi {
     return invoke('truncate_table', { id, table })
   }
 
-  /** Writes a SQL dump of the current database to the file at `path`. `onProgress` gets how far it is. */
+  /** Writes a dump of the current database to the file at `path`. `onProgress` gets how far it is. */
   dumpDatabase(
     id: string,
     path: string,
+    options: BackupOptions,
     onProgress: (progress: DumpProgress) => void,
   ): Promise<void> {
     const progress = new Channel<DumpProgress>()
     progress.onmessage = onProgress
-    return invoke('dump_database', { id, path, progress })
+    return invoke('dump_database', { id, path, options, progress })
+  }
+
+  /** Loads a .dump file into the current database with pg_restore. Stops like a backup. */
+  restoreDump(
+    id: string,
+    path: string,
+    options: RestoreOptions,
+    onProgress: (progress: DumpProgress) => void,
+  ): Promise<void> {
+    const progress = new Channel<DumpProgress>()
+    progress.onmessage = onProgress
+    return invoke('restore_dump', { id, path, options, progress })
+  }
+
+  /** The pg_dump (or with `restore`, pg_restore) versions on this computer. */
+  pgTools(id: string, restore: boolean): Promise<PgTools> {
+    return invoke('pg_tools', { id, restore })
+  }
+
+  /** True when the file is a custom format file of pg_dump, for pg_restore. */
+  isCustomDump(path: string): Promise<boolean> {
+    return invoke('is_custom_dump', { path })
   }
 
   /** Stops the backup that runs now on tab `id`. It then fails with "Backup cancelled". */

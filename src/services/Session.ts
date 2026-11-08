@@ -1,6 +1,7 @@
 import { markRaw } from 'vue'
 import {
   BACKUP_CANCELLED_STATUS,
+  RESTORE_CANCELLED_STATUS,
   DELETE_ROWS_TITLE,
   OBJECT_KIND_LABELS,
   PAGE_SIZE,
@@ -43,6 +44,9 @@ import type {
   DbUser,
   Diagram,
   DumpProgress,
+  BackupOptions,
+  PgTools,
+  RestoreOptions,
   CopyFormat,
   ExportFormat,
   ExportRequest,
@@ -107,6 +111,8 @@ export class Session {
   dumping = false
   /** True after the user asked to cancel the backup. */
   dumpCancelling = false
+  /** True when the running dump tool is pg_restore and not a backup. */
+  restoring = false
   /** How far the running backup is, like `Backing up… 48 MB, 0:32`. '' = no backup runs. */
   backupProgress = ''
   error = ''
@@ -374,7 +380,10 @@ export class Session {
 
   /** The tooltip of the Cancel button. */
   get cancelTitle(): string {
-    return this.cancellable ? 'Stop the running query (Esc)' : 'Stop the backup (Esc)'
+    if (this.cancellable) {
+      return 'Stop the running query (Esc)'
+    }
+    return this.restoring ? 'Stop the restore (Esc)' : 'Stop the backup (Esc)'
   }
 
   /**
@@ -1476,23 +1485,21 @@ export class Session {
   }
 
   /** The file name we offer for a backup made at `now`, like `shop-2026-01-31-0905.sql`. */
-  backupName(now: Date): string {
+  backupName(now: Date, extension = 'sql'): string {
     const name = this.databaseName()
     const day = `${now.getFullYear()}-${this.two(now.getMonth() + 1)}-${this.two(now.getDate())}`
     const time = `${this.two(now.getHours())}${this.two(now.getMinutes())}`
-    return `${name || 'backup'}-${day}-${time}.sql`
+    return `${name || 'backup'}-${day}-${time}.${extension}`
   }
 
-  /** Writes a SQL dump of the current database to the file at `path`. */
-  async backup(path: string): Promise<void> {
-    if (this.dumping) {
-      throw 'A backup already runs in this tab'
-    }
-    this.dumping = true
-    this.dumpCancelling = false
-    this.backupProgress = 'Backing up…'
+  /** Writes a dump of the current database to the file at `path`. Plain SQL by default. */
+  async backup(
+    path: string,
+    options: BackupOptions = { custom: false, version: null },
+  ): Promise<void> {
+    this.startDumpTool(false)
     try {
-      await this.api.dumpDatabase(this.id, path, this.showBackupProgress.bind(this))
+      await this.api.dumpDatabase(this.id, path, options, this.showBackupProgress.bind(this))
     } catch (error) {
       if (!this.dumpCancelling) {
         throw error
@@ -1500,12 +1507,75 @@ export class Session {
       this.status = BACKUP_CANCELLED_STATUS
       return
     } finally {
-      this.dumping = false
-      this.dumpCancelling = false
-      this.backupProgress = ''
+      this.stopDumpTool()
     }
     // A cancel that came after the end did nothing. The file is saved.
     this.status = `Backup saved to ${path}`
+  }
+
+  /**
+   * Loads a .dump file into the current database with pg_restore.
+   * pg_restore goes on after an error, so the tables load again also after an error or a cancel.
+   */
+  async restore(path: string, options: RestoreOptions): Promise<void> {
+    this.startDumpTool(true)
+    let failure: unknown = null
+    let cancelled = false
+    try {
+      await this.api.restoreDump(this.id, path, options, this.showBackupProgress.bind(this))
+    } catch (error) {
+      cancelled = this.dumpCancelling
+      failure = error
+    } finally {
+      this.stopDumpTool()
+    }
+    if (failure === null || cancelled) {
+      await this.loadTables()
+    } else {
+      // The error of pg_restore matters more than one of the reload.
+      try {
+        await this.loadTables()
+      } catch {
+        // The user can refresh the list.
+      }
+    }
+    if (cancelled) {
+      this.status = RESTORE_CANCELLED_STATUS
+    } else if (failure !== null) {
+      throw failure
+    } else {
+      this.status = `Restored ${path}`
+    }
+  }
+
+  /** The pg_dump (or with `restore`, pg_restore) versions on this computer. */
+  pgTools(restore: boolean): Promise<PgTools> {
+    return this.api.pgTools(this.id, restore)
+  }
+
+  /** True when the file is a custom format file of pg_dump, which only pg_restore reads. */
+  isCustomDump(path: string): Promise<boolean> {
+    return this.api.isCustomDump(path)
+  }
+
+  /** Sets the flags of a backup or restore that starts now. Only one runs at a time in a tab. */
+  private startDumpTool(restoring: boolean): void {
+    if (this.dumping) {
+      throw this.restoring
+        ? 'A restore already runs in this tab'
+        : 'A backup already runs in this tab'
+    }
+    this.dumping = true
+    this.restoring = restoring
+    this.dumpCancelling = false
+    this.backupProgress = restoring ? 'Restoring…' : 'Backing up…'
+  }
+
+  private stopDumpTool(): void {
+    this.dumping = false
+    this.restoring = false
+    this.dumpCancelling = false
+    this.backupProgress = ''
   }
 
   /** The busy text of the tab. A backup shows how far it is. */
@@ -1520,7 +1590,14 @@ export class Session {
       return
     }
     const minutes = Math.floor(progress.seconds / 60)
-    let text = `Backing up… ${this.sizeText(progress.bytes)}, ${minutes}:${this.two(progress.seconds % 60)}`
+    const time = `${minutes}:${this.two(progress.seconds % 60)}`
+    if (this.restoring) {
+      // The file does not grow, so there is no size. The tables of the file are not known.
+      const table = progress.table ? ` · Loading table ${progress.table} (${progress.tables})` : ''
+      this.backupProgress = `Restoring… ${time}${table}`
+      return
+    }
+    let text = `Backing up… ${this.sizeText(progress.bytes)}, ${time}`
     if (progress.table) {
       // The tool may dump more tables than the list has, like the other schemas of PostgreSQL.
       const total = this.tables.length

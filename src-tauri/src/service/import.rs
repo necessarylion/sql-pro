@@ -2,10 +2,10 @@
 
 use std::path::Path;
 
-use crate::constants::CSV_PREVIEW_ROWS;
+use crate::constants::{CSV_PREVIEW_ROWS, PG_CUSTOM_DUMP, PG_CUSTOM_DUMP_ELSEWHERE};
 use crate::error::{AppError, AppResult};
 use crate::model::{CsvImport, CsvPreview, Driver, Values};
-use crate::repository::Statement;
+use crate::repository::{DumpRepository, Statement};
 
 use super::ConnectionService;
 
@@ -65,6 +65,15 @@ impl ConnectionService {
     /// Gives the number of statements.
     pub async fn import_sql(&self, id: &str, path: &Path) -> AppResult<usize> {
         let connection = self.connection(id)?;
+        // Not text. Only pg_restore can read it.
+        if DumpRepository::is_custom_dump(path)? {
+            return Err(if connection.config.driver == Driver::Postgres {
+                PG_CUSTOM_DUMP
+            } else {
+                PG_CUSTOM_DUMP_ELSEWHERE
+            }
+            .into());
+        }
         let sql = std::fs::read_to_string(path)?;
         let statements = SqlSplitter::new(&sql, connection.config.driver == Driver::Mysql).split();
         if statements.is_empty() {

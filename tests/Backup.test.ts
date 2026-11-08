@@ -3,7 +3,14 @@ import { expect, test } from 'bun:test'
 import type { DatabaseApi } from '../src/services/DatabaseApi'
 import { Session } from '../src/services/Session'
 import { FakePrompt } from './FakePrompt'
-import type { ConnectionConfig, DumpProgress, TableRef } from '../src/types'
+import { PgToolChoice } from '../src/services/PgToolChoice'
+import type {
+  BackupOptions,
+  ConnectionConfig,
+  DumpProgress,
+  RestoreOptions,
+  TableRef,
+} from '../src/types'
 
 class FakeApi {
   dumps: { id: string; path: string }[] = []
@@ -13,11 +20,17 @@ class FakeApi {
   private finish: ((error?: string) => void) | null = null
   cancels: string[] = []
 
+  options: BackupOptions[] = []
+  restores: { path: string; options: RestoreOptions }[] = []
+  tableLoads = 0
+
   async dumpDatabase(
     id: string,
     path: string,
+    options: BackupOptions,
     onProgress: (progress: DumpProgress) => void,
   ): Promise<void> {
+    this.options.push(options)
     if (path === '/nowhere/x.sql') {
       throw 'pg_dump was not found'
     }
@@ -26,6 +39,32 @@ class FakeApi {
       this.onProgress = onProgress
       await new Promise<void>(this.hold.bind(this))
     }
+  }
+
+  async restoreDump(
+    id: string,
+    path: string,
+    options: RestoreOptions,
+    onProgress: (progress: DumpProgress) => void,
+  ): Promise<void> {
+    this.restores.push({ path, options })
+    this.onProgress = onProgress
+    await new Promise<void>(this.hold.bind(this))
+  }
+
+  /** When set, loading the tables fails with this error. */
+  tablesError = ''
+
+  async listTables(): Promise<TableRef[]> {
+    this.tableLoads += 1
+    if (this.tablesError) {
+      throw this.tablesError
+    }
+    return [table('restored')]
+  }
+
+  async listObjects(): Promise<never[]> {
+    return []
   }
 
   private hold(resolve: () => void, reject: (error: string) => void): void {
@@ -210,4 +249,84 @@ test('a progress message that arrives after the backup ended is ignored', async 
   api.onProgress?.({ bytes: 4096, seconds: 3, table: 'orders', tables: 1 })
   expect(session.backupProgress).toBe('')
   expect(session.busyText).toBe('Working…')
+})
+
+test('a custom backup sends its options and gets a .dump name', async function () {
+  const api = new FakeApi()
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
+  session.config = config('postgres', 'shop')
+  expect(session.backupName(new Date(2026, 0, 31, 9, 5), 'dump')).toBe('shop-2026-01-31-0905.dump')
+  await session.run(session.backup('/tmp/shop.dump', { custom: true, version: 17 }))
+  // The plain SQL backup is the default.
+  await session.run(session.backup('/tmp/shop.sql'))
+  expect(api.options).toEqual([
+    { custom: true, version: 17 },
+    { custom: false, version: null },
+  ])
+})
+
+test('a restore shows its time and table, then loads the tables again', async function () {
+  const api = new FakeApi()
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
+  const running = session.run(session.restore('/tmp/shop.dump', { version: 17, clean: true }))
+  expect(api.restores).toEqual([{ path: '/tmp/shop.dump', options: { version: 17, clean: true } }])
+  expect(session.busyText).toBe('Restoring…')
+  expect(session.cancelTitle).toBe('Stop the restore (Esc)')
+  api.onProgress?.({ bytes: 4096, seconds: 75, table: 'public.orders', tables: 2 })
+  expect(session.busyText).toBe('Restoring… 1:15 · Loading table public.orders (2)')
+  // A backup cannot start while it runs.
+  expect(await session.run(session.backup('/tmp/x.sql'))).toBe(false)
+  expect(session.error).toBe('A restore already runs in this tab')
+  api.end()
+  expect(await running).toBe(true)
+  expect(session.status).toBe('Restored /tmp/shop.dump')
+  expect(session.tables).toEqual([table('restored')])
+  expect(session.dumping).toBe(false)
+})
+
+test('a failed or cancelled restore still loads the tables again', async function () {
+  const api = new FakeApi()
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
+  const failing = session.run(session.restore('/tmp/a.dump', { version: null, clean: false }))
+  api.end('pg_restore had 2 errors. The rest was restored.')
+  expect(await failing).toBe(false)
+  expect(session.error).toBe('pg_restore had 2 errors. The rest was restored.')
+  expect(api.tableLoads).toBe(1)
+
+  const cancelled = session.run(session.restore('/tmp/a.dump', { version: null, clean: false }))
+  await session.cancel()
+  expect(await cancelled).toBe(true)
+  expect(session.error).toBe('')
+  expect(session.status).toBe('Restore cancelled. What was loaded so far stays.')
+  expect(api.tableLoads).toBe(2)
+})
+
+test('the tool choice warns about a tool older than the server', function () {
+  const tools = [
+    { version: 18, path: '/a/pg_dump' },
+    { version: 15, path: '/b/pg_dump' },
+  ]
+  const choice = new PgToolChoice('pg_dump', { server: 17, tools, defaultVersion: 18 })
+  expect(choice.version).toBe(18)
+  expect(choice.label(tools[1]!)).toBe('PostgreSQL 15')
+  expect(choice.warning).toBe('')
+  expect(choice.missing).toBe('')
+  choice.version = 15
+  expect(choice.warning).toBe(
+    'pg_dump 15 is older than the server (PostgreSQL 17). pg_dump does not back up a newer server.',
+  )
+  const none = new PgToolChoice('pg_restore', { server: 17, tools: [], defaultVersion: null })
+  expect(none.warning).toBe('')
+  expect(none.missing).toContain('pg_restore was not found')
+})
+
+test('a failed restore keeps its error when the reload of the tables fails too', async function () {
+  const api = new FakeApi()
+  const session = new Session(api as unknown as DatabaseApi, new FakePrompt())
+  api.tablesError = 'connection lost'
+  const failing = session.run(session.restore('/tmp/a.dump', { version: null, clean: false }))
+  api.end('pg_restore had 1 error. The rest was restored.')
+  expect(await failing).toBe(false)
+  expect(session.error).toBe('pg_restore had 1 error. The rest was restored.')
+  expect(api.tableLoads).toBe(1)
 })

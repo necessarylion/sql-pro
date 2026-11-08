@@ -521,6 +521,46 @@ pub struct DumpProgress {
     pub tables: usize,
 }
 
+/// How to back up a `PostgreSQL` database. Other databases ignore it.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BackupOptions {
+    /// True for the custom format of `pg_dump`, which `pg_restore` reads. Else plain SQL.
+    pub custom: bool,
+    /// The major version of `pg_dump` to use. None means the default one.
+    pub version: Option<u32>,
+}
+
+/// How to load a `pg_restore` file into the current database.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RestoreOptions {
+    /// The major version of `pg_restore` to use. None means the default one.
+    pub version: Option<u32>,
+    /// Drop each object before it is made again (`--clean --if-exists`).
+    pub clean: bool,
+}
+
+/// A `pg_dump` or `pg_restore` that is installed on this computer.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct PgTool {
+    /// The major version, like 17.
+    pub version: u32,
+    pub path: PathBuf,
+}
+
+/// The versions of one `PostgreSQL` tool on this computer, and the one to use by default.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PgTools {
+    /// The major version of the server, like 17.
+    pub server: u32,
+    /// Newest first.
+    pub tools: Vec<PgTool>,
+    /// The tool with the version of the server, else the newest one. None when none was found.
+    pub default_version: Option<u32>,
+}
+
 /// What to export, and where to write it.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
